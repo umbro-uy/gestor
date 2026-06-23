@@ -2597,42 +2597,39 @@ function Metas({
   const leerBAS = e => {
     const file = e && e.target && e.target.files ? e.target.files[0] : null;
     if (!file) return;
-    setCargandoBAS(true); setArchivoBAS("Procesando "+file.name+"...");
+    setCargandoBAS(true); setArchivoBAS(file.name);
     const reader = new FileReader();
     reader.onload = ev => {
       try {
-        // Usar ArrayBuffer (más eficiente para archivos grandes)
         const data = new Uint8Array(ev.target.result);
-        const wb = XLSX.read(data, {type:"array", raw:true});
+        const wb = XLSX.read(data, {type:"array",raw:true});
         const ws = wb.Sheets[wb.SheetNames[0]];
         const ref = ws["!ref"];
-        if(!ref){alert("El archivo BAS no tiene datos.");setCargandoBAS(false);return;}
+        if(!ref){setRowsBAS([]);setCargandoBAS(false);return;}
         const rng = XLSX.utils.decode_range(ref);
-        // Leer solo la primera fila para encontrar los headers
         const hdrs = [];
         for(let C=rng.s.c;C<=Math.min(rng.e.c,200);C++){
-          const addr=XLSX.utils.encode_cell({r:rng.s.r,c:C});
-          const cell=ws[addr];
+          const cell=ws[XLSX.utils.encode_cell({r:rng.s.r,c:C})];
           hdrs.push(cell?String(cell.v||""):"");
         }
         const fi=pts=>hdrs.findIndex(h=>pts.some(p=>p.test(h)));
         const iA=fi([/abrevi/i]),iN=fi([/anulad/i]),iO=fi([/observ/i]);
         const iT=fi([/^total$/i]),iS=fi([/sucursal/i]),iF=fi([/^fecha$/i,/fecha/i]);
-        console.log("BAS headers encontrados — Abreviado:col"+iA+" Anulado:col"+iN+" Obs:col"+iO+" Total:col"+iT+" Suc:col"+iS+" Fecha:col"+iF);
-        if(iA<0){alert("No se encontró la columna Abreviado en el BAS. Columnas disponibles: "+hdrs.slice(0,20).join(", "));setCargandoBAS(false);return;}
-        // Leer fila a fila solo las 6 columnas necesarias
+        console.log("BAS cols: A="+iA+" N="+iN+" O="+iO+" T="+iT+" S="+iS+" F="+iF);
+        if(iA<0){alert("Col Abreviado no encontrada. Cols: "+hdrs.slice(0,15).join(", "));setCargandoBAS(false);return;}
+        const cl2=C=>{let s='',n=C;do{s=String.fromCharCode(65+n%26)+s;n=Math.floor(n/26)-1;}while(n>=0);return s;};
+        const lA=iA>=0?cl2(iA):null,lN=iN>=0?cl2(iN):null,lO=iO>=0?cl2(iO):null;
+        const lT=iT>=0?cl2(iT):null,lS=iS>=0?cl2(iS):null,lF=iF>=0?cl2(iF):null;
+        const gv=(l,R)=>{if(!l)return'';const cl=ws[l+R];return cl?String(cl.w!==undefined?cl.w:cl.v!==undefined?cl.v:''):''};
         const rows=[];
-        for(let R=rng.s.r+1;R<=rng.e.r;R++){
-          const g=C=>{const cell=ws[XLSX.utils.encode_cell({r:R,c:C})];return cell?String(cell.w!==undefined?cell.w:cell.v!==undefined?cell.v:""):"";};
-          const abrev=iA>=0?g(iA).trim():"";
-          if(!abrev)continue;
-          rows.push({Abreviado:abrev,Anulado:iN>=0?g(iN):"0",Observacion:iO>=0?g(iO):"",Total:iT>=0?g(iT):"0",Sucursal:iS>=0?g(iS):"",Fecha:iF>=0?g(iF):""});
+        for(let R=rng.s.r+2;R<=rng.e.r+1;R++){
+          const ab=lA?gv(lA,R).trim():'';
+          if(!ab)continue;
+          rows.push({Abreviado:ab,Anulado:lN?gv(lN,R):'0',Observacion:lO?gv(lO,R):'',Total:lT?gv(lT,R):'0',Sucursal:lS?gv(lS,R):'',Fecha:lF?gv(lF,R):''});
         }
-        console.log("BAS: "+rows.length+" filas leídas. FAB: "+rows.filter(r=>r.Abreviado==="FAB").length);
+        console.log("BAS: "+rows.length+" filas. FAB:"+rows.filter(r=>r.Abreviado==="FAB").length);
         setRowsBAS(rows);
-        setArchivoBAS(file.name);
-      }catch(err){alert("Error BAS: "+err.message+"
-"+err.stack);setCargandoBAS(false);return;}
+      }catch(err){alert("Error BAS: "+err.message);}
       setCargandoBAS(false);
     };
     reader.readAsArrayBuffer(file);
