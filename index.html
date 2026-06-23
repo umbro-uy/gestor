@@ -2770,33 +2770,23 @@ function Metas({
       }
       return mes;
     })();
-    if (esAdmin) {
-      for (const [tienda, real] of Object.entries(totales)) {
-        await supa.from("metas_mensuales").upsert({
-          mes: mesBAS,
-          tienda,
-          real: Math.round(real)
-        }, {
-          onConflict: "mes,tienda"
-        });
-      }
-      const {
-        data: kpisG
-      } = await supa.from("kpis_globales").select("id,nombre");
-      const kpiNC = kpisG?.find(k => k.nombre.toLowerCase().includes("nota") && k.nombre.toLowerCase().includes("cr"));
-      if (kpiNC) await supa.from("kpis_globales").update({
-        valor: String(new Set(ncd.map(r => extraerNroPedido(r[cObs2])).filter(Boolean)).size)
-      }).eq("id", kpiNC.id);
-      cargarMetas();
-    }
-    setResumenBAS({
-      totales,
-      cantPed,
-      mesBAS,
-      totalPedidosUnicos: Object.keys(pedidos).length,
-      ncdCount: new Set(ncd.map(r => extraerNroPedido(r[cObs2])).filter(Boolean)).size
-    });
+    // Mostrar resultado SIEMPRE (antes de Supabase)
+    const ncdSet = new Set(ncd.map(r => extraerNroPedido(r[cObs2])).filter(Boolean));
+    console.log('_coreBAS resultado: pedidos='+Object.keys(pedidos).length+' totales='+JSON.stringify(totales).slice(0,80));
+    setResumenBAS({totales,cantPed,mesBAS,totalPedidosUnicos:Object.keys(pedidos).length,ncdCount:ncdSet.size});
     if (mes !== mesBAS) setMes(mesBAS);
+    // Guardar en Supabase si está disponible
+    if (esAdmin && supa) {
+      try {
+        for (const [tienda, real] of Object.entries(totales)) {
+          await supa.from('metas_mensuales').upsert({mes:mesBAS,tienda,real:Math.round(real)},{onConflict:'mes,tienda'});
+        }
+        const {data:kpisG} = await supa.from('kpis_globales').select('id,nombre');
+        const kpiNC = kpisG?.find(k=>k.nombre.toLowerCase().includes('nota')&&k.nombre.toLowerCase().includes('cr'));
+        if(kpiNC) await supa.from('kpis_globales').update({valor:String(ncdSet.size)}).eq('id',kpiNC.id);
+        cargarMetas();
+      } catch(e) { console.warn('Supabase _coreBAS:',e.message); }
+    }
   };
   const _coreCruce = async () => {
     const findCol = (sample, patterns) => Object.keys(sample).find(k => patterns.some(p => p.test(k))) || "";
