@@ -2602,7 +2602,7 @@ function Metas({
     reader.onload = ev => {
       try {
         const data = new Uint8Array(ev.target.result);
-        const wb = XLSX.read(data, {type:"array",raw:true});
+        const wb = XLSX.read(data, {type:"array"});
         const ws = wb.Sheets[wb.SheetNames[0]];
         const ref = ws["!ref"];
         if(!ref){setRowsBAS([]);setCargandoBAS(false);return;}
@@ -2620,7 +2620,7 @@ function Metas({
         const cl2=C=>{let s='',n=C;do{s=String.fromCharCode(65+n%26)+s;n=Math.floor(n/26)-1;}while(n>=0);return s;};
         const lA=iA>=0?cl2(iA):null,lN=iN>=0?cl2(iN):null,lO=iO>=0?cl2(iO):null;
         const lT=iT>=0?cl2(iT):null,lS=iS>=0?cl2(iS):null,lF=iF>=0?cl2(iF):null;
-        const gv=(l,R)=>{if(!l)return'';const cl=ws[l+R];return cl?String(cl.w!==undefined?cl.w:cl.v!==undefined?cl.v:''):''};
+        const gv=(l,R)=>{if(!l)return'';const cl=ws[l+R];if(!cl)return'';return String(cl.w!==undefined&&cl.w!==''?cl.w:cl.v!==undefined?cl.v:'')||"";};
         const rows=[];
         for(let R=rng.s.r+2;R<=rng.e.r+1;R++){
           const ab=lA?gv(lA,R).trim():'';
