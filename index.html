@@ -2322,9 +2322,9 @@ function ResultadoCruce({
   }, "Mostrando 100 de ", tabActual.arr.length, "."), tabActual.arr.length === 0 && /*#__PURE__*/React.createElement("div", {
     className: "px-4 py-6 text-sm text-center",
     style: {
-      color: C.green
+      color: tabAct === "pcnManual" ? C.gray : C.green
     }
-  }, "✓ Sin casos en esta categoría.")));
+  }, tabAct === "pcnManual" ? "Los pedidos PCN (prendas personalizadas) se detectan desde el Monitor WMS (columna \"Articulo\", prefijo PCN). Si esto está vacío, cargá el Monitor Ecommerce o no hay PCN sin facturar." : "✓ Sin casos en esta categoría.")));
 }
 
 /* ── MesesAnio: componente separado para poder usar useState ── */
@@ -2891,8 +2891,29 @@ function Metas({
       .filter(nro => netFacturas(nro) > 1)
       .map(nro => ({ nro, facturas: nInvoices(nro), ncs: ncsXPed[nro] || 0, total: factsXPed[nro].total }));
 
+    // ── PCN (prendas personalizadas): sus SKU con prefijo "PCN" SÓLO viven en el Monitor WMS
+    //    (columna "Articulo"), NO en los reportes de Fenicio. Se detectan acá, no en Fenicio.
     const wmsMap = {};
-    if (rowsWMS.length) rowsWMS.forEach(r => { const k = String(r["Venta"] || "").trim(); if (k && !wmsMap[k]) wmsMap[k] = r; });
+    const pcnXVenta = {};   // { venta: { arts:[], estadoEnc, estadoEco, importe, deposito, fecha } }
+    if (rowsWMS.length) {
+      const sW = rowsWMS[0] || {};
+      const colArt = findCol(sW, [/art[ií]culo/i, /^sku$/i, /c[oó]d.*art/i]) || "Articulo";
+      const colVenta = findCol(sW, [/^venta$/i, /venta/i]) || "Venta";
+      const colEstEnc = findCol(sW, [/estado.*encuentra/i]) || "Estado Encuentra";
+      const colEstEco = findCol(sW, [/estado.*ecom/i]) || "Estado ecommerce";
+      const colDep = findCol(sW, [/dep[oó]sito/i]) || "Deposito pedido";
+      const colImpW = findCol(sW, [/^importe$/i, /importe/i]) || "Importe";
+      const colFechW = findCol(sW, [/fecha.*ped/i, /^fecha/i]) || "Fecha pedido";
+      rowsWMS.forEach(r => {
+        const k = String(r[colVenta] || "").trim();
+        if (k && !wmsMap[k]) wmsMap[k] = r;
+        const art = String(r[colArt] || "").trim();
+        if (k && art.toUpperCase().startsWith("PCN")) {
+          if (!pcnXVenta[k]) pcnXVenta[k] = { arts: [], estadoEnc: String(r[colEstEnc]||""), estadoEco: String(r[colEstEco]||""), importe: Number(r[colImpW]||0), deposito: String(r[colDep]||""), fecha: String(r[colFechW]||"").slice(0,10) };
+          if (!pcnXVenta[k].arts.includes(art)) pcnXVenta[k].arts.push(art);
+        }
+      });
+    }
 
     // Agrupar líneas de Fenicio por pedido (Fenicio trae 1 fila por SKU)
     const fenPed = {};
@@ -2901,9 +2922,9 @@ function Metas({
       if (!nro) return;
       if (!fenPed[nro]) fenPed[nro] = { nro, fecha: String(r[colFechF]||"").slice(0,10), estadoFen: String(r[colEstF]||""), estadoPago: String(r[colEstPago]||""), importe: Number(r[colImp]||0), lineas: 0, pcn: false, skusPcn: [] };
       fenPed[nro].lineas++;
-      const sku = String(r[colSku]||"").trim();
-      if (sku.toUpperCase().startsWith("PCN")) { fenPed[nro].pcn = true; if (!fenPed[nro].skusPcn.includes(sku)) fenPed[nro].skusPcn.push(sku); }
     });
+    // Marcar como PCN los pedidos de Fenicio que el WMS identifica con artículo personalizado
+    Object.keys(pcnXVenta).forEach(v => { if (fenPed[v]) { fenPed[v].pcn = true; fenPed[v].skusPcn = pcnXVenta[v].arts.slice(); } });
     const pedDuplicados = []; // en export por línea, un pedido con varias filas es normal; no es duplicado
 
     const hoy = new Date().toISOString().slice(0, 10);
@@ -2931,7 +2952,21 @@ function Metas({
       if (reProceso.test(estadoFen) || reProceso.test(estadoWMS)) { grupos.pendienteOK.push({ ...base, razon: "En proceso en depósito" }); return; }
       grupos.revisar.push({ ...base, razon: "Sin factura — verificar" });
     });
-    setPendientes({ grupos, factDuplicadas, pedDuplicados, totalPedidos: Object.keys(fenPed).length });
+
+    // Pedidos PCN presentes en el WMS pero ausentes del reporte de Fenicio
+    // (p.ej. cuando no se cargó el Fenicio de Tienda Nacional). Igual deben analizarse.
+    Object.entries(pcnXVenta).forEach(([v, info]) => {
+      if (fenPed[v]) return; // ya procesado arriba
+      const tieneF = nInvoices(v) > 0;
+      const estadoWMS = info.estadoEnc || info.estadoEco || "—";
+      const base = { nro: v, fecha: info.fecha, estadoFen: "— (sólo en WMS)", estadoPago: "", estadoWMS, importe: info.importe, pcn: true, skusPcn: info.arts.join(", ") };
+      if (/cancelad/i.test(estadoWMS) || /cancelad/i.test(info.estadoEco)) { grupos.cancelado.push(base); return; }
+      if (tieneF) { grupos.facturado.push(base); return; }
+      grupos.pcnManual.push({ ...base, razon: `Prenda personalizada (PCN) sin factura — forzar manualmente${info.arts.length ? " · " + info.arts.length + " art." : ""}` });
+    });
+
+    const totalPedidos = Object.keys(fenPed).length + Object.keys(pcnXVenta).filter(v => !fenPed[v]).length;
+    setPendientes({ grupos, factDuplicadas, pedDuplicados, totalPedidos });
     if (esAdmin) {
       const pendCount = grupos.revisar.length + grupos.pcnManual.length + grupos.facturaDup.length;
       const { data: kpisG } = await supa.from("kpis_globales").select("id,nombre");
@@ -2947,7 +2982,7 @@ function Metas({
     setProcesando(true);
     try {
       await _coreBAS();
-      if (rowsFen.length) await _coreCruce();
+      if (rowsFen.length || rowsWMS.length) await _coreCruce();
     } finally {
       setProcesando(false);
     }
