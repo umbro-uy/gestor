@@ -3450,12 +3450,21 @@ function Operativa() {
       try {
         const wb = XLSX.read(ev.target.result, {type: "binary"});
         const ws = wb.Sheets[wb.SheetNames[0]];
-        const data = XLSX.utils.sheet_to_json(ws, {header: 1, raw: false, defval: ""});
-        let hIdx = 0;
-        for (let i = 0; i < Math.min(5, data.length); i++) {
-          if (data[i].some(c => String(c || "").toLowerCase().includes("pedido"))) {
+        // Los .xls de Fenicio son HTML; SheetJS deja etiquetas <td> y entidades dentro de cada celda → limpiarlas
+        const clean = v => String(v == null ? "" : v).replace(/<[^>]*>/g, "").replace(/&nbsp;/gi, " ").replace(/&amp;/gi, "&").replace(/&lt;/gi, "<").replace(/&gt;/gi, ">").replace(/&#?\w+;/g, "").trim();
+        const data = XLSX.utils.sheet_to_json(ws, {header: 1, raw: false, defval: ""}).map(r => (r || []).map(clean));
+        let hIdx = -1;
+        for (let i = 0; i < Math.min(8, data.length); i++) {
+          if ((data[i] || []).some(c => String(c || "").toLowerCase().includes("pedido"))) {
             hIdx = i; break;
           }
+        }
+        const kk = tienda.replace ? tienda.replace(" ", "") : tienda;
+        if (hIdx < 0) {
+          alert("⚠ " + tienda + ": este archivo no contiene los datos del reporte de ventas.\n\nVolvé a exportar desde Fenicio el reporte completo (no el “cascarón” de exportación).");
+          setRowsFenT(p => ({...p, [kk]: []}));
+          setCargandoFenT(p => ({...p, [kk]: false}));
+          return;
         }
         const headers = data[hIdx].map(String);
         const rows = data.slice(hIdx + 1).map(r => {
@@ -3463,8 +3472,8 @@ function Operativa() {
           headers.forEach((h, i) => o[h] = r[i] || "");
           return o;
         }).filter(r => /^\d+$/.test(String(Object.values(r)[0] || "").trim()));
-        const k2 = tienda.replace ? tienda.replace(" ", "") : tienda;
-        setRowsFenT(p => ({...p, [k2]: rows}));
+        if (!rows.length) alert("⚠ " + tienda + ": no se encontraron pedidos en el archivo. Verificá que sea el reporte de ventas correcto.");
+        setRowsFenT(p => ({...p, [kk]: rows}));
       } catch (err) {
         alert("Error Fenicio: " + err.message);
       }
