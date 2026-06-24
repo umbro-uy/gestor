@@ -3440,6 +3440,11 @@ function Operativa() {
   });
   const [resultado, setResultado] = useState(null);
   const [vistaTab, setVistaTab] = useState("atrasados");
+  const [page, setPage] = useState(0);
+  const [soloCC, setSoloCC] = useState("todos"); // todos | cc | nocc
+  const [ccCol, setCcCol] = useState("");
+  const [comentarios, setComentarios] = useState({}); // pedido -> { comentario, accionado } (persistido)
+  const POR_HOJA = 50;
   const leerFenicio = tienda => e => {
     const file = e && e.target && e.target.files ? e.target.files[0] : null;
     if (!file) return;
@@ -3536,6 +3541,52 @@ function Operativa() {
     }
   };
   const ENTREGADOS = ["Pedido entregado", "Pedido entregado  a cliente"];
+  // Deriva días hábiles y banderas (atrasado/critico/etc.) a partir del snapshot de un pedido.
+  // Se usa tanto al cruzar como al recargar el seguimiento persistido, así el conteo de días se mantiene al día.
+  const calcDeriv = row => {
+    const estadoFen = row.estadoFen || "-";
+    const estadoWMS = row.estadoWMS || "-";
+    const dias = diasHab(row.fecha);
+    const diasDesp = row.fechaDespacho && row.fechaDespacho !== "-" ? diasHab(row.fechaDespacho) : null;
+    const fenEntregado = String(estadoFen).toLowerCase().includes("entregado");
+    const wmsEntregado = String(estadoWMS).toLowerCase().includes("entregado");
+    const entregado = fenEntregado || wmsEntregado;
+    const cancelado = String(estadoFen).toLowerCase().includes("cancel") || String(estadoWMS).toLowerCase().includes("cancel");
+    const despachadoWMS = String(estadoWMS).toLowerCase().includes("despach");
+    const movidoWMS = despachadoWMS || String(estadoWMS).toLowerCase().includes("recib");
+    const atrasado = !entregado && !cancelado && dias != null && dias > filtroDias && estadoFen !== "Listo para retirar";
+    const critico = !entregado && !cancelado && dias != null && dias > 10;
+    const inconsistente = fenEntregado !== wmsEntregado && !row.sinWMS;
+    const posibleNoDespacho = despachadoWMS && !fenEntregado && (diasDesp != null ? diasDesp > 2 : (dias != null && dias > 2));
+    const estancado = !row.sinWMS && !entregado && !cancelado && !movidoWMS && dias != null && dias > 2;
+    return { ...row, dias, diasDesp, fenEntregado, wmsEntregado, entregado, cancelado, despachadoWMS, atrasado, critico, inconsistente, posibleNoDespacho, estancado };
+  };
+  // Carga el seguimiento ya analizado (con comentarios) al entrar a la pestaña, para que el análisis quede fijo.
+  const cargarSeguimiento = useCallback(async () => {
+    try {
+      const { data } = await supa.from("operativa_seguimiento").select("*").order("dias", { ascending: false });
+      if (data && data.length) {
+        const cm = {};
+        data.forEach(d => { cm[d.pedido] = { comentario: d.comentario || "", accionado: !!d.accionado }; });
+        setComentarios(cm);
+        // Mostrar el seguimiento ya analizado aunque todavía no se suban archivos en esta sesión
+        setResultado(data.map(d => calcDeriv({
+          pedido: d.pedido, tienda: d.tienda || "-", fecha: d.fecha || "",
+          estadoFen: d.estado_fen || "-", estadoWMS: d.estado_wms || "-", estadoEco: d.estado_eco || "-",
+          deposito: d.deposito || "-", fechaDespacho: d.fecha_despacho || "-", importe: d.importe || "-",
+          clickCollect: !!d.click_collect, sinWMS: !!d.sin_wms,
+          comentario: d.comentario || "", accionado: !!d.accionado
+        })));
+      }
+    } catch (_) { /* tabla aún no creada: se ignora, el cruce sigue funcionando */ }
+  }, []);
+  useEffect(() => { cargarSeguimiento(); }, [cargarSeguimiento]);
+  // Guarda comentario / accionado de un pedido (no pisa el snapshot de estados) y actualiza el mapa persistido.
+  const guardarSeguimiento = async (pedido, campos) => {
+    setResultado(prev => (prev || []).map(r => r.pedido === pedido ? { ...r, ...campos } : r));
+    setComentarios(prev => ({ ...prev, [pedido]: { ...(prev[pedido] || {}), ...campos } }));
+    try { await supa.from("operativa_seguimiento").upsert({ pedido, ...campos }, { onConflict: "pedido" }); } catch (_) {}
+  };
   const cruzar = () => {
     if (!rowsA.length || !rowsB.length) {
       alert("Carga los dos archivos primero.");
@@ -3556,6 +3607,9 @@ function Operativa() {
     const colCanal = findCol(sW, [/canal/i, /tienda/i]) || "Canal";
     const colDep = findCol(sW, [/dep[oó]sito/i]) || "Deposito pedido";
     const colFechDesp = findCol(sW, [/fecha.*despach/i, /despach/i]) || "Fecha despacho";
+    // Click & Collect: columna de método/tipo de entrega en el Monitor (auto-detectada)
+    const colCC = findCol(sW, [/click.*collect/i, /retiro.*sucursal/i, /tipo.*entrega/i, /m[eé]todo.*entrega/i, /forma.*entrega/i, /tipo.*env[ií]o/i, /m[eé]todo.*env[ií]o/i, /modalidad/i, /log[ií]stica/i, /retiro/i]);
+    setCcCol(colCC || "");
 
     const wmsF = filtroTienda === "todas" ? rowsB : rowsB.filter(r => String(r[colCanal] || "").toLowerCase().includes(filtroTienda.toLowerCase()));
     const wmsMap = {};
@@ -3583,42 +3637,21 @@ function Operativa() {
       const fechaDespacho = wms ? wms[colFechDesp] || "-" : "-";
       if (filtroFecha.desde && fecha && fecha < filtroFecha.desde) return;
       if (filtroFecha.hasta && fecha && fecha > filtroFecha.hasta) return;
-      const dias = diasHab(fecha);
-      const diasDesp = fechaDespacho && fechaDespacho !== "-" ? diasHab(fechaDespacho) : null;
-      const fenEntregado = estadoFen.toLowerCase().includes("entregado");
-      const wmsEntregado = estadoWMS.toLowerCase().includes("entregado");
-      const entregado = fenEntregado || wmsEntregado;
-      const cancelado = estadoFen.toLowerCase().includes("cancel") || estadoWMS.toLowerCase().includes("cancel");
-      const despachadoWMS = estadoWMS.toLowerCase().includes("despach");
-      const movidoWMS = despachadoWMS || estadoWMS.toLowerCase().includes("recib");
-      const atrasado = !entregado && !cancelado && dias != null && dias > filtroDias && estadoFen !== "Listo para retirar";
-      const critico = !entregado && !cancelado && dias != null && dias > 10;
-      const inconsistente = fenEntregado !== wmsEntregado && wms != null;
-      // Trazabilidad: despachado en WMS pero Fenicio no lo da por entregado y ya pasaron +2 días hábiles del despacho
-      const posibleNoDespacho = despachadoWMS && !fenEntregado && (diasDesp != null ? diasDesp > 2 : (dias != null && dias > 2));
-      // Estancado: aún no avanzó a despacho en el WMS y pasaron +2 días hábiles (señal para rederivar de depósito)
-      const estancado = wms != null && !entregado && !cancelado && !movidoWMS && dias != null && dias > 2;
-      res.push({
+      const ccVal = wms && colCC ? String(wms[colCC] || "") : "";
+      const clickCollect = /retir|collect|pick.?up|sucursal|en\s*tienda|\blocal\b/i.test(ccVal) || /retirar|retiro/i.test(String(estadoFen));
+      res.push(calcDeriv({
         pedido,
         tienda: r._tiendaFen || "-",
-        fecha: fecha.slice(0, 16).replace("T", " "),
+        fecha: String(fecha).slice(0, 16).replace("T", " "),
         estadoFen,
         estadoWMS,
         estadoEco,
         deposito,
         fechaDespacho,
-        dias,
-        diasDesp,
-        atrasado,
-        critico,
-        inconsistente,
-        posibleNoDespacho,
-        estancado,
-        entregado,
-        cancelado,
         importe,
+        clickCollect,
         sinWMS: !wms
-      });
+      }));
     });
     const matchCount = res.filter(r => !r.sinWMS).length;
     if (res.length === 0) {
@@ -3626,9 +3659,31 @@ function Operativa() {
     } else if (matchCount === 0) {
       alert("Se leyeron " + res.length + " pedidos de Fenicio pero ninguno coincidió con la columna \"" + colVenta + "\" del Monitor de Encuentra.\n\nVerificá que el N° de pedido de Fenicio corresponda a la columna Venta del Monitor.");
     }
-    res.sort((a, b) => (b.dias || 0) - (a.dias || 0));
-    setResultado(res);
+    // ── Enriquecer cada pedido con su comentario/accionado persistido (no se pierden al recruzar) ──
+    const relevante = r => r.atrasado || r.critico || r.posibleNoDespacho || r.estancado || r.inconsistente;
+    const merged = res.map(r => {
+      const c = comentarios[r.pedido] || {};
+      return { ...r, comentario: c.comentario || "", accionado: !!c.accionado };
+    });
+    merged.sort((a, b) => (b.dias || 0) - (a.dias || 0));
+    setResultado(merged);
     setVistaTab("atrasados");
+    setPage(0);
+    // Persistir SOLO los pedidos accionables (snapshot); no pisa comentario/accionado existentes
+    const aSeguir = merged.filter(relevante);
+    (async () => {
+      try {
+        const payload = aSeguir.map(r => ({
+          pedido: r.pedido, tienda: r.tienda, fecha: r.fecha,
+          estado_fen: r.estadoFen, estado_wms: r.estadoWMS, estado_eco: r.estadoEco,
+          deposito: r.deposito, fecha_despacho: r.fechaDespacho, importe: String(r.importe),
+          dias: r.dias, click_collect: !!r.clickCollect, sin_wms: !!r.sinWMS
+        }));
+        for (let i = 0; i < payload.length; i += 200) {
+          await supa.from("operativa_seguimiento").upsert(payload.slice(i, i + 200), { onConflict: "pedido" });
+        }
+      } catch (_) {}
+    })();
     // Actualizar KPIs globales automáticamente
     const atrasadosCount = res.filter(r => r.atrasado).length;
     const depo0Count = wmsF.filter(r => r[colEstEnc] === "Items Pedidos").length;
@@ -3665,10 +3720,11 @@ function Operativa() {
         "Nro. pedido": r.pedido, "Tienda": r.tienda, "Fecha compra": r.fecha,
         "Estado Fenicio": r.estadoFen, "Estado WMS": r.estadoWMS, "Estado Eco": r.estadoEco,
         "Dias habiles": r.dias, "Deposito": r.deposito, "Fecha despacho": r.fechaDespacho,
-        "Importe": r.importe,
+        "Importe": r.importe, "Click & Collect": r.clickCollect ? "Si" : "",
         "Atrasado": r.atrasado ? "Si" : "", "Critico": r.critico ? "Si" : "",
         "Posible no despacho": r.posibleNoDespacho ? "Si" : "", "Estancado": r.estancado ? "Si" : "",
-        "Inconsistente": r.inconsistente ? "Si" : "", "Entregado": r.entregado ? "Si" : ""
+        "Inconsistente": r.inconsistente ? "Si" : "", "Entregado": r.entregado ? "Si" : "",
+        "Accionado": r.accionado ? "Si" : "", "Comentario / accion": r.comentario || ""
       }));
       const ws = XLSX.utils.json_to_sheet(limpias);
       const wb = XLSX.utils.book_new();
@@ -3696,7 +3752,11 @@ function Operativa() {
     cuerpo += "Por favor procesar/confirmar/despachar cuanto antes.\n\nGracias.";
     window.location.href = "mailto:" + encodeURIComponent(dest) + "?subject=" + encodeURIComponent(asunto) + "&body=" + encodeURIComponent(cuerpo);
   };
-  const vistaRows = vistaTab === "criticos" ? criticos : vistaTab === "inconsistencias" ? inconsistentes : vistaTab === "nodespacho" ? noDespacho : vistaTab === "estancados" ? estancados : vistaTab === "sinwms" ? sinWMS : vistaTab === "todos" ? (resultado || []) : atrasados;
+  const vistaBase = vistaTab === "criticos" ? criticos : vistaTab === "inconsistencias" ? inconsistentes : vistaTab === "nodespacho" ? noDespacho : vistaTab === "estancados" ? estancados : vistaTab === "sinwms" ? sinWMS : vistaTab === "todos" ? (resultado || []) : atrasados;
+  const vistaRows = soloCC === "cc" ? vistaBase.filter(r => r.clickCollect) : soloCC === "nocc" ? vistaBase.filter(r => !r.clickCollect) : vistaBase;
+  const totalPaginas = Math.max(1, Math.ceil(vistaRows.length / POR_HOJA));
+  const pageSafe = Math.min(page, totalPaginas - 1);
+  const pageRows = vistaRows.slice(pageSafe * POR_HOJA, pageSafe * POR_HOJA + POR_HOJA);
   const Vacio = ({ msg }) => /*#__PURE__*/React.createElement("div", { className: "bg-white rounded-2xl border p-6 text-sm text-center", style: { borderColor: C.line, color: C.green } }, msg);
   const TabBtn = ({
     id,
@@ -3704,7 +3764,7 @@ function Operativa() {
     count,
     color
   }) => /*#__PURE__*/React.createElement("button", {
-    onClick: () => setVistaTab(id),
+    onClick: () => { setVistaTab(id); setPage(0); },
     className: "flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold transition-colors",
     style: {
       background: vistaTab === id ? color : "#EEF1F5",
@@ -3717,107 +3777,26 @@ function Operativa() {
       fontSize: 10
     }
   }, count));
-  const Tabla = ({
-    rows
-  }) => /*#__PURE__*/React.createElement("div", {
-    className: "bg-white rounded-2xl border overflow-hidden",
-    style: {
-      borderColor: C.line
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "overflow-x-auto"
-  }, /*#__PURE__*/React.createElement("table", {
-    className: "w-full min-w-[700px]",
-    style: {
-      fontSize: 12
-    }
-  }, /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", {
-    style: {
-      background: "#F6F7F9"
-    }
-  }, ["Pedido", "Tienda", "Fecha compra", "Estado Fenicio", "Estado WMS", "Estado Eco", "Dias hab.", "Deposito"].map(h => /*#__PURE__*/React.createElement("th", {
-    key: h,
-    className: "px-3 py-2 text-left font-bold uppercase",
-    style: {
-      color: C.gray,
-      fontSize: 10,
-      whiteSpace: "nowrap"
-    }
-  }, h)))), /*#__PURE__*/React.createElement("tbody", null, rows.slice(0, 200).map((r, i) => /*#__PURE__*/React.createElement("tr", {
-    key: i,
-    style: {
-      borderTop: "1px solid " + C.line,
-      background: r.atrasado ? "#FFF5F5" : r.inconsistente ? "#FFFBEB" : "#fff"
-    }
-  }, /*#__PURE__*/React.createElement("td", {
-    className: "px-3 py-2 font-bold tabular-nums"
-  }, r.pedido), /*#__PURE__*/React.createElement("td", {
-    className: "px-3 py-2 text-xs font-semibold",
-    style: {color: C.gray}
-  }, r.tienda), /*#__PURE__*/React.createElement("td", {
-    className: "px-3 py-2",
-    style: {
-      color: C.gray,
-      whiteSpace: "nowrap"
-    }
-  }, r.fecha), /*#__PURE__*/React.createElement("td", {
-    className: "px-3 py-2"
-  }, /*#__PURE__*/React.createElement("span", {
-    style: {
-      background: r.entregado ? C.greenS : C.soft,
-      color: r.entregado ? C.green : C.blue,
-      padding: "2px 6px",
-      borderRadius: 6,
-      fontSize: 10,
-      fontWeight: 600,
-      whiteSpace: "nowrap"
-    }
-  }, r.estadoFen)), /*#__PURE__*/React.createElement("td", {
-    className: "px-3 py-2"
-  }, /*#__PURE__*/React.createElement("span", {
-    style: {
-      background: r.sinWMS ? C.amberS : r.inconsistente ? C.amberS : "#F1F4F8",
-      color: r.sinWMS ? C.amber : r.inconsistente ? C.amber : C.gray,
-      padding: "2px 6px",
-      borderRadius: 6,
-      fontSize: 10,
-      fontWeight: 600,
-      whiteSpace: "nowrap"
-    }
-  }, r.estadoWMS)), /*#__PURE__*/React.createElement("td", {
-    className: "px-3 py-2",
-    style: {
-      color: C.gray,
-      fontSize: 10,
-      whiteSpace: "nowrap"
-    }
-  }, r.estadoEco), /*#__PURE__*/React.createElement("td", {
-    className: "px-3 py-2"
-  }, /*#__PURE__*/React.createElement("span", {
-    style: {
-      fontWeight: 700,
-      color: r.atrasado ? C.red : r.dias > 1 ? C.amber : C.gray
-    }
-  }, r.dias != null ? r.dias : "—"), r.atrasado && /*#__PURE__*/React.createElement("span", {
-    style: {
-      color: C.red
-    }
-  }, " ⚠")), /*#__PURE__*/React.createElement("td", {
-    className: "px-3 py-2",
-    style: {
-      color: C.gray,
-      fontSize: 10,
-      maxWidth: 100,
-      overflow: "hidden",
-      textOverflow: "ellipsis",
-      whiteSpace: "nowrap"
-    }
-  }, r.deposito)))))), rows.length > 200 && /*#__PURE__*/React.createElement("div", {
-    className: "px-4 py-2 text-xs text-center",
-    style: {
-      color: C.gray
-    }
-  }, "Mostrando 200 de ", rows.length, ". Usá filtros de fecha para acotar."));
+  const Tabla = ({ rows }) => /*#__PURE__*/React.createElement("div", {
+    className: "bg-white rounded-2xl border overflow-hidden", style: { borderColor: C.line }
+  }, /*#__PURE__*/React.createElement("div", { className: "overflow-x-auto" }, /*#__PURE__*/React.createElement("table", {
+    className: "w-full min-w-[940px]", style: { fontSize: 12 }
+  }, /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", { style: { background: "#F6F7F9" } },
+    ["Pedido", "Tienda", "Fecha compra", "Estado Fenicio", "Estado WMS", "Dias hab.", "Deposito", "C&C", "Acc.", "Comentario / acción"].map(h => /*#__PURE__*/React.createElement("th", {
+      key: h, className: "px-3 py-2 text-left font-bold uppercase", style: { color: C.gray, fontSize: 10, whiteSpace: "nowrap" }
+    }, h)))), /*#__PURE__*/React.createElement("tbody", null, rows.map((r, i) => /*#__PURE__*/React.createElement("tr", {
+    key: r.pedido || i,
+    style: { borderTop: "1px solid " + C.line, background: r.accionado ? "#F0FDF4" : r.atrasado ? "#FFF5F5" : r.inconsistente ? "#FFFBEB" : "#fff" }
+  }, /*#__PURE__*/React.createElement("td", { className: "px-3 py-2 font-bold tabular-nums" }, r.pedido),
+    /*#__PURE__*/React.createElement("td", { className: "px-3 py-2 text-xs font-semibold", style: { color: C.gray } }, r.tienda),
+    /*#__PURE__*/React.createElement("td", { className: "px-3 py-2", style: { color: C.gray, whiteSpace: "nowrap" } }, r.fecha),
+    /*#__PURE__*/React.createElement("td", { className: "px-3 py-2" }, /*#__PURE__*/React.createElement("span", { style: { background: r.entregado ? C.greenS : C.soft, color: r.entregado ? C.green : C.blue, padding: "2px 6px", borderRadius: 6, fontSize: 10, fontWeight: 600, whiteSpace: "nowrap" } }, r.estadoFen)),
+    /*#__PURE__*/React.createElement("td", { className: "px-3 py-2" }, /*#__PURE__*/React.createElement("span", { style: { background: r.sinWMS ? C.amberS : r.inconsistente ? C.amberS : "#F1F4F8", color: r.sinWMS ? C.amber : r.inconsistente ? C.amber : C.gray, padding: "2px 6px", borderRadius: 6, fontSize: 10, fontWeight: 600, whiteSpace: "nowrap" } }, r.estadoWMS)),
+    /*#__PURE__*/React.createElement("td", { className: "px-3 py-2" }, /*#__PURE__*/React.createElement("span", { style: { fontWeight: 700, color: r.atrasado ? C.red : r.dias > 1 ? C.amber : C.gray } }, r.dias != null ? r.dias : "—"), r.atrasado && /*#__PURE__*/React.createElement("span", { style: { color: C.red } }, " ⚠")),
+    /*#__PURE__*/React.createElement("td", { className: "px-3 py-2", style: { color: C.gray, fontSize: 10, maxWidth: 100, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, r.deposito),
+    /*#__PURE__*/React.createElement("td", { className: "px-3 py-2" }, r.clickCollect ? /*#__PURE__*/React.createElement("span", { style: { background: "#EDE9FE", color: "#6D28D9", padding: "2px 6px", borderRadius: 6, fontSize: 10, fontWeight: 700, whiteSpace: "nowrap" } }, "C&C") : ""),
+    /*#__PURE__*/React.createElement("td", { className: "px-3 py-2 text-center" }, /*#__PURE__*/React.createElement("input", { type: "checkbox", checked: !!r.accionado, onChange: e => guardarSeguimiento(r.pedido, { accionado: e.target.checked }), title: "Marcar como accionado" })),
+    /*#__PURE__*/React.createElement("td", { className: "px-3 py-2" }, /*#__PURE__*/React.createElement("input", { type: "text", defaultValue: r.comentario || "", placeholder: "Anotar acción…", onBlur: e => { if (e.target.value !== (r.comentario || "")) guardarSeguimiento(r.pedido, { comentario: e.target.value }); }, className: "px-2 py-1 rounded-lg border text-xs", style: { borderColor: C.line, minWidth: 180, width: "100%" } }))))))));
   return /*#__PURE__*/React.createElement("div", {
     className: "space-y-6"
   }, /*#__PURE__*/React.createElement(Title, {
@@ -4107,17 +4086,25 @@ function Operativa() {
     /*#__PURE__*/React.createElement(TabBtn, { id: "inconsistencias", label: "Inconsistentes", count: inconsistentes.length, color: C.amber }),
     sinWMS.length > 0 && /*#__PURE__*/React.createElement(TabBtn, { id: "sinwms", label: "Sin WMS", count: sinWMS.length, color: "#7C3AED" }),
     /*#__PURE__*/React.createElement(TabBtn, { id: "todos", label: "Todos", count: (resultado || []).length, color: C.blue })
-  ), /*#__PURE__*/React.createElement("div", { className: "flex gap-2 shrink-0" },
+  ), /*#__PURE__*/React.createElement("div", { className: "flex gap-2 shrink-0 items-center" },
+    /*#__PURE__*/React.createElement("select", { value: soloCC, onChange: e => { setSoloCC(e.target.value); setPage(0); }, className: "text-xs font-bold px-2 py-2 rounded-xl border bg-white", style: { borderColor: C.line, color: C.gray } },
+      /*#__PURE__*/React.createElement("option", { value: "todos" }, "Todos los envíos"),
+      /*#__PURE__*/React.createElement("option", { value: "cc" }, "Solo Click & Collect"),
+      /*#__PURE__*/React.createElement("option", { value: "nocc" }, "Sin Click & Collect")),
     /*#__PURE__*/React.createElement("button", { onClick: () => exportarOper(vistaRows, "operativa-" + vistaTab), className: "text-xs font-bold px-3 py-2 rounded-xl", style: { background: C.soft, color: C.blue } }, "⬇ Exportar vista"),
     /*#__PURE__*/React.createElement("button", { onClick: () => alertarTienda(vistaRows, vistaTab), className: "text-xs font-bold px-3 py-2 rounded-xl text-white", style: { background: C.amber } }, "✉ Alertar por mail")
   )),
-  vistaTab === "atrasados" && (atrasados.length > 0 ? /*#__PURE__*/React.createElement(Tabla, { rows: atrasados }) : /*#__PURE__*/React.createElement(Vacio, { msg: "No hay pedidos atrasados para este periodo." })),
-  vistaTab === "criticos" && (criticos.length > 0 ? /*#__PURE__*/React.createElement(Tabla, { rows: criticos }) : /*#__PURE__*/React.createElement(Vacio, { msg: "No hay pedidos críticos (+10 días hábiles)." })),
-  vistaTab === "nodespacho" && (noDespacho.length > 0 ? /*#__PURE__*/React.createElement(Tabla, { rows: noDespacho }) : /*#__PURE__*/React.createElement(Vacio, { msg: "No hay pedidos despachados en WMS que sigan sin entregar en Fenicio." })),
-  vistaTab === "estancados" && (estancados.length > 0 ? /*#__PURE__*/React.createElement(Tabla, { rows: estancados }) : /*#__PURE__*/React.createElement(Vacio, { msg: "No hay pedidos estancados (+2 días hábiles sin avanzar en el WMS)." })),
-  vistaTab === "inconsistencias" && (inconsistentes.length > 0 ? /*#__PURE__*/React.createElement(Tabla, { rows: inconsistentes }) : /*#__PURE__*/React.createElement(Vacio, { msg: "Todos los estados coinciden." })),
-  vistaTab === "sinwms" && /*#__PURE__*/React.createElement(Tabla, { rows: sinWMS }),
-  vistaTab === "todos" && /*#__PURE__*/React.createElement(Tabla, { rows: resultado || [] })));
+  /*#__PURE__*/React.createElement("div", { className: "flex items-center justify-between flex-wrap gap-2 px-1" },
+    /*#__PURE__*/React.createElement("div", { className: "text-[11px]", style: { color: C.gray } }, vistaRows.length + " pedido(s) en esta vista" + (ccCol ? " · Click & Collect detectado por la columna “" + ccCol + "”" : " · Click & Collect detectado por estado “Listo para retirar”")),
+    totalPaginas > 1 && /*#__PURE__*/React.createElement("div", { className: "flex items-center gap-2" },
+      /*#__PURE__*/React.createElement("button", { onClick: () => setPage(p => Math.max(0, p - 1)), disabled: pageSafe <= 0, className: "text-xs font-bold px-3 py-1.5 rounded-lg disabled:opacity-40", style: { background: "#EEF1F5", color: C.gray } }, "← Anterior"),
+      /*#__PURE__*/React.createElement("span", { className: "text-xs font-bold", style: { color: C.gray } }, "Hoja " + (pageSafe + 1) + " / " + totalPaginas),
+      /*#__PURE__*/React.createElement("button", { onClick: () => setPage(p => Math.min(totalPaginas - 1, p + 1)), disabled: pageSafe >= totalPaginas - 1, className: "text-xs font-bold px-3 py-1.5 rounded-lg disabled:opacity-40", style: { background: "#EEF1F5", color: C.gray } }, "Siguiente →"))),
+  vistaRows.length > 0 ? /*#__PURE__*/React.createElement(Tabla, { rows: pageRows }) : /*#__PURE__*/React.createElement(Vacio, { msg: vistaTab === "criticos" ? "No hay pedidos críticos (+10 días hábiles)." : vistaTab === "nodespacho" ? "No hay pedidos despachados en WMS que sigan sin entregar en Fenicio." : vistaTab === "estancados" ? "No hay pedidos estancados (+2 días hábiles sin avanzar en el WMS)." : vistaTab === "inconsistencias" ? "Todos los estados coinciden." : vistaTab === "atrasados" ? "No hay pedidos atrasados para este periodo." : "No hay pedidos en esta vista." }),
+  totalPaginas > 1 && /*#__PURE__*/React.createElement("div", { className: "flex items-center justify-center gap-3 pt-1" },
+    /*#__PURE__*/React.createElement("button", { onClick: () => setPage(p => Math.max(0, p - 1)), disabled: pageSafe <= 0, className: "text-xs font-bold px-3 py-1.5 rounded-lg disabled:opacity-40", style: { background: "#EEF1F5", color: C.gray } }, "← Anterior"),
+    /*#__PURE__*/React.createElement("span", { className: "text-xs font-bold", style: { color: C.gray } }, "Hoja " + (pageSafe + 1) + " / " + totalPaginas),
+    /*#__PURE__*/React.createElement("button", { onClick: () => setPage(p => Math.min(totalPaginas - 1, p + 1)), disabled: pageSafe >= totalPaginas - 1, className: "text-xs font-bold px-3 py-1.5 rounded-lg disabled:opacity-40", style: { background: "#EEF1F5", color: C.gray } }, "Siguiente →"))));
 }
 
 /* ── App root ── */
