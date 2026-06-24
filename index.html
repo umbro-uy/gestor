@@ -3579,11 +3579,20 @@ function Operativa() {
       if (filtroFecha.desde && fecha && fecha < filtroFecha.desde) return;
       if (filtroFecha.hasta && fecha && fecha > filtroFecha.hasta) return;
       const dias = diasHab(fecha);
-      const entregado = ENTREGADOS.some(s => estadoFen.includes("entregado") || estadoWMS.includes("entregado"));
-      const atrasado = !entregado && dias != null && dias > filtroDias && estadoFen !== "Listo para retirar";
+      const diasDesp = fechaDespacho && fechaDespacho !== "-" ? diasHab(fechaDespacho) : null;
       const fenEntregado = estadoFen.toLowerCase().includes("entregado");
       const wmsEntregado = estadoWMS.toLowerCase().includes("entregado");
+      const entregado = fenEntregado || wmsEntregado;
+      const cancelado = estadoFen.toLowerCase().includes("cancel") || estadoWMS.toLowerCase().includes("cancel");
+      const despachadoWMS = estadoWMS.toLowerCase().includes("despach");
+      const movidoWMS = despachadoWMS || estadoWMS.toLowerCase().includes("recib");
+      const atrasado = !entregado && !cancelado && dias != null && dias > filtroDias && estadoFen !== "Listo para retirar";
+      const critico = !entregado && !cancelado && dias != null && dias > 10;
       const inconsistente = fenEntregado !== wmsEntregado && wms != null;
+      // Trazabilidad: despachado en WMS pero Fenicio no lo da por entregado y ya pasaron +2 días hábiles del despacho
+      const posibleNoDespacho = despachadoWMS && !fenEntregado && (diasDesp != null ? diasDesp > 2 : (dias != null && dias > 2));
+      // Estancado: aún no avanzó a despacho en el WMS y pasaron +2 días hábiles (señal para rederivar de depósito)
+      const estancado = wms != null && !entregado && !cancelado && !movidoWMS && dias != null && dias > 2;
       res.push({
         pedido,
         tienda: r._tiendaFen || "-",
@@ -3594,9 +3603,14 @@ function Operativa() {
         deposito,
         fechaDespacho,
         dias,
+        diasDesp,
         atrasado,
+        critico,
         inconsistente,
+        posibleNoDespacho,
+        estancado,
         entregado,
+        cancelado,
         importe,
         sinWMS: !wms
       });
@@ -3631,8 +3645,54 @@ function Operativa() {
     })();
   };
   const atrasados = resultado ? resultado.filter(r => r.atrasado) : [];
+  const criticos = resultado ? resultado.filter(r => r.critico) : [];
   const inconsistentes = resultado ? resultado.filter(r => r.inconsistente) : [];
+  const noDespacho = resultado ? resultado.filter(r => r.posibleNoDespacho) : [];
+  const estancados = resultado ? resultado.filter(r => r.estancado) : [];
   const sinWMS = resultado ? resultado.filter(r => r.sinWMS) : [];
+  const entregadosArr = resultado ? resultado.filter(r => r.entregado) : [];
+  const tasaCumpl = resultado && resultado.length ? Math.round(entregadosArr.length / resultado.length * 100) : 0;
+  // Exportar a Excel (disponible en cualquier vista)
+  const exportarOper = (rows, nombre) => {
+    if (!rows || !rows.length) { alert("No hay datos para exportar en esta vista."); return; }
+    try {
+      const limpias = rows.map(r => ({
+        "Nro. pedido": r.pedido, "Tienda": r.tienda, "Fecha compra": r.fecha,
+        "Estado Fenicio": r.estadoFen, "Estado WMS": r.estadoWMS, "Estado Eco": r.estadoEco,
+        "Dias habiles": r.dias, "Deposito": r.deposito, "Fecha despacho": r.fechaDespacho,
+        "Importe": r.importe,
+        "Atrasado": r.atrasado ? "Si" : "", "Critico": r.critico ? "Si" : "",
+        "Posible no despacho": r.posibleNoDespacho ? "Si" : "", "Estancado": r.estancado ? "Si" : "",
+        "Inconsistente": r.inconsistente ? "Si" : "", "Entregado": r.entregado ? "Si" : ""
+      }));
+      const ws = XLSX.utils.json_to_sheet(limpias);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "Operativa");
+      XLSX.writeFile(wb, nombre + "-" + new Date().toISOString().slice(0, 10) + ".xlsx");
+    } catch (e) { alert("Error al exportar: " + e.message); }
+  };
+  // Alerta por mail (mailto pre-armado) para empujar a una tienda
+  const MAILS_TIENDA = { "TimeOut": "", "Tienda Nacional": "", "Classico": "" };
+  const alertarTienda = (rows, etiqueta) => {
+    if (!rows || !rows.length) { alert("No hay pedidos para alertar en esta vista."); return; }
+    const porTienda = {};
+    rows.forEach(r => { (porTienda[r.tienda] = porTienda[r.tienda] || []).push(r); });
+    const tiendasAfectadas = Object.keys(porTienda);
+    const dest = tiendasAfectadas.map(t => MAILS_TIENDA[t]).filter(Boolean).join(",");
+    const asunto = "[Gestor] " + etiqueta + " — " + rows.length + " pedido(s) requieren acción";
+    let cuerpo = "Hola,\n\nDetectamos los siguientes pedidos que necesitan acción (" + etiqueta + "):\n\n";
+    tiendasAfectadas.forEach(t => {
+      cuerpo += "— " + t + " (" + porTienda[t].length + "):\n";
+      porTienda[t].slice(0, 50).forEach(r => {
+        cuerpo += "   • Pedido " + r.pedido + " | Fenicio: " + r.estadoFen + " | WMS: " + r.estadoWMS + " | " + (r.dias != null ? r.dias + " días háb." : "") + "\n";
+      });
+      cuerpo += "\n";
+    });
+    cuerpo += "Por favor procesar/confirmar/despachar cuanto antes.\n\nGracias.";
+    window.location.href = "mailto:" + encodeURIComponent(dest) + "?subject=" + encodeURIComponent(asunto) + "&body=" + encodeURIComponent(cuerpo);
+  };
+  const vistaRows = vistaTab === "criticos" ? criticos : vistaTab === "inconsistencias" ? inconsistentes : vistaTab === "nodespacho" ? noDespacho : vistaTab === "estancados" ? estancados : vistaTab === "sinwms" ? sinWMS : vistaTab === "todos" ? (resultado || []) : atrasados;
+  const Vacio = ({ msg }) => /*#__PURE__*/React.createElement("div", { className: "bg-white rounded-2xl border p-6 text-sm text-center", style: { borderColor: C.line, color: C.green } }, msg);
   const TabBtn = ({
     id,
     label,
@@ -4011,55 +4071,48 @@ function Operativa() {
     style: {
       color: C.green
     }
-  }, resultado.filter(r => r.entregado).length))), inconsistentes.length > 0 && /*#__PURE__*/React.createElement("div", {
+  }, resultado.filter(r => r.entregado).length)),
+  /*#__PURE__*/React.createElement("div", { className: "bg-white rounded-2xl border p-4", style: { borderColor: C.greenS } },
+    /*#__PURE__*/React.createElement("div", { className: "text-xs font-bold uppercase mb-1", style: { color: C.gray } }, "Tasa cumplimiento"),
+    /*#__PURE__*/React.createElement("div", { className: "text-3xl font-black fraunces", style: { color: tasaCumpl >= 90 ? C.green : tasaCumpl >= 70 ? C.amber : C.red } }, tasaCumpl + "%"),
+    /*#__PURE__*/React.createElement("div", { className: "text-xs mt-0.5", style: { color: C.gray } }, entregadosArr.length + " de " + resultado.length)),
+  /*#__PURE__*/React.createElement("div", { className: "bg-white rounded-2xl border p-4", style: { borderColor: C.redS } },
+    /*#__PURE__*/React.createElement("div", { className: "text-xs font-bold uppercase mb-1", style: { color: C.gray } }, "Críticos +10d háb."),
+    /*#__PURE__*/React.createElement("div", { className: "text-3xl font-black fraunces", style: { color: C.red } }, criticos.length)),
+  /*#__PURE__*/React.createElement("div", { className: "bg-white rounded-2xl border p-4", style: { borderColor: "#FCD34D" } },
+    /*#__PURE__*/React.createElement("div", { className: "text-xs font-bold uppercase mb-1", style: { color: C.gray } }, "Posible no-despacho"),
+    /*#__PURE__*/React.createElement("div", { className: "text-3xl font-black fraunces", style: { color: "#B45309" } }, noDespacho.length),
+    /*#__PURE__*/React.createElement("div", { className: "text-xs mt-0.5", style: { color: C.gray } }, "Despachado WMS, sin entregar")),
+  /*#__PURE__*/React.createElement("div", { className: "bg-white rounded-2xl border p-4", style: { borderColor: C.amberS } },
+    /*#__PURE__*/React.createElement("div", { className: "text-xs font-bold uppercase mb-1", style: { color: C.gray } }, "Estancados >2d"),
+    /*#__PURE__*/React.createElement("div", { className: "text-3xl font-black fraunces", style: { color: C.amber } }, estancados.length),
+    /*#__PURE__*/React.createElement("div", { className: "text-xs mt-0.5", style: { color: C.gray } }, "Sin avanzar en WMS"))), inconsistentes.length > 0 && /*#__PURE__*/React.createElement("div", {
     className: "rounded-xl px-4 py-3 text-xs font-medium",
     style: {
       background: C.amberS,
       color: C.amber
     }
   }, "Hay ", inconsistentes.length, " pedidos donde Fenicio y el WMS no coinciden en si fue entregado o no. Esos necesitan validacion manual."), /*#__PURE__*/React.createElement("div", {
-    className: "flex gap-2 flex-wrap"
-  }, /*#__PURE__*/React.createElement(TabBtn, {
-    id: "atrasados",
-    label: "Atrasados",
-    count: atrasados.length,
-    color: C.red
-  }), /*#__PURE__*/React.createElement(TabBtn, {
-    id: "inconsistencias",
-    label: "Inconsistentes",
-    count: inconsistentes.length,
-    color: C.amber
-  }), sinWMS.length > 0 && /*#__PURE__*/React.createElement(TabBtn, {
-    id: "sinwms",
-    label: "Sin WMS",
-    count: sinWMS.length,
-    color: "#7C3AED"
-  }), /*#__PURE__*/React.createElement(TabBtn, {
-    id: "todos",
-    label: "Todos",
-    count: resultado.length,
-    color: C.blue
-  })), vistaTab === "atrasados" && (atrasados.length > 0 ? /*#__PURE__*/React.createElement(Tabla, {
-    rows: atrasados
-  }) : /*#__PURE__*/React.createElement("div", {
-    className: "bg-white rounded-2xl border p-6 text-sm text-center",
-    style: {
-      borderColor: C.line,
-      color: C.green
-    }
-  }, "No hay pedidos atrasados para este periodo.")), vistaTab === "inconsistencias" && (inconsistentes.length > 0 ? /*#__PURE__*/React.createElement(Tabla, {
-    rows: inconsistentes
-  }) : /*#__PURE__*/React.createElement("div", {
-    className: "bg-white rounded-2xl border p-6 text-sm text-center",
-    style: {
-      borderColor: C.line,
-      color: C.green
-    }
-  }, "Todos los estados coinciden.")), vistaTab === "sinwms" && /*#__PURE__*/React.createElement(Tabla, {
-    rows: sinWMS
-  }), vistaTab === "todos" && /*#__PURE__*/React.createElement(Tabla, {
-    rows: resultado
-  })));
+    className: "flex gap-2 flex-wrap items-center justify-between"
+  }, /*#__PURE__*/React.createElement("div", { className: "flex gap-2 flex-wrap" },
+    /*#__PURE__*/React.createElement(TabBtn, { id: "atrasados", label: "Atrasados", count: atrasados.length, color: C.red }),
+    /*#__PURE__*/React.createElement(TabBtn, { id: "criticos", label: "Críticos", count: criticos.length, color: "#B91C1C" }),
+    /*#__PURE__*/React.createElement(TabBtn, { id: "nodespacho", label: "No-despacho", count: noDespacho.length, color: "#B45309" }),
+    /*#__PURE__*/React.createElement(TabBtn, { id: "estancados", label: "Estancados", count: estancados.length, color: C.amber }),
+    /*#__PURE__*/React.createElement(TabBtn, { id: "inconsistencias", label: "Inconsistentes", count: inconsistentes.length, color: C.amber }),
+    sinWMS.length > 0 && /*#__PURE__*/React.createElement(TabBtn, { id: "sinwms", label: "Sin WMS", count: sinWMS.length, color: "#7C3AED" }),
+    /*#__PURE__*/React.createElement(TabBtn, { id: "todos", label: "Todos", count: (resultado || []).length, color: C.blue })
+  ), /*#__PURE__*/React.createElement("div", { className: "flex gap-2 shrink-0" },
+    /*#__PURE__*/React.createElement("button", { onClick: () => exportarOper(vistaRows, "operativa-" + vistaTab), className: "text-xs font-bold px-3 py-2 rounded-xl", style: { background: C.soft, color: C.blue } }, "⬇ Exportar vista"),
+    /*#__PURE__*/React.createElement("button", { onClick: () => alertarTienda(vistaRows, vistaTab), className: "text-xs font-bold px-3 py-2 rounded-xl text-white", style: { background: C.amber } }, "✉ Alertar por mail")
+  )),
+  vistaTab === "atrasados" && (atrasados.length > 0 ? /*#__PURE__*/React.createElement(Tabla, { rows: atrasados }) : /*#__PURE__*/React.createElement(Vacio, { msg: "No hay pedidos atrasados para este periodo." })),
+  vistaTab === "criticos" && (criticos.length > 0 ? /*#__PURE__*/React.createElement(Tabla, { rows: criticos }) : /*#__PURE__*/React.createElement(Vacio, { msg: "No hay pedidos críticos (+10 días hábiles)." })),
+  vistaTab === "nodespacho" && (noDespacho.length > 0 ? /*#__PURE__*/React.createElement(Tabla, { rows: noDespacho }) : /*#__PURE__*/React.createElement(Vacio, { msg: "No hay pedidos despachados en WMS que sigan sin entregar en Fenicio." })),
+  vistaTab === "estancados" && (estancados.length > 0 ? /*#__PURE__*/React.createElement(Tabla, { rows: estancados }) : /*#__PURE__*/React.createElement(Vacio, { msg: "No hay pedidos estancados (+2 días hábiles sin avanzar en el WMS)." })),
+  vistaTab === "inconsistencias" && (inconsistentes.length > 0 ? /*#__PURE__*/React.createElement(Tabla, { rows: inconsistentes }) : /*#__PURE__*/React.createElement(Vacio, { msg: "Todos los estados coinciden." })),
+  vistaTab === "sinwms" && /*#__PURE__*/React.createElement(Tabla, { rows: sinWMS }),
+  vistaTab === "todos" && /*#__PURE__*/React.createElement(Tabla, { rows: resultado || [] })));
 }
 
 /* ── App root ── */
