@@ -964,28 +964,31 @@ function Panel({
     style: {
       color: C.gray
     }
-  }, "Cargando datos…") : /*#__PURE__*/React.createElement(React.Fragment, null, tab === "resumen" && /*#__PURE__*/React.createElement(Resumen, {
+  }, "Cargando datos…") : /*#__PURE__*/React.createElement(React.Fragment, null,
+    // Cada pestaña se mantiene montada (display:none cuando no está activa) para
+    // no perder el estado/análisis al cambiar de pestaña.
+    /*#__PURE__*/React.createElement("div", { style: { display: tab === "resumen" ? "block" : "none" } }, /*#__PURE__*/React.createElement(Resumen, {
     data: data,
     setTab: setTab,
     esAdmin: esAdmin,
     recargar: cargar
-  }), tab === "tareas" && /*#__PURE__*/React.createElement(Tareas, {
+  })), /*#__PURE__*/React.createElement("div", { style: { display: tab === "tareas" ? "block" : "none" } }, /*#__PURE__*/React.createElement(Tareas, {
     data: data,
     recargar: cargar,
     esAdmin: esAdmin
-  }), tab === "equipo" && /*#__PURE__*/React.createElement(Equipo, {
+  })), /*#__PURE__*/React.createElement("div", { style: { display: tab === "equipo" ? "block" : "none" } }, /*#__PURE__*/React.createElement(Equipo, {
     data: data,
     recargar: cargar,
     esAdmin: esAdmin
-  }), tab === "objetivos" && /*#__PURE__*/React.createElement(Objetivos, {
+  })), /*#__PURE__*/React.createElement("div", { style: { display: tab === "objetivos" ? "block" : "none" } }, /*#__PURE__*/React.createElement(Objetivos, {
     data: data,
     recargar: cargar,
     esAdmin: esAdmin
-  }), tab === "metas" && /*#__PURE__*/React.createElement(Metas, {
+  })), /*#__PURE__*/React.createElement("div", { style: { display: tab === "metas" ? "block" : "none" } }, /*#__PURE__*/React.createElement(Metas, {
     data: data,
     recargar: cargar,
     esAdmin: esAdmin
-  }), tab === "operativa" && /*#__PURE__*/React.createElement(Operativa, null))));
+  })), /*#__PURE__*/React.createElement("div", { style: { display: tab === "operativa" ? "block" : "none" } }, /*#__PURE__*/React.createElement(Operativa, null)))));
 }
 
 /* ── Resumen ── */
@@ -3303,7 +3306,7 @@ function Metas({
       className: "text-xs",
       style: { color: C.gray }
     }, ((resumenBAS.cantPedMes[m] || {})[tienda] || 0), " pedidos"));
-  })))), pendientes && /*#__PURE__*/React.createElement(ResultadoCruce, {
+  }))))), pendientes && /*#__PURE__*/React.createElement(ResultadoCruce, {
     pendientes: pendientes
   }), formMeta && /*#__PURE__*/React.createElement("div", {
     className: "fixed inset-0 z-50 flex items-center justify-center p-4",
