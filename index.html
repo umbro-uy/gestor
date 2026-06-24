@@ -3527,30 +3527,46 @@ function Operativa() {
       alert("Carga los dos archivos primero.");
       return;
     }
-    const wmsF = filtroTienda === "todas" ? rowsB : rowsB.filter(r => (r["Canal"] || "").toLowerCase() === filtroTienda.toLowerCase());
+    // Detección robusta de columnas (mismos patrones que la sección Análisis):
+    // los headers de Fenicio/Encuentra varían levemente entre exportaciones.
+    const findCol = (sample, patterns) => Object.keys(sample || {}).find(k => patterns.some(p => p.test(k))) || "";
+    const sF = rowsA[0] || {};
+    const colNro = findCol(sF, [/nro\.?\s*ped/i, /ped.*nro/i, /n[uú]mero.*ped/i, /^pedido$/i]) || "Nro. pedido";
+    const colFechF = findCol(sF, [/fecha.*comien/i, /comienzo/i, /fecha.*pago/i, /^fecha/i]) || "Fecha comienzo";
+    const colEstF = findCol(sF, [/estado.*entr/i, /entr.*estado/i]) || "Estado entrega";
+    const colImp = findCol(sF, [/importe.*total.*pedido/i, /importe.*pedido/i]) || findCol(sF, [/importe/i]) || "Importe total pedido";
+    const sW = rowsB[0] || {};
+    const colVenta = findCol(sW, [/^venta$/i, /venta/i]) || "Venta";
+    const colEstEnc = findCol(sW, [/estado.*encuentra/i]) || "Estado Encuentra";
+    const colEstEco = findCol(sW, [/estado.*ecom/i]) || "Estado ecommerce";
+    const colCanal = findCol(sW, [/canal/i, /tienda/i]) || "Canal";
+    const colDep = findCol(sW, [/dep[oó]sito/i]) || "Deposito pedido";
+    const colFechDesp = findCol(sW, [/fecha.*despach/i, /despach/i]) || "Fecha despacho";
+
+    const wmsF = filtroTienda === "todas" ? rowsB : rowsB.filter(r => String(r[colCanal] || "").toLowerCase().includes(filtroTienda.toLowerCase()));
     const wmsMap = {};
     const ORDEN_EST = ["Items Pedidos", "Items Confirmados", "Items Clasificados  (Orden Liberada)", "Pedido en  envio pronto para despacho", "Pedido Despachado", "Pedido recibido  en tienda", "Pedido entregado  a cliente", "Cancelado"];
     wmsF.forEach(r => {
-      const k = String(r["Venta"] || "").trim();
+      const k = String(r[colVenta] || "").trim();
       if (!k) return;
       if (!wmsMap[k]) wmsMap[k] = r;else {
-        const ni = ORDEN_EST.findIndex(s => r["Estado Encuentra"] === s);
-        const ai = ORDEN_EST.findIndex(s => wmsMap[k]["Estado Encuentra"] === s);
+        const ni = ORDEN_EST.findIndex(s => r[colEstEnc] === s);
+        const ai = ORDEN_EST.findIndex(s => wmsMap[k][colEstEnc] === s);
         if (ni > ai) wmsMap[k] = r;
       }
     });
     const res = [];
     rowsA.forEach(r => {
-      const pedido = String(r["Nro. pedido"] || "").trim();
+      const pedido = String(r[colNro] || "").trim();
       if (!pedido) return;
-      const fecha = r["Fecha comienzo"] || "";
-      const estadoFen = r["Estado entrega"] || "-";
-      const importe = r["Importe total pedido"] || "-";
+      const fecha = r[colFechF] || "";
+      const estadoFen = r[colEstF] || "-";
+      const importe = r[colImp] || "-";
       const wms = wmsMap[pedido];
-      const estadoWMS = wms ? wms["Estado Encuentra"] || "-" : "No encontrado en WMS";
-      const estadoEco = wms ? wms["Estado ecommerce"] || "-" : "-";
-      const deposito = wms ? wms["Deposito pedido"] || "-" : "-";
-      const fechaDespacho = wms ? wms["Fecha despacho"] || "-" : "-";
+      const estadoWMS = wms ? wms[colEstEnc] || "-" : "No encontrado en WMS";
+      const estadoEco = wms ? wms[colEstEco] || "-" : "-";
+      const deposito = wms ? wms[colDep] || "-" : "-";
+      const fechaDespacho = wms ? wms[colFechDesp] || "-" : "-";
       if (filtroFecha.desde && fecha && fecha < filtroFecha.desde) return;
       if (filtroFecha.hasta && fecha && fecha > filtroFecha.hasta) return;
       const dias = diasHab(fecha);
@@ -3576,12 +3592,18 @@ function Operativa() {
         sinWMS: !wms
       });
     });
+    const matchCount = res.filter(r => !r.sinWMS).length;
+    if (res.length === 0) {
+      alert("No se pudo leer el N° de pedido del reporte de Fenicio.\n\nColumna buscada: \"" + colNro + "\".\nColumnas encontradas: " + Object.keys(sF).join(", "));
+    } else if (matchCount === 0) {
+      alert("Se leyeron " + res.length + " pedidos de Fenicio pero ninguno coincidió con la columna \"" + colVenta + "\" del Monitor de Encuentra.\n\nVerificá que el N° de pedido de Fenicio corresponda a la columna Venta del Monitor.");
+    }
     res.sort((a, b) => (b.dias || 0) - (a.dias || 0));
     setResultado(res);
     setVistaTab("atrasados");
     // Actualizar KPIs globales automáticamente
     const atrasadosCount = res.filter(r => r.atrasado).length;
-    const depo0Count = wmsF.filter(r => r["Estado Encuentra"] === "Items Pedidos").length;
+    const depo0Count = wmsF.filter(r => r[colEstEnc] === "Items Pedidos").length;
     (async () => {
       try {
         const {
