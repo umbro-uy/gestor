@@ -2507,6 +2507,18 @@ const MAPA_SUC = {
   "WEB Clásico": "Classico",
   "WEB Clasico": "Classico"
 };
+// Lookup tolerante: primero exact match, luego palabras clave (case-insensitive, sin tildes)
+const mapearTienda = suc => {
+  const s = String(suc || "").trim();
+  if (MAPA_SUC[s]) return MAPA_SUC[s];
+  const sl = s.toLowerCase()
+    .replace(/[áàä]/g,"a").replace(/[éèë]/g,"e")
+    .replace(/[íìï]/g,"i").replace(/[óòö]/g,"o").replace(/[úùü]/g,"u");
+  if (sl.includes("time") || sl.includes("timeout")) return "TimeOut";
+  if (sl.includes("nacional")) return "Tienda Nacional";
+  if (sl.includes("clasico") || sl.includes("classico")) return "Classico";
+  return null;
+};
 function Metas({
   data,
   recargar,
@@ -2716,13 +2728,23 @@ function Metas({
     const cSuc2 = "Sucursal";
     const colFecBAS = "Fecha";
 
-    const fab = rowsBAS.filter(r => r.Abreviado === "FAB" && r.Anulado !== "1");
-    const ncd = rowsBAS.filter(r => r.Abreviado.startsWith("NCD") && r.Anulado !== "1");
+    const fab = rowsBAS.filter(r => {
+      const a = String(r.Abreviado||"").trim().toUpperCase();
+      const an = String(r.Anulado||"0").trim();
+      return (a === "FAB" || a === "FA") && an !== "1";
+    });
+    const ncd = rowsBAS.filter(r => {
+      const a = String(r.Abreviado||"").trim().toUpperCase();
+      const an = String(r.Anulado||"0").trim();
+      return (a.startsWith("NCD") || a.startsWith("NTC") || a === "NC") && an !== "1";
+    });
+    const sucSinMapa = new Set();
     const pedidos = {};
     fab.forEach(r => {
       const nro = extraerNroPedido(r[cObs2]);
       const suc = String(r[cSuc2] || "").trim();
-      const tienda = MAPA_SUC[suc];
+      const tienda = mapearTienda(suc);
+      if (!tienda) { if (suc) sucSinMapa.add(suc); }
       if (!nro || !tienda) return;
       const total = parseFloat(String(r[cTot2] || "0").replace(",", ".")) || 0;
       if (!pedidos[nro]) pedidos[nro] = {
@@ -2773,7 +2795,7 @@ function Metas({
     // Mostrar resultado SIEMPRE (antes de Supabase)
     const ncdSet = new Set(ncd.map(r => extraerNroPedido(r[cObs2])).filter(Boolean));
     console.log('_coreBAS resultado: pedidos='+Object.keys(pedidos).length+' totales='+JSON.stringify(totales).slice(0,80));
-    setResumenBAS({totales,cantPed,mesBAS,totalPedidosUnicos:Object.keys(pedidos).length,ncdCount:ncdSet.size});
+    setResumenBAS({totales,cantPed,mesBAS,totalPedidosUnicos:Object.keys(pedidos).length,ncdCount:ncdSet.size,fabTotal:fab.length,sucSinMapa:Array.from(sucSinMapa)});
     if (mes !== mesBAS) setMes(mesBAS);
     // Guardar en Supabase si está disponible
     if (esAdmin && supa) {
@@ -2800,8 +2822,16 @@ function Metas({
     const colAbrev = findCol(sB, [/abrevi/i]) || "Abreviado";
     const colAnul = findCol(sB, [/anulad/i]) || "Anulado";
     const colTot = findCol(sB, [/^total$/i]) || "Total";
-    const fab = rowsBAS.filter(r => String(r[colAbrev] || "").trim() === "FAB" && String(r[colAnul] || "0").trim() === "0");
-    const ncd = rowsBAS.filter(r => String(r[colAbrev] || "").startsWith("NCD") && String(r[colAnul] || "0").trim() === "0");
+    const fab = rowsBAS.filter(r => {
+      const a = String(r[colAbrev]||"").trim().toUpperCase();
+      const an = String(r[colAnul]||"0").trim();
+      return (a === "FAB" || a === "FA") && an !== "1";
+    });
+    const ncd = rowsBAS.filter(r => {
+      const a = String(r[colAbrev]||"").trim().toUpperCase();
+      const an = String(r[colAnul]||"0").trim();
+      return (a.startsWith("NCD") || a.startsWith("NTC") || a === "NC") && an !== "1";
+    });
     const factsXPed = {};
     fab.forEach(r => {
       const nro = extraerNroPedido(r[colObs]);
@@ -3224,10 +3254,13 @@ function Metas({
     style: {
       color: C.gray
     }
-  }, resumenBAS.totalPedidosUnicos, " pedidos únicos con factura · ", resumenBAS.ncdCount, " notas de crédito")), esAdmin && /*#__PURE__*/React.createElement(Chip, {
+  }, resumenBAS.fabTotal, " FABs leídas · ", resumenBAS.totalPedidosUnicos, " pedidos únicos · ", resumenBAS.ncdCount, " NCD")), esAdmin && /*#__PURE__*/React.createElement(Chip, {
     color: C.green,
     soft: C.greenS
-  }, "✓ Metas actualizadas")), /*#__PURE__*/React.createElement("div", {
+  }, "✓ Metas actualizadas")), resumenBAS.sucSinMapa && resumenBAS.sucSinMapa.length > 0 && /*#__PURE__*/React.createElement("div", {
+    className: "rounded-xl px-4 py-2 text-xs font-semibold mt-2",
+    style: {background: C.amberS, color: C.amber}
+  }, "⚠ Sucursales no reconocidas (no se suman a ninguna tienda): ", resumenBAS.sucSinMapa.join(" · "), ". Avisale al admin para mapearlas."), /*#__PURE__*/React.createElement("div", {
     className: "grid sm:grid-cols-3 gap-3"
   }, Object.entries(resumenBAS.totales).map(([tienda, total]) => /*#__PURE__*/React.createElement("div", {
     key: tienda,
@@ -3375,7 +3408,7 @@ function Operativa() {
     _tiendaFen: "Classico"
   })));
   const [filtroDias, setFiltroDias] = useState(3);
-  const [filtroTienda, setFiltroTienda] = useState("Timeout");
+  const [filtroTienda, setFiltroTienda] = useState("todas");
   const [filtroFecha, setFiltroFecha] = useState({
     desde: "",
     hasta: ""
@@ -3504,6 +3537,7 @@ function Operativa() {
       const inconsistente = fenEntregado !== wmsEntregado && wms != null;
       res.push({
         pedido,
+        tienda: r._tiendaFen || "-",
         fecha: fecha.slice(0, 16).replace("T", " "),
         estadoFen,
         estadoWMS,
@@ -3581,7 +3615,7 @@ function Operativa() {
     style: {
       background: "#F6F7F9"
     }
-  }, ["Pedido", "Tienda", "Fecha compra", "Estado Fenicio", "Estado WMS", "Dias hab.", "Deposito"].map(h => /*#__PURE__*/React.createElement("th", {
+  }, ["Pedido", "Tienda", "Fecha compra", "Estado Fenicio", "Estado WMS", "Estado Eco", "Dias hab.", "Deposito"].map(h => /*#__PURE__*/React.createElement("th", {
     key: h,
     className: "px-3 py-2 text-left font-bold uppercase",
     style: {
@@ -3598,6 +3632,9 @@ function Operativa() {
   }, /*#__PURE__*/React.createElement("td", {
     className: "px-3 py-2 font-bold tabular-nums"
   }, r.pedido), /*#__PURE__*/React.createElement("td", {
+    className: "px-3 py-2 text-xs font-semibold",
+    style: {color: C.gray}
+  }, r.tienda), /*#__PURE__*/React.createElement("td", {
     className: "px-3 py-2",
     style: {
       color: C.gray,
