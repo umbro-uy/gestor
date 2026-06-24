@@ -2116,11 +2116,11 @@ function ResultadoCruce({
     s: "#F3F0FF",
     arr: grupos.facturaDup || []
   }, {
-    id: "pedDup",
-    l: "Pedidos duplicados",
-    c: C.amber,
-    s: C.amberS,
-    arr: pedDuplicados || []
+    id: "pcnManual",
+    l: "PCN (manual)",
+    c: "#B45309",
+    s: "#FEF3C7",
+    arr: grupos.pcnManual || []
   }, {
     id: "pendienteOK",
     l: "Pendiente OK",
@@ -2140,11 +2140,12 @@ function ResultadoCruce({
     s: "#EEF1F5",
     arr: grupos.cancelado
   }];
-  const [tabAct, setTabAct] = useState(grupos.revisar.length > 0 ? "revisar" : (grupos.facturaDup || []).length > 0 ? "facturaDup" : "facturado");
+  const pcnArr = grupos.pcnManual || [];
+  const [tabAct, setTabAct] = useState(grupos.revisar.length > 0 ? "revisar" : (grupos.facturaDup || []).length > 0 ? "facturaDup" : pcnArr.length > 0 ? "pcnManual" : "facturado");
   const tabActual = TABS.find(t => t.id === tabAct) || TABS[0];
-  const sinFacturaTotal = grupos.revisar.length + grupos.pendienteOK.length;
+  const sinFacturaTotal = grupos.revisar.length + grupos.pendienteOK.length + pcnArr.length;
   const sinFacturaUrgente = grupos.revisar.length;
-  const sinFacturaMonto = sumImporte(grupos.revisar) + sumImporte(grupos.pendienteOK);
+  const sinFacturaMonto = sumImporte(grupos.revisar) + sumImporte(grupos.pendienteOK) + sumImporte(pcnArr);
   return /*#__PURE__*/React.createElement("div", {
     className: "space-y-4"
   }, sinFacturaTotal > 0 && /*#__PURE__*/React.createElement("div", {
@@ -2153,9 +2154,11 @@ function ResultadoCruce({
   }, /*#__PURE__*/React.createElement("div", {className:"font-black text-lg tabular-nums fraunces", style:{color: sinFacturaUrgente > 0 ? C.red : C.blue}},
     sinFacturaTotal, " pedidos sin factura en BAS",
     " — ", fmtI(sinFacturaMonto)
-  ), /*#__PURE__*/React.createElement("div", {className:"text-xs mt-1", style:{color:C.gray}},
+  ), /*#__PURE__*/React.createElement("div", {className:"text-xs mt-1 space-x-1", style:{color:C.gray}},
     sinFacturaUrgente > 0 && /*#__PURE__*/React.createElement("span", {style:{color:C.red, fontWeight:700}}, sinFacturaUrgente, " urgentes (despachados/entregados sin factura)"),
-    sinFacturaUrgente > 0 && grupos.pendienteOK.length > 0 && " · ",
+    sinFacturaUrgente > 0 && (pcnArr.length > 0 || grupos.pendienteOK.length > 0) && " · ",
+    pcnArr.length > 0 && /*#__PURE__*/React.createElement("span", {style:{color:"#B45309", fontWeight:700}}, pcnArr.length, " PCN (personalizadas, facturar a mano)"),
+    pcnArr.length > 0 && grupos.pendienteOK.length > 0 && " · ",
     grupos.pendienteOK.length > 0 && /*#__PURE__*/React.createElement("span", null, grupos.pendienteOK.length, " en proceso o recientes (OK por ahora)")
   )), /*#__PURE__*/React.createElement("div", {
     className: "grid grid-cols-3 sm:grid-cols-6 gap-2"
@@ -2301,7 +2304,7 @@ function ResultadoCruce({
     className: "px-3 py-2",
     style: {
       fontSize: 11,
-      color: r.estadoWMS === "No encontrado en WMS" ? C.amber : C.gray
+      color: /no est/i.test(r.estadoWMS || "") ? C.amber : C.gray
     }
   }, r.estadoWMS), /*#__PURE__*/React.createElement("td", {
     className: "px-3 py-2",
@@ -2637,46 +2640,38 @@ function Metas({
           const cell=ws[XLSX.utils.encode_cell({r:rng.s.r,c:C})];
           hdrs.push(cell?String(cell.v||""):"");
         }
-        const fi=pts=>hdrs.findIndex(h=>pts.some(p=>p.test(h)));
-        const iA=fi([/abrevi/i]),iN=fi([/anulad/i]);
-        const iO=fi([/observ/i,/referenc/i,/glosa/i,/concepto/i,/detalle/i,/descrip/i,/pedido/i,/nro\.?\s*ped/i]);
-        const iT=fi([/^total$/i,/^importe$/i,/^monto$/i]),iS=fi([/sucursal/i,/local/i,/tienda/i]),iF=fi([/^fecha$/i,/fecha/i]);
         const hdrsNoVacios=hdrs.filter(h=>h.trim().length>0);
-        console.log("BAS hdrs:", hdrs.slice(0,20));
-        console.log("BAS cols: A="+iA+" N="+iN+" O="+iO+" T="+iT+" S="+iS+" F="+iF);
-        if(iA<0){alert("Col Abreviado no encontrada.\nColumnas del archivo: "+hdrsNoVacios.slice(0,20).join(", "));setCargandoBAS(false);return;}
+        // Buscar columna por nombre EXACTO primero, luego por patrón (fallback)
+        const exact=name=>hdrs.findIndex(h=>h.trim().toLowerCase()===name.toLowerCase());
+        const fi=pts=>hdrs.findIndex(h=>pts.some(p=>p.test(h)));
+        const pick=(name,pats)=>{const e=exact(name);return e>=0?e:fi(pats);};
+        const iA=pick("Abreviado",[/abrevi/i]);
+        const iN=pick("Anulado",[/anulad/i]);
+        const iNum=pick("Numero",[/^numero$/i,/^nro$/i,/comprob/i]);   // nº de factura/comprobante
+        const iItm=pick("Coditm",[/^coditm$/i,/^sku$/i,/^codart/i]);   // SKU del artículo
+        const iDesc=pick("Descripcion",[/^descripcion$/i]);
+        const iImp=pick("Importe",[/^importe$/i,/^monto$/i]);          // monto por renglón (suma correcta)
+        const iO=pick("Observacion",[/^observacion$/i,/observ/i]);     // contiene nº de pedido Fenicio
+        const iT=pick("Total",[/^total$/i]);                           // total de documento (repetido por renglón)
+        const iS=pick("Sucursal",[/sucursal/i,/local/i]);
+        const iF=pick("Fecha",[/^fecha$/i]);
+        console.log("BAS cols:",{iA,iN,iNum,iItm,iImp,iO,iT,iS,iF});
+        if(iA<0){alert("Col Abreviado no encontrada.\nColumnas del archivo: "+hdrsNoVacios.slice(0,25).join(", "));setCargandoBAS(false);return;}
         const cl2=C=>{let s='',n=C;do{s=String.fromCharCode(65+n%26)+s;n=Math.floor(n/26)-1;}while(n>=0);return s;};
-        const lA=iA>=0?cl2(iA):null,lN=iN>=0?cl2(iN):null,lO=iO>=0?cl2(iO):null;
-        const lT=iT>=0?cl2(iT):null,lS=iS>=0?cl2(iS):null,lF=iF>=0?cl2(iF):null;
-        const colObsNombre=iO>=0?hdrs[iO]:null;
+        const L=i=>i>=0?cl2(i):null;
+        const lA=L(iA),lN=L(iN),lNum=L(iNum),lItm=L(iItm),lDesc=L(iDesc),lImp=L(iImp),lO=L(iO),lT=L(iT),lS=L(iS),lF=L(iF);
         const gv=(l,R)=>{if(!l)return'';const cl=ws[l+R];if(!cl)return'';return String(cl.w!==undefined&&cl.w!==''?cl.w:cl.v!==undefined?cl.v:'')||"";};
         // Para columnas numéricas leer el valor raw de Excel (no el texto formateado)
         const gvn=(l,R)=>{if(!l)return 0;const cl=ws[l+R];if(!cl)return 0;if(typeof cl.v==='number')return cl.v;const s=String(cl.w||cl.v||'0').trim().replace(/\s/g,'');if(!s||s==='-')return 0;if(s.includes('.')&&s.includes(',')){const li=s.lastIndexOf(',');return li>s.lastIndexOf('.')?parseFloat(s.replace(/\./g,'').replace(',','.'))||0:parseFloat(s.replace(/,/g,''))||0;}if(s.includes('.')&&!s.includes(',')){const p=s.split('.');return p.length>2||p[1]?.length===3?parseFloat(s.replace(/\./g,''))||0:parseFloat(s)||0;}if(s.includes(',')&&!s.includes('.')){const p=s.split(',');return p.length>2||p[1]?.length===3?parseFloat(s.replace(/,/g,''))||0:parseFloat(s.replace(',','.'))||0;}return parseFloat(s)||0;};
+        // Fecha: preferir el número de serie de Excel (cl.v) — evita ambigüedad D/M vs M/D del texto formateado
+        const gvd=(l,R)=>{if(!l)return'';const cl=ws[l+R];if(!cl)return'';if(typeof cl.v==='number')return cl.v;return String(cl.w||cl.v||'');};
         const colLetras=hdrs.map((_,i)=>cl2(i));
-        // Auto-detectar columna con números de pedido (5-8 dígitos) entre las primeras FABs
-        const reNro=/\b(\d{5,8})\b/;
-        const skipCols=new Set([iA,iN,iT,iF]);
-        let iOauto=iO; // primero usar el detectado por nombre
-        // Escanear primeras 20 filas para detectar columna con orden
-        const sampleRows=[];
-        for(let R=rng.s.r+2;R<=Math.min(rng.s.r+30,rng.e.r+1);R++){
-          const ab=lA?gv(lA,R).trim():'';
-          if(ab==="FAB"||ab==="FA"){const o={};hdrs.forEach((h,i)=>{if(h.trim()&&!skipCols.has(i))o[i]=gv(colLetras[i],R);});sampleRows.push(o);if(sampleRows.length>=20)break;}
-        }
-        if(sampleRows.length>0){
-          const scoreCol={};
-          sampleRows.forEach(o=>Object.entries(o).forEach(([ci,v])=>{if(reNro.test(String(v)))scoreCol[ci]=(scoreCol[ci]||0)+1;}));
-          const bestCol=Object.entries(scoreCol).sort((a,b)=>b[1]-a[1])[0];
-          if(bestCol && bestCol[1]>=Math.ceil(sampleRows.length*0.3)) iOauto=Number(bestCol[0]);
-        }
-        const lOauto=iOauto>=0?cl2(iOauto):null;
-        const colObsNombreFinal=iOauto>=0?hdrs[iOauto]:null;
         const rows=[];
         let primeraFAB=null;
         for(let R=rng.s.r+2;R<=rng.e.r+1;R++){
           const ab=lA?gv(lA,R).trim():'';
           if(!ab)continue;
-          const row={Abreviado:ab,Anulado:lN?gv(lN,R):'0',Observacion:lOauto?gv(lOauto,R):'',Total:lT?gvn(lT,R):0,Sucursal:lS?gv(lS,R):'',Fecha:lF?gv(lF,R):''};
+          const row={Abreviado:ab,Anulado:lN?gv(lN,R):'0',Numero:lNum?gv(lNum,R):'',Sku:lItm?gv(lItm,R):'',Descripcion:lDesc?gv(lDesc,R):'',Importe:lImp?gvn(lImp,R):0,Observacion:lO?gv(lO,R):'',Total:lT?gvn(lT,R):0,Sucursal:lS?gv(lS,R):'',Fecha:lF?gvd(lF,R):''};
           rows.push(row);
           if(!primeraFAB && (ab==="FAB"||ab==="FA")){
             const raw={};
@@ -2685,8 +2680,8 @@ function Metas({
           }
         }
         console.log("BAS: "+rows.length+" filas. FAB:"+rows.filter(r=>r.Abreviado==="FAB").length);
-        rows._colObsNombre=colObsNombreFinal;
-        rows._hdrs=hdrsNoVacios.slice(0,20);
+        rows._colImporte=iImp>=0?hdrs[iImp]:null;
+        rows._hdrs=hdrsNoVacios.slice(0,25);
         rows._primeraFAB=primeraFAB;
         setRowsBAS(rows);
       }catch(err){alert("Error BAS: "+err.message);}
@@ -2705,12 +2700,21 @@ function Metas({
       try {
         const wb = XLSX.read(ev.target.result, {type: "binary"});
         const ws = wb.Sheets[wb.SheetNames[0]];
-        const data = XLSX.utils.sheet_to_json(ws, {header: 1, raw: false, defval: ""});
-        let hIdx = 0;
-        for (let i = 0; i < Math.min(5, data.length); i++) {
-          if (data[i].some(c => String(c || "").toLowerCase().includes("pedido"))) {
+        // Los .xls de Fenicio son HTML; SheetJS deja etiquetas <td> dentro de cada celda → limpiarlas
+        const clean = v => String(v == null ? "" : v).replace(/<[^>]*>/g, "").replace(/&nbsp;/gi, " ").replace(/&amp;/gi, "&").replace(/&lt;/gi, "<").replace(/&gt;/gi, ">").replace(/&#?\w+;/g, "").trim();
+        const data = XLSX.utils.sheet_to_json(ws, {header: 1, raw: false, defval: ""}).map(r => (r || []).map(clean));
+        let hIdx = -1;
+        for (let i = 0; i < Math.min(8, data.length); i++) {
+          if ((data[i] || []).some(c => String(c || "").toLowerCase().includes("pedido"))) {
             hIdx = i; break;
           }
+        }
+        if (hIdx < 0) {
+          alert("⚠ " + tienda + ": este archivo no contiene los datos del reporte (parece ser solo el “cascarón” de exportación de " + (file.name||"") + ", 10 KB).\n\nVolvé a exportar desde Fenicio y guardá el reporte como UN SOLO archivo (no “página web completa”).");
+          const kErr = tienda.replace(" ", "");
+          setRowsFenAn(p => ({...p, [kErr]: []}));
+          setCargandoFenAn(p => ({...p, [kErr]: false}));
+          return;
         }
         const headers = data[hIdx].map(String);
         const rows = data.slice(hIdx + 1).map(r => {
@@ -2719,6 +2723,7 @@ function Metas({
           return o;
         }).filter(r => /^\d+$/.test(String(Object.values(r)[0] || "").trim()));
         const k2 = tienda.replace(" ", "");
+        if (!rows.length) alert("⚠ " + tienda + ": no se encontraron pedidos en el archivo. Verificá que sea el reporte de ventas correcto.");
         setRowsFenAn(p => ({...p, [k2]: rows}));
       } catch (err) {
         alert("Error Fenicio: " + err.message);
@@ -2774,101 +2779,82 @@ function Metas({
   };
 
   // ── Lógica core separada para poder combinarla ──
+  const parseMesBAS = f => {
+    if (!f) return null;
+    const s = String(f).trim();
+    const iso = s.match(/^(\d{4})-(\d{2})/);              // 2026-05-02
+    if (iso) return `${iso[1]}-${iso[2]}`;
+    const dmy = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/); // DD/MM/YYYY
+    if (dmy) return `${dmy[3]}-${dmy[2].padStart(2, "0")}`;
+    const n = parseFloat(s);                               // serial Excel
+    if (!isNaN(n) && n > 40000 && n < 50000) {
+      const d = new Date(Math.round((n - 25569) * 86400 * 1000));
+      const y = d.getUTCFullYear(), m = String(d.getUTCMonth() + 1).padStart(2, "0");
+      if (y >= 2020 && y <= 2030) return `${y}-${m}`;
+    }
+    return null;
+  };
   const _coreBAS = async () => {
     console.log('_coreBAS inicio. rowsBAS:',rowsBAS.length);
     if(!rowsBAS.length)return;
-    // Nombres fijos — leerBAS ya normaliza las columnas a estos nombres
-    const cAbr2 = "Abreviado";
-    const cAnu2 = "Anulado";
-    const cObs2 = "Observacion";
-    const cTot2 = "Total";
-    const cSuc2 = "Sucursal";
-    const colFecBAS = "Fecha";
-
     const fab = rowsBAS.filter(r => {
       const a = String(r.Abreviado||"").trim().toUpperCase();
-      const an = String(r.Anulado||"0").trim();
-      return (a === "FAB" || a === "FA") && an !== "1";
+      return (a === "FAB" || a === "FA") && String(r.Anulado||"0").trim() !== "1";
     });
     const ncd = rowsBAS.filter(r => {
       const a = String(r.Abreviado||"").trim().toUpperCase();
-      const an = String(r.Anulado||"0").trim();
-      return (a.startsWith("NCD") || a.startsWith("NTC") || a === "NC") && an !== "1";
+      return (a.startsWith("NCD") || a.startsWith("NTC") || a === "NC") && String(r.Anulado||"0").trim() !== "1";
     });
     const sucSinMapa = new Set();
-    const pedidos = {};
+    // Facturación REAL = suma de Importe (monto por renglón), agrupada por MES y tienda.
+    // El archivo puede abarcar varios meses; cada mes se imputa por separado.
+    const porMes = {};        // { "2026-06": { TimeOut: 123, ... } }
+    const pedMesTienda = {};  // { "2026-06": { TimeOut: Set(pedidos) } }
     fab.forEach(r => {
-      const nro = extraerNroPedido(r[cObs2]);
-      const suc = String(r[cSuc2] || "").trim();
+      const suc = String(r.Sucursal || "").trim();
       const tienda = mapearTienda(suc);
-      if (!tienda) { if (suc) sucSinMapa.add(suc); }
-      if (!nro || !tienda) return;
-      const total = Number(r[cTot2]) || 0;
-      if (!pedidos[nro]) pedidos[nro] = {
-        tienda,
-        total: 0
-      };
-      pedidos[nro].total += total;
-    });
-    const totales = {};
-    const cantPed = {};
-    Object.values(pedidos).forEach(({
-      tienda,
-      total
-    }) => {
-      totales[tienda] = (totales[tienda] || 0) + total;
-      cantPed[tienda] = (cantPed[tienda] || 0) + 1;
-    });
-    const parseMesBAS = f => {
-      if (!f) return null;
-      const s = String(f).trim();
-      // ISO: 2026-05-02 o 2026-05-02T00:00:00
-      const iso = s.match(/^(\d{4})-(\d{2})/);
-      if (iso) return `${iso[1]}-${iso[2]}`;
-      // DD/MM/YYYY
-      const dmy = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
-      if (dmy) return `${dmy[3]}-${dmy[2].padStart(2, "0")}`;
-      // MM/DD/YYYY (formato EEUU)
-      const mdy = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
-      // Número serial Excel: base 1900-01-01 (con bug del 29/feb/1900)
-      const n = parseFloat(s);
-      if (!isNaN(n) && n > 40000 && n < 50000) {
-        // Rango razonable: 40000=2009, 50000=2036
-        const d = new Date(Math.round((n - 25569) * 86400 * 1000));
-        const y = d.getUTCFullYear(),
-          m = String(d.getUTCMonth() + 1).padStart(2, "0");
-        if (y >= 2020 && y <= 2030) return `${y}-${m}`;
+      if (!tienda) { if (suc) sucSinMapa.add(suc); return; }
+      const m = parseMesBAS(r.Fecha) || mes;
+      const imp = Number(r.Importe) || 0;
+      if (!porMes[m]) porMes[m] = {};
+      porMes[m][tienda] = (porMes[m][tienda] || 0) + imp;
+      const nro = extraerNroPedido(r.Observacion);
+      if (nro) {
+        if (!pedMesTienda[m]) pedMesTienda[m] = {};
+        if (!pedMesTienda[m][tienda]) pedMesTienda[m][tienda] = new Set();
+        pedMesTienda[m][tienda].add(nro);
       }
-      return null;
-    };
-    const mesBAS = (() => {
-      // Buscar en varias filas para encontrar una fecha válida
-      for (const r of rowsBAS.slice(0, 50)) {
-        const m = parseMesBAS(r[colFecBAS]);
-        if (m && m >= "2020-01" && m <= "2030-12") return m;
-      }
-      return mes;
-    })();
-    // Mostrar resultado SIEMPRE (antes de Supabase)
-    const ncdSet = new Set(ncd.map(r => extraerNroPedido(r[cObs2])).filter(Boolean));
-    console.log('BAS muestra Observacion (primeras 5 FABs):', fab.slice(0,5).map(r=>JSON.stringify(r.Observacion)));
-    console.log('BAS muestra Sucursal (primeras 5 FABs):', fab.slice(0,5).map(r=>JSON.stringify(r.Sucursal)));
-    console.log('_coreBAS resultado: pedidos='+Object.keys(pedidos).length+' totales='+JSON.stringify(totales).slice(0,80));
-    const muestraObs = fab.slice(0,5).map(r=>String(r.Observacion||"")).filter(s=>s.length>0);
-    const colObsNombre = rowsBAS._colObsNombre || null;
-    const basCols = rowsBAS._hdrs || [];
+    });
+    // NCD por mes (cantidad y monto)
+    const ncdPorMes = {};
+    ncd.forEach(r => {
+      const m = parseMesBAS(r.Fecha) || mes;
+      if (!ncdPorMes[m]) ncdPorMes[m] = {cant:0, monto:0};
+      ncdPorMes[m].cant++;
+      ncdPorMes[m].monto += Math.abs(Number(r.Importe) || 0);
+    });
+    const meses = Object.keys(porMes).sort();
+    // cantidad de pedidos únicos por mes/tienda (para mostrar)
+    const cantPedMes = {};
+    Object.entries(pedMesTienda).forEach(([m,tt])=>{ cantPedMes[m]={}; Object.entries(tt).forEach(([t,s])=>cantPedMes[m][t]=s.size); });
     const primeraFAB = rowsBAS._primeraFAB || null;
-    setResumenBAS({totales,cantPed,mesBAS,totalPedidosUnicos:Object.keys(pedidos).length,ncdCount:ncdSet.size,fabTotal:fab.length,sucSinMapa:Array.from(sucSinMapa),muestraObs,colObsNombre,basCols,primeraFAB});
-    if (mes !== mesBAS) setMes(mesBAS);
-    // Guardar en Supabase si está disponible
+    const basCols = rowsBAS._hdrs || [];
+    setResumenBAS({porMes, ncdPorMes, cantPedMes, meses, fabTotal:fab.length, ncdTotal:ncd.length, sucSinMapa:Array.from(sucSinMapa), colImporte:rowsBAS._colImporte, basCols, primeraFAB});
+    // Posicionar la vista de metas en el mes más reciente del archivo
+    const mesReciente = meses[meses.length-1];
+    if (mesReciente && mes !== mesReciente) setMes(mesReciente);
+    // Guardar en Supabase: una fila por (mes, tienda)
     if (esAdmin && supa) {
       try {
-        for (const [tienda, real] of Object.entries(totales)) {
-          await supa.from('metas_mensuales').upsert({mes:mesBAS,tienda,real:Math.round(real)},{onConflict:'mes,tienda'});
+        for (const [m, tt] of Object.entries(porMes)) {
+          for (const [tienda, real] of Object.entries(tt)) {
+            await supa.from('metas_mensuales').upsert({mes:m, tienda, real:Math.round(real)}, {onConflict:'mes,tienda'});
+          }
         }
         const {data:kpisG} = await supa.from('kpis_globales').select('id,nombre');
         const kpiNC = kpisG?.find(k=>k.nombre.toLowerCase().includes('nota')&&k.nombre.toLowerCase().includes('cr'));
-        if(kpiNC) await supa.from('kpis_globales').update({valor:String(ncdSet.size)}).eq('id',kpiNC.id);
+        const ncdReciente = mesReciente && ncdPorMes[mesReciente] ? ncdPorMes[mesReciente].cant : ncd.length;
+        if(kpiNC) await supa.from('kpis_globales').update({valor:String(ncdReciente)}).eq('id',kpiNC.id);
         cargarMetas();
       } catch(e) { console.warn('Supabase _coreBAS:',e.message); }
     }
@@ -2876,172 +2862,81 @@ function Metas({
   const _coreCruce = async () => {
     const findCol = (sample, patterns) => Object.keys(sample).find(k => patterns.some(p => p.test(k))) || "";
     const sF = rowsFen[0] || {};
-    const sB = rowsBAS[0] || {};
-    const colNro = findCol(sF, [/nro.*ped/i, /ped.*nro/i, /^nro\.?\s*pedido$/i]) || "Nro. pedido";
-    const colFechF = findCol(sF, [/fecha.*com/i, /comienzo/i]) || "Fecha comienzo";
+    const colNro = findCol(sF, [/nro\.?\s*ped/i, /ped.*nro/i]) || "Nro. pedido";
+    const colFechF = findCol(sF, [/fecha.*pago/i, /fecha.*com/i, /comienzo/i, /^fecha/i]) || "Fecha pago";
     const colEstF = findCol(sF, [/estado.*entr/i, /entr.*estado/i]) || "Estado entrega";
-    const colImp = findCol(sF, [/importe/i]) || "Importe total pedido";
-    const colObs = findCol(sB, [/observ/i]) || "Observacion";
-    const colAbrev = findCol(sB, [/abrevi/i]) || "Abreviado";
-    const colAnul = findCol(sB, [/anulad/i]) || "Anulado";
-    const colTot = findCol(sB, [/^total$/i]) || "Total";
-    const fab = rowsBAS.filter(r => {
-      const a = String(r[colAbrev]||"").trim().toUpperCase();
-      const an = String(r[colAnul]||"0").trim();
-      return (a === "FAB" || a === "FA") && an !== "1";
-    });
-    const ncd = rowsBAS.filter(r => {
-      const a = String(r[colAbrev]||"").trim().toUpperCase();
-      const an = String(r[colAnul]||"0").trim();
-      return (a.startsWith("NCD") || a.startsWith("NTC") || a === "NC") && an !== "1";
-    });
+    const colEstPago = findCol(sF, [/^estado$/i]) || "Estado";
+    const colImp = findCol(sF, [/importe.*total.*pedido/i, /importe.*pedido/i]) || findCol(sF, [/importe/i]) || "Importe total pedido";
+    const colSku = findCol(sF, [/^sku$/i, /sku/i, /c[oó]d.*art/i]) || "SKU";
+
+    const esFAB = r => { const a=String(r.Abreviado||"").trim().toUpperCase(); return (a==="FAB"||a==="FA") && String(r.Anulado||"0").trim()!=="1"; };
+    const esNCD = r => { const a=String(r.Abreviado||"").trim().toUpperCase(); return (a.startsWith("NCD")||a.startsWith("NTC")||a==="NC") && String(r.Anulado||"0").trim()!=="1"; };
+    const fab = rowsBAS.filter(esFAB);
+    const ncd = rowsBAS.filter(esNCD);
+
+    // Facturas por pedido: contar FACTURAS distintas (Numero), no renglones de cada factura
     const factsXPed = {};
     fab.forEach(r => {
-      const nro = extraerNroPedido(r[colObs]);
+      const nro = extraerNroPedido(r.Observacion);
       if (!nro) return;
-      if (!factsXPed[nro]) factsXPed[nro] = {
-        count: 0,
-        total: 0
-      };
-      factsXPed[nro].count++;
-      factsXPed[nro].total += parseFloat(String(r[colTot] || "0").replace(",", ".")) || 0;
+      if (!factsXPed[nro]) factsXPed[nro] = { invoices: new Set(), total: 0 };
+      factsXPed[nro].invoices.add(String(r.Numero || r.Observacion || ""));
+      factsXPed[nro].total += Number(r.Importe) || 0;
     });
     const ncsXPed = {};
-    ncd.forEach(r => {
-      const nro = extraerNroPedido(r[colObs]);
-      if (nro) ncsXPed[nro] = (ncsXPed[nro] || 0) + 1;
-    });
-    const factDuplicadas = Object.entries(factsXPed).filter(([nro, d]) => d.count > (ncsXPed[nro] || 0) + 1).map(([nro, d]) => ({
-      nro,
-      facturas: d.count,
-      ncs: ncsXPed[nro] || 0,
-      total: d.total
-    }));
+    ncd.forEach(r => { const nro = extraerNroPedido(r.Observacion); if (nro) ncsXPed[nro] = (ncsXPed[nro] || 0) + 1; });
+    const nInvoices = nro => factsXPed[nro] ? factsXPed[nro].invoices.size : 0;
+    const netFacturas = nro => nInvoices(nro) - (ncsXPed[nro] || 0);
+    const factDuplicadas = Object.keys(factsXPed)
+      .filter(nro => netFacturas(nro) > 1)
+      .map(nro => ({ nro, facturas: nInvoices(nro), ncs: ncsXPed[nro] || 0, total: factsXPed[nro].total }));
+
     const wmsMap = {};
-    if (rowsWMS.length) {
-      rowsWMS.forEach(r => {
-        const k = String(r["Venta"] || "").trim();
-        if (k && !wmsMap[k]) wmsMap[k] = r;
-      });
-    }
-    const fenXPed = {};
-    rowsFen.forEach(r => {
-      const nro = String(r[colNro] || "").trim();
-      if (nro) fenXPed[nro] = (fenXPed[nro] || 0) + 1;
-    });
-    const pedDuplicados = Object.entries(fenXPed).filter(([, c]) => c > 1).map(([nro, c]) => ({
-      nro,
-      apariciones: c
-    }));
-    const hoy = new Date().toISOString().slice(0, 10);
-    const EN_PROCESO = ["Items Pedidos", "Items Confirmados", "Items Clasificados", "Pedido en  envio"];
-    const YA_DESPACHO = ["Pedido Despachado", "Pedido recibido", "Pedido entregado"];
-    const grupos = {
-      facturado: [],
-      facturaDup: [],
-      pendienteOK: [],
-      revisar: [],
-      cancelado: []
-    };
-    const vistos = new Set();
+    if (rowsWMS.length) rowsWMS.forEach(r => { const k = String(r["Venta"] || "").trim(); if (k && !wmsMap[k]) wmsMap[k] = r; });
+
+    // Agrupar líneas de Fenicio por pedido (Fenicio trae 1 fila por SKU)
+    const fenPed = {};
     rowsFen.forEach(r => {
       const nro = String(r[colNro] || "").trim();
       if (!nro) return;
-      if (vistos.has(nro)) return;
-      vistos.add(nro);
-      const fecha = String(r[colFechF] || "").slice(0, 10);
-      const estadoFen = r[colEstF] || "";
-      const importe = Number(r[colImp] || 0);
+      if (!fenPed[nro]) fenPed[nro] = { nro, fecha: String(r[colFechF]||"").slice(0,10), estadoFen: String(r[colEstF]||""), estadoPago: String(r[colEstPago]||""), importe: Number(r[colImp]||0), lineas: 0, pcn: false, skusPcn: [] };
+      fenPed[nro].lineas++;
+      const sku = String(r[colSku]||"").trim();
+      if (sku.toUpperCase().startsWith("PCN")) { fenPed[nro].pcn = true; if (!fenPed[nro].skusPcn.includes(sku)) fenPed[nro].skusPcn.push(sku); }
+    });
+    const pedDuplicados = []; // en export por línea, un pedido con varias filas es normal; no es duplicado
+
+    const hoy = new Date().toISOString().slice(0, 10);
+    const reDespachado = /entregad|recibid|despachad|tr[aá]nsito|camino/i;
+    const reProceso = /preparand|items|confirmad|clasificad|pendiente/i;
+    const grupos = { facturado: [], facturaDup: [], pendienteOK: [], pcnManual: [], revisar: [], cancelado: [] };
+
+    Object.values(fenPed).forEach(p => {
+      const { nro, fecha, estadoFen, estadoPago, importe, pcn, skusPcn } = p;
       const wms = wmsMap[nro];
-      const estadoWMS = wms ? wms["Estado Encuentra"] || "—" : "No encontrado en WMS";
-      const tieneF = !!factsXPed[nro];
-      const esDupF = tieneF && factsXPed[nro].count > (ncsXPed[nro] || 0) + 1;
-      const esCancelado = estadoWMS === "Cancelado" || estadoFen.toLowerCase().includes("cancelad");
-      if (esCancelado) {
-        grupos.cancelado.push({
-          nro,
-          fecha,
-          estadoFen,
-          estadoWMS,
-          importe
-        });
-        return;
-      }
+      const estadoWMS = wms ? (wms["Estado Encuentra"] || wms["Estado ecommerce"] || "—") : "No está en WMS";
+      const tieneF = nInvoices(nro) > 0;
+      const esDupF = netFacturas(nro) > 1;
+      const base = { nro, fecha, estadoFen, estadoPago, estadoWMS, importe, pcn, skusPcn: (skusPcn||[]).join(", ") };
+      if (/cancelad/i.test(estadoWMS) || /cancelad/i.test(estadoFen) || /cancelad/i.test(estadoPago)) { grupos.cancelado.push(base); return; }
       if (tieneF) {
-        if (esDupF) grupos.facturaDup.push({
-          nro,
-          fecha,
-          estadoFen,
-          estadoWMS,
-          importe,
-          nFact: factsXPed[nro].count,
-          nNCs: ncsXPed[nro] || 0
-        });else grupos.facturado.push({
-          nro,
-          fecha,
-          estadoFen,
-          estadoWMS,
-          importe
-        });
+        if (esDupF) grupos.facturaDup.push({ ...base, nFact: nInvoices(nro), nNCs: ncsXPed[nro] || 0 });
+        else grupos.facturado.push(base);
         return;
       }
-      if (fecha >= hoy) {
-        grupos.pendienteOK.push({
-          nro,
-          fecha,
-          estadoFen,
-          estadoWMS,
-          importe,
-          razon: "Pedido de hoy"
-        });
-        return;
-      }
-      if (EN_PROCESO.some(e => estadoWMS.includes(e.split(" ")[0]))) {
-        grupos.pendienteOK.push({
-          nro,
-          fecha,
-          estadoFen,
-          estadoWMS,
-          importe,
-          razon: "En proceso en depósito"
-        });
-        return;
-      }
-      if (YA_DESPACHO.some(e => estadoWMS.includes(e.split(" ")[1] || e.split(" ")[0])) || estadoFen === "Pedido entregado") {
-        grupos.revisar.push({
-          nro,
-          fecha,
-          estadoFen,
-          estadoWMS,
-          importe,
-          razon: "Despachado/Entregado sin factura ⚠️"
-        });
-        return;
-      }
-      grupos.revisar.push({
-        nro,
-        fecha,
-        estadoFen,
-        estadoWMS,
-        importe,
-        razon: "Sin factura — verificar"
-      });
+      // Sin factura:
+      if (pcn) { grupos.pcnManual.push({ ...base, razon: "Prenda personalizada (PCN) — facturar/forzar manualmente" }); return; }
+      if (reDespachado.test(estadoFen) || reDespachado.test(estadoWMS)) { grupos.revisar.push({ ...base, razon: "Despachado/entregado SIN factura ⚠️" }); return; }
+      if (fecha >= hoy) { grupos.pendienteOK.push({ ...base, razon: "Pedido de hoy" }); return; }
+      if (reProceso.test(estadoFen) || reProceso.test(estadoWMS)) { grupos.pendienteOK.push({ ...base, razon: "En proceso en depósito" }); return; }
+      grupos.revisar.push({ ...base, razon: "Sin factura — verificar" });
     });
-    setPendientes({
-      grupos,
-      factDuplicadas,
-      pedDuplicados,
-      totalPedidos: vistos.size
-    });
+    setPendientes({ grupos, factDuplicadas, pedDuplicados, totalPedidos: Object.keys(fenPed).length });
     if (esAdmin) {
-      const pendCount = grupos.pendienteOK.length + grupos.revisar.length + grupos.facturaDup.length;
-      const {
-        data: kpisG
-      } = await supa.from("kpis_globales").select("id,nombre");
+      const pendCount = grupos.revisar.length + grupos.pcnManual.length + grupos.facturaDup.length;
+      const { data: kpisG } = await supa.from("kpis_globales").select("id,nombre");
       const kpi = kpisG?.find(k => k.nombre.toLowerCase().includes("factur") && k.nombre.toLowerCase().includes("pendiente"));
-      if (kpi) await supa.from("kpis_globales").update({
-        valor: String(pendCount)
-      }).eq("id", kpi.id);
+      if (kpi) await supa.from("kpis_globales").update({ valor: String(pendCount) }).eq("id", kpi.id);
     }
   };
   const procesarTodo = async () => {
@@ -3312,23 +3207,32 @@ function Metas({
     style: {
       color: C.gray
     }
-  }, "Resultado del BAS — ", fmtM(resumenBAS.mesBAS)), /*#__PURE__*/React.createElement("div", {
+  }, "Resultado del BAS"), /*#__PURE__*/React.createElement("div", {
     className: "text-xs mt-0.5",
     style: {
       color: C.gray
     }
-  }, resumenBAS.fabTotal, " FABs leídas · ", resumenBAS.totalPedidosUnicos, " pedidos únicos · ", resumenBAS.ncdCount, " NCD")), esAdmin && /*#__PURE__*/React.createElement(Chip, {
+  }, resumenBAS.fabTotal, " renglones FAB · ", resumenBAS.ncdTotal, " NCD · período: ", (resumenBAS.meses || []).map(fmtM).join(", ") || "—", " · facturación = columna ", resumenBAS.colImporte || "Importe")), esAdmin && /*#__PURE__*/React.createElement(Chip, {
     color: C.green,
     soft: C.greenS
   }, "✓ Metas actualizadas")), resumenBAS.sucSinMapa && resumenBAS.sucSinMapa.length > 0 && /*#__PURE__*/React.createElement("div", {
-    className: "rounded-xl px-4 py-2 text-xs font-semibold mt-2",
+    className: "rounded-xl px-4 py-2 text-xs font-semibold",
     style: {background: C.amberS, color: C.amber}
-  }, "⚠ Sucursales no reconocidas (no se suman a ninguna tienda): ", resumenBAS.sucSinMapa.join(" · "), ". Avisale al admin para mapearlas."), resumenBAS.totalPedidosUnicos === 0 && resumenBAS.fabTotal > 0 && /*#__PURE__*/React.createElement("div", {
-    className: "rounded-xl px-4 py-2 text-xs font-semibold mt-2",
+  }, "⚠ Sucursales no reconocidas (no se suman a ninguna tienda): ", resumenBAS.sucSinMapa.join(" · "), "."), resumenBAS.fabTotal > 0 && (!resumenBAS.meses || resumenBAS.meses.length === 0) && /*#__PURE__*/React.createElement("div", {
+    className: "rounded-xl px-4 py-2 text-xs font-semibold",
     style: {background:"#FFF3CD",color:"#856404"}
-  }, /*#__PURE__*/React.createElement("div", {className:"font-bold mb-1"}, "⚠ No se extrajeron pedidos — primer FAB del archivo:"), resumenBAS.primeraFAB ? /*#__PURE__*/React.createElement("table", {style:{borderCollapse:"collapse",width:"100%",fontSize:11}}, Object.entries(resumenBAS.primeraFAB).map(([k,v])=>/*#__PURE__*/React.createElement("tr", {key:k}, /*#__PURE__*/React.createElement("td", {style:{padding:"1px 8px 1px 0",fontWeight:700,whiteSpace:"nowrap",verticalAlign:"top"}}, k), /*#__PURE__*/React.createElement("td", {style:{padding:"1px 0",wordBreak:"break-all"}}, String(v)||"(vacío)")))) : /*#__PURE__*/React.createElement("span", null, "Columnas: ", (resumenBAS.basCols||[]).join(", "))), /*#__PURE__*/React.createElement("div", {
+  }, /*#__PURE__*/React.createElement("div", {className:"font-bold mb-1"}, "⚠ No se pudo imputar facturación — primer FAB del archivo:"), resumenBAS.primeraFAB ? /*#__PURE__*/React.createElement("table", {style:{borderCollapse:"collapse",width:"100%",fontSize:11}}, Object.entries(resumenBAS.primeraFAB).map(([k,v])=>/*#__PURE__*/React.createElement("tr", {key:k}, /*#__PURE__*/React.createElement("td", {style:{padding:"1px 8px 1px 0",fontWeight:700,whiteSpace:"nowrap",verticalAlign:"top"}}, k), /*#__PURE__*/React.createElement("td", {style:{padding:"1px 0",wordBreak:"break-all"}}, String(v)||"(vacío)")))) : /*#__PURE__*/React.createElement("span", null, "Columnas: ", (resumenBAS.basCols||[]).join(", "))), (resumenBAS.meses || []).map(m => /*#__PURE__*/React.createElement("div", {
+    key: m,
+    className: "space-y-2"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "text-sm font-black fraunces flex items-baseline gap-2 flex-wrap",
+    style: {color: C.ink}
+  }, fmtM(m), /*#__PURE__*/React.createElement("span", {
+    className: "text-xs font-normal",
+    style: {color: C.gray}
+  }, "Total ", fmtUSD(Object.values(resumenBAS.porMes[m]).reduce((a,b)=>a+b,0)), resumenBAS.ncdPorMes[m] ? ` · ${resumenBAS.ncdPorMes[m].cant} NCD (−${fmtUSD(resumenBAS.ncdPorMes[m].monto)})` : "")), /*#__PURE__*/React.createElement("div", {
     className: "grid sm:grid-cols-3 gap-3"
-  }, Object.entries(resumenBAS.totales).map(([tienda, total]) => /*#__PURE__*/React.createElement("div", {
+  }, Object.entries(resumenBAS.porMes[m]).map(([tienda, total]) => /*#__PURE__*/React.createElement("div", {
     key: tienda,
     className: "rounded-xl p-3",
     style: {
@@ -3349,7 +3253,7 @@ function Metas({
     style: {
       color: C.gray
     }
-  }, resumenBAS.cantPed[tienda] || 0, " pedidos"))))), pendientes && /*#__PURE__*/React.createElement(ResultadoCruce, {
+  }, ((resumenBAS.cantPedMes[m] || {})[tienda] || 0), " pedidos"))))))), pendientes && /*#__PURE__*/React.createElement(ResultadoCruce, {
     pendientes: pendientes
   }), formMeta && /*#__PURE__*/React.createElement("div", {
     className: "fixed inset-0 z-50 flex items-center justify-center p-4",
