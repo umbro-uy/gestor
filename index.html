@@ -2714,16 +2714,17 @@ function Metas({
         const iNum=pick("Numero",[/^numero$/i,/^nro$/i,/comprob/i]);   // nº de factura/comprobante
         const iItm=pick("Coditm",[/^coditm$/i,/^sku$/i,/^codart/i]);   // SKU del artículo
         const iDesc=pick("Descripcion",[/^descripcion$/i]);
-        const iImp=pick("Importe",[/^importe$/i,/^monto$/i]);          // monto por renglón (suma correcta)
+        const iImp=pick("Importe",[/^importe$/i,/^monto$/i]);          // monto por renglón (CON IVA)
+        const iIva=pick("IVA",[/^iva$/i,/^i\.?\s*v\.?\s*a\.?$/i,/^imp.*iva$/i]); // IVA por renglón → facturación neta = Importe − IVA
         const iO=pick("Observacion",[/^observacion$/i,/observ/i]);     // contiene nº de pedido Fenicio
         const iT=pick("Total",[/^total$/i]);                           // total de documento (repetido por renglón)
         const iS=pick("Sucursal",[/sucursal/i,/local/i]);
         const iF=pick("Fecha",[/^fecha$/i]);
-        console.log("BAS cols:",{iA,iN,iNum,iItm,iImp,iO,iT,iS,iF});
+        console.log("BAS cols:",{iA,iN,iNum,iItm,iImp,iIva,iO,iT,iS,iF});
         if(iA<0){alert("Col Abreviado no encontrada.\nColumnas del archivo: "+hdrsNoVacios.slice(0,25).join(", "));setCargandoBAS(false);return;}
         const cl2=C=>{let s='',n=C;do{s=String.fromCharCode(65+n%26)+s;n=Math.floor(n/26)-1;}while(n>=0);return s;};
         const L=i=>i>=0?cl2(i):null;
-        const lA=L(iA),lN=L(iN),lNum=L(iNum),lItm=L(iItm),lDesc=L(iDesc),lImp=L(iImp),lO=L(iO),lT=L(iT),lS=L(iS),lF=L(iF);
+        const lA=L(iA),lN=L(iN),lNum=L(iNum),lItm=L(iItm),lDesc=L(iDesc),lImp=L(iImp),lIva=L(iIva),lO=L(iO),lT=L(iT),lS=L(iS),lF=L(iF);
         const gv=(l,R)=>{if(!l)return'';const cl=ws[l+R];if(!cl)return'';return String(cl.w!==undefined&&cl.w!==''?cl.w:cl.v!==undefined?cl.v:'')||"";};
         // Para columnas numéricas leer el valor raw de Excel (no el texto formateado)
         const gvn=(l,R)=>{if(!l)return 0;const cl=ws[l+R];if(!cl)return 0;if(typeof cl.v==='number')return cl.v;const s=String(cl.w||cl.v||'0').trim().replace(/\s/g,'');if(!s||s==='-')return 0;if(s.includes('.')&&s.includes(',')){const li=s.lastIndexOf(',');return li>s.lastIndexOf('.')?parseFloat(s.replace(/\./g,'').replace(',','.'))||0:parseFloat(s.replace(/,/g,''))||0;}if(s.includes('.')&&!s.includes(',')){const p=s.split('.');return p.length>2||p[1]?.length===3?parseFloat(s.replace(/\./g,''))||0:parseFloat(s)||0;}if(s.includes(',')&&!s.includes('.')){const p=s.split(',');return p.length>2||p[1]?.length===3?parseFloat(s.replace(/,/g,''))||0:parseFloat(s.replace(',','.'))||0;}return parseFloat(s)||0;};
@@ -2735,7 +2736,7 @@ function Metas({
         for(let R=rng.s.r+2;R<=rng.e.r+1;R++){
           const ab=lA?gv(lA,R).trim():'';
           if(!ab)continue;
-          const row={Abreviado:ab,Anulado:lN?gv(lN,R):'0',Numero:lNum?gv(lNum,R):'',Sku:lItm?gv(lItm,R):'',Descripcion:lDesc?gv(lDesc,R):'',Importe:lImp?gvn(lImp,R):0,Observacion:lO?gv(lO,R):'',Total:lT?gvn(lT,R):0,Sucursal:lS?gv(lS,R):'',Fecha:lF?gvd(lF,R):''};
+          const row={Abreviado:ab,Anulado:lN?gv(lN,R):'0',Numero:lNum?gv(lNum,R):'',Sku:lItm?gv(lItm,R):'',Descripcion:lDesc?gv(lDesc,R):'',Importe:lImp?gvn(lImp,R):0,Iva:lIva?gvn(lIva,R):0,Observacion:lO?gv(lO,R):'',Total:lT?gvn(lT,R):0,Sucursal:lS?gv(lS,R):'',Fecha:lF?gvd(lF,R):''};
           rows.push(row);
           if(!primeraFAB && (ab==="FAB"||ab==="FA")){
             const raw={};
@@ -2745,6 +2746,7 @@ function Metas({
         }
         console.log("BAS: "+rows.length+" filas. FAB:"+rows.filter(r=>r.Abreviado==="FAB").length);
         rows._colImporte=iImp>=0?hdrs[iImp]:null;
+        rows._colIva=iIva>=0?hdrs[iIva]:null;
         rows._hdrs=hdrsNoVacios.slice(0,25);
         rows._primeraFAB=primeraFAB;
         setRowsBAS(rows);
@@ -2870,28 +2872,25 @@ function Metas({
       return (a.startsWith("NCD") || a.startsWith("NTC") || a === "NC") && String(r.Anulado||"0").trim() !== "1";
     });
     const sucSinMapa = new Set();
-    // Facturación REAL = suma de Importe (monto por renglón), agrupada por MES y tienda.
-    // El archivo puede abarcar varios meses; cada mes se imputa por separado.
-    // Facturación REAL = suma de FACTURAS ÚNICAS (por Numero de comprobante), NO de renglones.
-    // Por cada factura se toma el Total del documento (que viene repetido por renglón); si no hay
-    // Total, se usa la suma de Importe de sus renglones. Así no se infla por facturas multi-renglón.
-    const porMes = {};        // { "2026-06": { TimeOut: 123, ... } }
+    // Facturación NETA = suma por renglón de (Importe − IVA), agrupada por MES y tienda.
+    // El "Importe" del BAS viene CON IVA por renglón; se le resta la columna "IVA" para quedar en
+    // facturación neta (sin impuesto). Se suma por renglón —no por documento— porque el Importe ya es
+    // por línea, así que no se infla por facturas multi-renglón. El archivo puede abarcar varios meses.
+    const porMes = {};        // { "2026-06": { TimeOut: 123, ... } } facturación neta sin IVA
     const pedMesTienda = {};  // { "2026-06": { TimeOut: Set(pedidos) } }
-    const facMesTienda = {};  // { "2026-06": { TimeOut: { numero: {total, sumImp} } } }
+    const facMesTienda = {};  // { "2026-06": { TimeOut: Set(numeroFactura) } } solo para CONTAR facturas únicas
     fab.forEach(r => {
       const suc = String(r.Sucursal || "").trim();
       const tienda = mapearTienda(suc);
       if (!tienda) { if (suc) sucSinMapa.add(suc); return; }
       const m = parseMesBAS(r.Fecha) || mes;
-      const imp = Number(r.Importe) || 0;
-      const tot = Number(r.Total) || 0;
+      const neto = (Number(r.Importe) || 0) - (Number(r.Iva) || 0);  // facturación sin IVA del renglón
+      if (!porMes[m]) porMes[m] = {};
+      porMes[m][tienda] = (porMes[m][tienda] || 0) + neto;
       const numero = (String(r.Numero || "").trim() || ("OBS:" + String(r.Observacion || "").trim())) + "|" + tienda;
       if (!facMesTienda[m]) facMesTienda[m] = {};
-      if (!facMesTienda[m][tienda]) facMesTienda[m][tienda] = {};
-      const f = facMesTienda[m][tienda];
-      if (!f[numero]) f[numero] = { total: 0, sumImp: 0 };
-      f[numero].sumImp += imp;
-      if (tot > f[numero].total) f[numero].total = tot;
+      if (!facMesTienda[m][tienda]) facMesTienda[m][tienda] = new Set();
+      facMesTienda[m][tienda].add(numero);
       const nro = extraerNroPedido(r.Observacion);
       if (nro) {
         if (!pedMesTienda[m]) pedMesTienda[m] = {};
@@ -2899,15 +2898,11 @@ function Metas({
         pedMesTienda[m][tienda].add(nro);
       }
     });
-    // Sumar facturas únicas por mes/tienda
+    // Cantidad de facturas únicas por mes/tienda (para mostrar)
     const cantFacMes = {};
     Object.entries(facMesTienda).forEach(([m, tt]) => {
-      porMes[m] = {}; cantFacMes[m] = {};
-      Object.entries(tt).forEach(([t, facs]) => {
-        const arr = Object.values(facs);
-        porMes[m][t] = arr.reduce((a, f) => a + (f.total > 0 ? f.total : f.sumImp), 0);
-        cantFacMes[m][t] = arr.length;
-      });
+      cantFacMes[m] = {};
+      Object.entries(tt).forEach(([t, s]) => { cantFacMes[m][t] = s.size; });
     });
     // NCD por mes (cantidad, monto, y también por tienda para descontar del real)
     const ncdPorMes = {};
@@ -2916,7 +2911,7 @@ function Metas({
       const suc = String(r.Sucursal || "").trim();
       const tienda = mapearTienda(suc);
       const m = parseMesBAS(r.Fecha) || mes;
-      const imp = Math.abs(Number(r.Importe) || 0);
+      const imp = Math.abs((Number(r.Importe) || 0) - (Number(r.Iva) || 0));  // nota de crédito neta (sin IVA)
       if (!ncdPorMes[m]) ncdPorMes[m] = {cant:0, monto:0};
       ncdPorMes[m].cant++;
       ncdPorMes[m].monto += imp;
@@ -2939,7 +2934,7 @@ function Metas({
         porMesNeto[m][t] = Math.max(0, fab - (ncdPorMesTienda[m]?.[t] || 0));
       });
     });
-    setResumenBAS({porMes, porMesNeto, ncdPorMes, ncdPorMesTienda, cantPedMes, cantFacMes, meses, fabTotal:fab.length, ncdTotal:ncd.length, sucSinMapa:Array.from(sucSinMapa), colImporte:rowsBAS._colImporte, basCols, primeraFAB});
+    setResumenBAS({porMes, porMesNeto, ncdPorMes, ncdPorMesTienda, cantPedMes, cantFacMes, meses, fabTotal:fab.length, ncdTotal:ncd.length, sucSinMapa:Array.from(sucSinMapa), colImporte:rowsBAS._colImporte, colIva:rowsBAS._colIva, basCols, primeraFAB});
     // Posicionar la vista de metas en el mes más reciente del archivo
     const mesReciente = meses[meses.length-1];
     if (mesReciente && mes !== mesReciente) setMes(mesReciente);
@@ -3235,9 +3230,13 @@ function Metas({
     // ── Detalle del BAS por mes (plegable) ──
     resumenBAS && h(Collapse, {
       title: "Detalle del BAS por mes",
-      subtitle: resumenBAS.fabTotal + " FAB · " + resumenBAS.ncdTotal + " NCD · " + ((resumenBAS.meses || []).map(fmtM).join(", ") || "—") + " · facturación = col " + (resumenBAS.colImporte || "Importe"),
+      subtitle: resumenBAS.fabTotal + " FAB · " + resumenBAS.ncdTotal + " NCD · " + ((resumenBAS.meses || []).map(fmtM).join(", ") || "—") + " · facturación = " + (resumenBAS.colImporte || "Importe") + " − " + (resumenBAS.colIva || "IVA"),
       badge: esAdmin ? h(Chip, { color: C.green, soft: C.greenS }, "✓ Metas") : null
     }, h("div", { className: "space-y-4" },
+      !resumenBAS.colIva && h("div", {
+        className: "rounded-xl px-4 py-2 text-xs font-semibold",
+        style: { background: C.redS, color: C.red }
+      }, "⚠ No encontré la columna de IVA en el BAS, así que la facturación quedó CON IVA (Importe sin restar). Columnas detectadas: ", (resumenBAS.basCols || []).join(", "), ". Decime cómo se llama la columna del IVA y la ajusto."),
       resumenBAS.sucSinMapa && resumenBAS.sucSinMapa.length > 0 && h("div", {
         className: "rounded-xl px-4 py-2 text-xs font-semibold",
         style: { background: C.amberS, color: C.amber }
