@@ -3443,7 +3443,8 @@ function Operativa() {
   const [page, setPage] = useState(0);
   const [soloCC, setSoloCC] = useState("todos"); // todos | cc | nocc
   const [ccCol, setCcCol] = useState("");
-  const [comentarios, setComentarios] = useState({}); // pedido -> { comentario, accionado } (persistido)
+  const [comentarios, setComentarios] = useState({}); // pedido -> { comentario, accionado, comentario_fecha } (persistido)
+  const [persistOK, setPersistOK] = useState(null); // null=sin chequear, true=tabla ok, false=falta crear tabla
   const [filtroEstadoFen, setFiltroEstadoFen] = useState("");
   const [filtroDeposito, setFiltroDeposito] = useState("");
   const [filtroDiasMin, setFiltroDiasMin] = useState("");
@@ -3564,30 +3565,43 @@ function Operativa() {
     const posibleNoDespacho = despachadoWMS && !fenEntregado && (diasDesp != null ? diasDesp > 2 : (dias != null && dias > 2));
     const inconsistente = posibleNoDespacho;
     const estancado = !row.sinWMS && !entregado && !cancelado && !movidoWMS && dias != null && dias > 2;
-    return { ...row, dias, diasDesp, fenEntregado, wmsEntregado, entregado, cancelado, despachadoWMS, atrasado, critico, inconsistente, posibleNoDespacho, estancado };
+    // Forma de entrega: Click & Collect ≠ Pickup ≠ Envío a domicilio
+    const fe = String(row.formaEntrega || "").toLowerCase();
+    const clickCollect = fe.includes("click") || fe.includes("collect");
+    const pickup = !clickCollect && fe.includes("pickup");
+    const depo = String(row.deposito || "").replace(/\.0+$/, "").trim();
+    const sinStock = depo === "0";                 // Depo 0 = el WMS no encontró stock → acción manual
+    const ccDepo9 = clickCollect && depo === "9";  // C&C no debería pedirse a depo 9
+    // Lead time: días corridos desde la compra hasta la entrega real
+    let leadtime = null;
+    if (row.fechaEntrega) { const a = new Date(row.fecha), b = new Date(row.fechaEntrega); if (!isNaN(a) && !isNaN(b) && b >= a) leadtime = Math.round((b - a) / 86400000); }
+    return { ...row, dias, diasDesp, fenEntregado, wmsEntregado, entregado, cancelado, despachadoWMS, atrasado, critico, inconsistente, posibleNoDespacho, estancado, clickCollect, pickup, sinStock, ccDepo9, leadtime };
   };
   // Carga el seguimiento ya analizado (con comentarios) al entrar a la pestaña, para que el análisis quede fijo.
   const cargarSeguimiento = useCallback(async () => {
     try {
-      const { data } = await supa.from("operativa_seguimiento").select("*").order("dias", { ascending: false });
+      const { data, error } = await supa.from("operativa_seguimiento").select("*").order("dias", { ascending: false });
+      if (error) { setPersistOK(false); return; } // tabla no creada u otro problema de acceso
+      setPersistOK(true);
       if (data && data.length) {
         const cm = {};
-        data.forEach(d => { cm[d.pedido] = { comentario: d.comentario || "", accionado: !!d.accionado }; });
+        data.forEach(d => { cm[d.pedido] = { comentario: d.comentario || "", accionado: !!d.accionado, comentario_fecha: d.comentario_fecha || "" }; });
         setComentarios(cm);
         // Mostrar el seguimiento ya analizado aunque todavía no se suban archivos en esta sesión
         setResultado(data.map(d => calcDeriv({
           pedido: d.pedido, tienda: d.tienda || "-", fecha: d.fecha || "",
           estadoFen: d.estado_fen || "-", estadoWMS: d.estado_wms || "-", estadoEco: d.estado_eco || "-",
           deposito: d.deposito || "-", fechaDespacho: d.fecha_despacho || "-", importe: d.importe || "-",
-          clickCollect: !!d.click_collect, sinWMS: !!d.sin_wms,
-          comentario: d.comentario || "", accionado: !!d.accionado
+          formaEntrega: d.forma_entrega || "", fechaEntrega: d.fecha_entrega || "", sinWMS: !!d.sin_wms,
+          comentario: d.comentario || "", accionado: !!d.accionado, comentario_fecha: d.comentario_fecha || ""
         })));
       }
-    } catch (_) { /* tabla aún no creada: se ignora, el cruce sigue funcionando */ }
+    } catch (_) { setPersistOK(false); }
   }, []);
   useEffect(() => { cargarSeguimiento(); }, [cargarSeguimiento]);
   // Guarda comentario / accionado de un pedido (no pisa el snapshot de estados) y actualiza el mapa persistido.
   const guardarSeguimiento = async (pedido, campos) => {
+    if ("comentario" in campos) campos = { ...campos, comentario_fecha: new Date().toISOString() };
     setResultado(prev => (prev || []).map(r => r.pedido === pedido ? { ...r, ...campos } : r));
     setComentarios(prev => ({ ...prev, [pedido]: { ...(prev[pedido] || {}), ...campos } }));
     try { await supa.from("operativa_seguimiento").upsert({ pedido, ...campos }, { onConflict: "pedido" }); } catch (_) {}
@@ -3612,9 +3626,10 @@ function Operativa() {
     const colCanal = findCol(sW, [/canal/i, /tienda/i]) || "Canal";
     const colDep = findCol(sW, [/dep[oó]sito/i]) || "Deposito pedido";
     const colFechDesp = findCol(sW, [/fecha.*despach/i, /despach/i]) || "Fecha despacho";
-    // Click & Collect: columna de método/tipo de entrega en el Monitor (auto-detectada)
-    const colCC = findCol(sW, [/click.*collect/i, /retiro.*sucursal/i, /tipo.*entrega/i, /m[eé]todo.*entrega/i, /forma.*entrega/i, /tipo.*env[ií]o/i, /m[eé]todo.*env[ií]o/i, /modalidad/i, /log[ií]stica/i, /retiro/i]);
-    setCcCol(colCC || "");
+    // Forma de entrega (Click & Collect / Pickup / Envío a domicilio) y fecha de entrega real (para lead time)
+    const colForma = findCol(sW, [/forma.*entr/i, /m[eé]todo.*entr/i, /tipo.*entr/i, /modalidad/i]) || "Forma entrega";
+    const colFechEntrega = findCol(sW, [/fecha.*entrega.*real/i, /fecha.*entrega/i]) || "Fecha entrega real";
+    setCcCol(colForma || "");
 
     const wmsF = filtroTienda === "todas" ? rowsB : rowsB.filter(r => String(r[colCanal] || "").toLowerCase().includes(filtroTienda.toLowerCase()));
     const wmsMap = {};
@@ -3641,12 +3656,12 @@ function Operativa() {
       const wms = wmsMap[pedido];
       const estadoWMS = wms ? wms[colEstEnc] || "-" : "No encontrado en WMS";
       const estadoEco = wms ? wms[colEstEco] || "-" : "-";
-      const deposito = wms ? wms[colDep] || "-" : "-";
+      const deposito = wms ? String(wms[colDep] || "-").replace(/\.0+$/, "").trim() : "-";
       const fechaDespacho = wms ? wms[colFechDesp] || "-" : "-";
+      const formaEntrega = wms ? String(wms[colForma] || "") : "";
+      const fechaEntrega = wms ? String(wms[colFechEntrega] || "") : "";
       if (filtroFecha.desde && fecha && fecha < filtroFecha.desde) return;
       if (filtroFecha.hasta && fecha && fecha > filtroFecha.hasta) return;
-      const ccVal = wms && colCC ? String(wms[colCC] || "") : "";
-      const clickCollect = /retir|collect|pick.?up|sucursal|en\s*tienda|\blocal\b/i.test(ccVal) || /retirar|retiro/i.test(String(estadoFen));
       res.push(calcDeriv({
         pedido,
         tienda: r._tiendaFen || "-",
@@ -3656,8 +3671,9 @@ function Operativa() {
         estadoEco,
         deposito,
         fechaDespacho,
+        formaEntrega,
+        fechaEntrega,
         importe,
-        clickCollect,
         sinWMS: !wms
       }));
     });
@@ -3685,6 +3701,7 @@ function Operativa() {
           pedido: r.pedido, tienda: r.tienda, fecha: r.fecha,
           estado_fen: r.estadoFen, estado_wms: r.estadoWMS, estado_eco: r.estadoEco,
           deposito: r.deposito, fecha_despacho: r.fechaDespacho, importe: String(r.importe),
+          forma_entrega: r.formaEntrega || "", fecha_entrega: r.fechaEntrega || "",
           dias: r.dias, click_collect: !!r.clickCollect, sin_wms: !!r.sinWMS
         }));
         for (let i = 0; i < payload.length; i += 200) {
@@ -3718,8 +3735,25 @@ function Operativa() {
   const noDespacho = resultado ? resultado.filter(r => r.posibleNoDespacho) : [];
   const estancados = resultado ? resultado.filter(r => r.estancado) : [];
   const sinWMS = resultado ? resultado.filter(r => r.sinWMS) : [];
+  const sinStockArr = resultado ? resultado.filter(r => r.sinStock) : [];
+  const ccDepo9Arr = resultado ? resultado.filter(r => r.ccDepo9) : [];
   const entregadosArr = resultado ? resultado.filter(r => r.entregado) : [];
   const tasaCumpl = resultado && resultado.length ? Math.round(entregadosArr.length / resultado.length * 100) : 0;
+  const leadtimes = resultado ? resultado.filter(r => r.leadtime != null).map(r => r.leadtime) : [];
+  const leadtimeProm = leadtimes.length ? Math.round(leadtimes.reduce((a, b) => a + b, 0) / leadtimes.length * 10) / 10 : null;
+  // % de cumplimiento de entrega por día de compra (para el calendario)
+  const calData = useMemo(() => {
+    if (!resultado) return [];
+    const m = {};
+    resultado.forEach(r => {
+      const d = new Date(r.fecha);
+      if (isNaN(d)) return;
+      const dia = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+      if (!m[dia]) m[dia] = { dia, total: 0, entregados: 0 };
+      m[dia].total++; if (r.entregado) m[dia].entregados++;
+    });
+    return Object.values(m).map(x => ({ ...x, pct: x.total ? Math.round(x.entregados / x.total * 100) : 0 })).sort((a, b) => a.dia.localeCompare(b.dia));
+  }, [resultado]);
   // Exportar a Excel (disponible en cualquier vista)
   const exportarOper = (rows, nombre) => {
     if (!rows || !rows.length) { alert("No hay datos para exportar en esta vista."); return; }
@@ -3728,11 +3762,14 @@ function Operativa() {
         "Nro. pedido": r.pedido, "Tienda": r.tienda, "Fecha compra": r.fecha,
         "Estado Fenicio": r.estadoFen, "Estado WMS": r.estadoWMS, "Estado Eco": r.estadoEco,
         "Dias habiles": r.dias, "Deposito": r.deposito, "Fecha despacho": r.fechaDespacho,
-        "Importe": r.importe, "Click & Collect": r.clickCollect ? "Si" : "",
+        "Forma entrega": r.formaEntrega || (r.clickCollect ? "Click & Collect" : r.pickup ? "Pickup" : ""),
+        "Lead time (dias)": r.leadtime != null ? r.leadtime : "",
+        "Importe": r.importe,
         "Atrasado": r.atrasado ? "Si" : "", "Critico": r.critico ? "Si" : "",
-        "Posible no despacho": r.posibleNoDespacho ? "Si" : "", "Estancado": r.estancado ? "Si" : "",
-        "Inconsistente": r.inconsistente ? "Si" : "", "Entregado": r.entregado ? "Si" : "",
-        "Accionado": r.accionado ? "Si" : "", "Comentario / accion": r.comentario || ""
+        "Validar despacho": r.posibleNoDespacho ? "Si" : "", "Estancado": r.estancado ? "Si" : "",
+        "Depo 0": r.sinStock ? "Si" : "", "C&C a depo 9": r.ccDepo9 ? "Si" : "", "Entregado": r.entregado ? "Si" : "",
+        "Accionado": r.accionado ? "Si" : "", "Comentario / accion": r.comentario || "",
+        "Fecha comentario": r.comentario_fecha ? new Date(r.comentario_fecha).toLocaleString("es-UY") : ""
       }));
       const ws = XLSX.utils.json_to_sheet(limpias);
       const wb = XLSX.utils.book_new();
@@ -3763,10 +3800,10 @@ function Operativa() {
   // Opciones de filtros (estados de Fenicio y depósitos presentes en el análisis)
   const estadosFenOpts = resultado ? Array.from(new Set(resultado.map(r => r.estadoFen).filter(Boolean))).sort() : [];
   const depositosOpts = resultado ? Array.from(new Set(resultado.map(r => r.deposito).filter(d => d && d !== "-"))).sort() : [];
-  const vistaBase = vistaTab === "criticos" ? criticos : vistaTab === "nodespacho" ? noDespacho : vistaTab === "estancados" ? estancados : vistaTab === "sinwms" ? sinWMS : vistaTab === "todos" ? (resultado || []) : atrasados;
+  const vistaBase = vistaTab === "criticos" ? criticos : vistaTab === "nodespacho" ? noDespacho : vistaTab === "estancados" ? estancados : vistaTab === "depo0" ? sinStockArr : vistaTab === "sinwms" ? sinWMS : vistaTab === "todos" ? (resultado || []) : atrasados;
   const buscarT = buscar.trim().toLowerCase();
   const vistaRows = vistaBase.filter(r =>
-    (soloCC === "cc" ? r.clickCollect : soloCC === "nocc" ? !r.clickCollect : true) &&
+    (soloCC === "cc" ? r.clickCollect : soloCC === "pickup" ? r.pickup : soloCC === "domicilio" ? (!r.clickCollect && !r.pickup) : true) &&
     (!filtroEstadoFen || r.estadoFen === filtroEstadoFen) &&
     (!filtroDeposito || r.deposito === filtroDeposito) &&
     (!filtroDiasMin || (r.dias != null && r.dias >= Number(filtroDiasMin))) &&
@@ -3820,9 +3857,9 @@ function Operativa() {
     /*#__PURE__*/React.createElement("td", { className: "px-3 py-2" }, /*#__PURE__*/React.createElement("span", { style: { background: r.sinWMS ? C.amberS : r.inconsistente ? C.amberS : "#F1F4F8", color: r.sinWMS ? C.amber : r.inconsistente ? C.amber : C.gray, padding: "2px 6px", borderRadius: 6, fontSize: 10, fontWeight: 600, whiteSpace: "nowrap" } }, r.estadoWMS)),
     /*#__PURE__*/React.createElement("td", { className: "px-3 py-2" }, /*#__PURE__*/React.createElement("span", { style: { fontWeight: 700, color: r.atrasado ? C.red : r.dias > 1 ? C.amber : C.gray } }, r.dias != null ? r.dias : "—"), r.atrasado && /*#__PURE__*/React.createElement("span", { style: { color: C.red } }, " ⚠")),
     /*#__PURE__*/React.createElement("td", { className: "px-3 py-2", style: { color: C.gray, fontSize: 10, maxWidth: 100, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, r.deposito),
-    /*#__PURE__*/React.createElement("td", { className: "px-3 py-2" }, r.clickCollect ? /*#__PURE__*/React.createElement("span", { style: { background: "#EDE9FE", color: "#6D28D9", padding: "2px 6px", borderRadius: 6, fontSize: 10, fontWeight: 700, whiteSpace: "nowrap" } }, "C&C") : ""),
+    /*#__PURE__*/React.createElement("td", { className: "px-3 py-2" }, r.clickCollect ? /*#__PURE__*/React.createElement("span", { style: { background: "#EDE9FE", color: "#6D28D9", padding: "2px 6px", borderRadius: 6, fontSize: 10, fontWeight: 700, whiteSpace: "nowrap" } }, "C&C") : r.pickup ? /*#__PURE__*/React.createElement("span", { style: { background: "#DBEAFE", color: "#1D4ED8", padding: "2px 6px", borderRadius: 6, fontSize: 10, fontWeight: 700, whiteSpace: "nowrap" } }, "Pickup") : ""),
     /*#__PURE__*/React.createElement("td", { className: "px-3 py-2 text-center" }, /*#__PURE__*/React.createElement("input", { type: "checkbox", checked: !!r.accionado, onChange: e => guardarSeguimiento(r.pedido, { accionado: e.target.checked }), title: "Marcar como accionado" })),
-    /*#__PURE__*/React.createElement("td", { className: "px-3 py-2" }, /*#__PURE__*/React.createElement("input", { type: "text", defaultValue: r.comentario || "", placeholder: "Anotar acción…", onBlur: e => { if (e.target.value !== (r.comentario || "")) guardarSeguimiento(r.pedido, { comentario: e.target.value }); }, className: "px-2 py-1 rounded-lg border text-xs", style: { borderColor: C.line, minWidth: 180, width: "100%" } }))))))));
+    /*#__PURE__*/React.createElement("td", { className: "px-3 py-2" }, /*#__PURE__*/React.createElement("input", { type: "text", defaultValue: r.comentario || "", placeholder: "Anotar acción…", onBlur: e => { if (e.target.value !== (r.comentario || "")) guardarSeguimiento(r.pedido, { comentario: e.target.value }); }, className: "px-2 py-1 rounded-lg border text-xs", style: { borderColor: C.line, minWidth: 180, width: "100%" } }), r.comentario_fecha ? /*#__PURE__*/React.createElement("div", { className: "text-[9px] mt-0.5", style: { color: C.gray } }, "✎ " + new Date(r.comentario_fecha).toLocaleDateString("es-UY") + " " + new Date(r.comentario_fecha).toLocaleTimeString("es-UY", { hour: "2-digit", minute: "2-digit" })) : null)))))));
   return /*#__PURE__*/React.createElement("div", {
     className: "space-y-6"
   }, /*#__PURE__*/React.createElement(Title, {
@@ -4021,11 +4058,16 @@ function Operativa() {
     /*#__PURE__*/React.createElement(KpiBtn, { label: "Validar despacho", value: noDespacho.length, color: "#B45309", sub: "Despachado WMS, sin entregar +2d", tab: "nodespacho", border: "#FCD34D" }),
     /*#__PURE__*/React.createElement(KpiBtn, { label: "Estancados >2d", value: estancados.length, color: C.amber, sub: "Sin avanzar en WMS", tab: "estancados", border: C.amberS }),
     /*#__PURE__*/React.createElement(KpiBtn, { label: "Entregados", value: entregadosArr.length, color: C.green, border: C.greenS }),
-    /*#__PURE__*/React.createElement(KpiBtn, { label: "Tasa cumplimiento", value: tasaCumpl + "%", color: tasaCumpl >= 90 ? C.green : tasaCumpl >= 70 ? C.amber : C.red, sub: entregadosArr.length + " de " + resultado.length, border: C.greenS })),
+    /*#__PURE__*/React.createElement(KpiBtn, { label: "Tasa cumplimiento", value: tasaCumpl + "%", color: tasaCumpl >= 90 ? C.green : tasaCumpl >= 70 ? C.amber : C.red, sub: entregadosArr.length + " de " + resultado.length, border: C.greenS }),
+    /*#__PURE__*/React.createElement(KpiBtn, { label: "Lead time", value: leadtimeProm != null ? leadtimeProm + "d" : "—", color: C.blue, sub: "Compra → entrega (prom.)", border: C.line }),
+    /*#__PURE__*/React.createElement(KpiBtn, { label: "Depo 0 (sin stock)", value: sinStockArr.length, color: "#7C3AED", sub: "Requiere acción manual", tab: "depo0", border: "#DDD6FE" })),
+  persistOK === false && /*#__PURE__*/React.createElement("div", { className: "rounded-xl px-4 py-3 text-xs font-medium", style: { background: C.amberS, color: C.amber } }, "⚠ La persistencia no está activa: falta crear la tabla en Supabase, así que los comentarios y el seguimiento NO se guardan entre sesiones. Ejecutá el SQL de sql/operativa_seguimiento.sql en Supabase → SQL Editor."),
+  ccDepo9Arr.length > 0 && /*#__PURE__*/React.createElement("div", { className: "rounded-xl px-4 py-3 text-xs font-medium", style: { background: "#FEE2E2", color: "#B91C1C" } }, "⚠ " + ccDepo9Arr.length + " pedido(s) Click & Collect asignados a Depo 9 — según el criterio del WMS no deberían; revisar la derivación de depósito."),
   /*#__PURE__*/React.createElement("div", { className: "bg-white rounded-2xl border p-3 flex flex-wrap gap-2 items-end", style: { borderColor: C.line } },
     /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", { className: "text-[10px] font-bold uppercase block mb-1", style: { color: C.gray } }, "Buscar pedido"), /*#__PURE__*/React.createElement("input", { type: "text", value: buscar, onChange: e => { setBuscar(e.target.value); setPage(0); }, placeholder: "N° pedido…", className: "px-2 py-1.5 rounded-lg border text-xs", style: { borderColor: C.line } })),
     /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", { className: "text-[10px] font-bold uppercase block mb-1", style: { color: C.gray } }, "Estado Fenicio"), /*#__PURE__*/React.createElement("select", { value: filtroEstadoFen, onChange: e => { setFiltroEstadoFen(e.target.value); setPage(0); }, className: "px-2 py-1.5 rounded-lg border text-xs bg-white", style: { borderColor: C.line, maxWidth: 220 } }, /*#__PURE__*/React.createElement("option", { value: "" }, "Todos"), estadosFenOpts.map(s => /*#__PURE__*/React.createElement("option", { key: s, value: s }, s)))),
     /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", { className: "text-[10px] font-bold uppercase block mb-1", style: { color: C.gray } }, "Depósito"), /*#__PURE__*/React.createElement("select", { value: filtroDeposito, onChange: e => { setFiltroDeposito(e.target.value); setPage(0); }, className: "px-2 py-1.5 rounded-lg border text-xs bg-white", style: { borderColor: C.line, maxWidth: 200 } }, /*#__PURE__*/React.createElement("option", { value: "" }, "Todos"), depositosOpts.map(s => /*#__PURE__*/React.createElement("option", { key: s, value: s }, s)))),
+    /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", { className: "text-[10px] font-bold uppercase block mb-1", style: { color: C.gray } }, "Forma entrega"), /*#__PURE__*/React.createElement("select", { value: soloCC, onChange: e => { setSoloCC(e.target.value); setPage(0); }, className: "px-2 py-1.5 rounded-lg border text-xs bg-white", style: { borderColor: C.line } }, /*#__PURE__*/React.createElement("option", { value: "todos" }, "Todas"), /*#__PURE__*/React.createElement("option", { value: "cc" }, "Click & Collect"), /*#__PURE__*/React.createElement("option", { value: "pickup" }, "Pickup"), /*#__PURE__*/React.createElement("option", { value: "domicilio" }, "Envío a domicilio"))),
     /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", { className: "text-[10px] font-bold uppercase block mb-1", style: { color: C.gray } }, "Días ≥"), /*#__PURE__*/React.createElement("input", { type: "number", value: filtroDiasMin, min: "0", onChange: e => { setFiltroDiasMin(e.target.value); setPage(0); }, placeholder: "0", className: "px-2 py-1.5 rounded-lg border text-xs", style: { borderColor: C.line, width: 72 } })),
     (filtroEstadoFen || filtroDeposito || filtroDiasMin || buscar) ? /*#__PURE__*/React.createElement("button", { onClick: () => { setFiltroEstadoFen(""); setFiltroDeposito(""); setFiltroDiasMin(""); setBuscar(""); setPage(0); }, className: "text-xs font-bold px-3 py-1.5 rounded-lg", style: { background: "#EEF1F5", color: C.gray } }, "Limpiar") : null), /*#__PURE__*/React.createElement("div", {
     className: "flex gap-2 flex-wrap items-center justify-between"
@@ -4034,13 +4076,10 @@ function Operativa() {
     /*#__PURE__*/React.createElement(TabBtn, { id: "criticos", label: "Críticos", count: criticos.length, color: "#B91C1C" }),
     /*#__PURE__*/React.createElement(TabBtn, { id: "nodespacho", label: "Validar despacho", count: noDespacho.length, color: "#B45309" }),
     /*#__PURE__*/React.createElement(TabBtn, { id: "estancados", label: "Estancados", count: estancados.length, color: C.amber }),
+    sinStockArr.length > 0 && /*#__PURE__*/React.createElement(TabBtn, { id: "depo0", label: "Depo 0", count: sinStockArr.length, color: "#7C3AED" }),
     sinWMS.length > 0 && /*#__PURE__*/React.createElement(TabBtn, { id: "sinwms", label: "Sin WMS", count: sinWMS.length, color: "#7C3AED" }),
     /*#__PURE__*/React.createElement(TabBtn, { id: "todos", label: "Todos", count: (resultado || []).length, color: C.blue })
   ), /*#__PURE__*/React.createElement("div", { className: "flex gap-2 shrink-0 items-center" },
-    /*#__PURE__*/React.createElement("select", { value: soloCC, onChange: e => { setSoloCC(e.target.value); setPage(0); }, className: "text-xs font-bold px-2 py-2 rounded-xl border bg-white", style: { borderColor: C.line, color: C.gray } },
-      /*#__PURE__*/React.createElement("option", { value: "todos" }, "Todos los envíos"),
-      /*#__PURE__*/React.createElement("option", { value: "cc" }, "Solo Click & Collect"),
-      /*#__PURE__*/React.createElement("option", { value: "nocc" }, "Sin Click & Collect")),
     /*#__PURE__*/React.createElement("button", { onClick: () => exportarOper(vistaRows, "operativa-" + vistaTab), className: "text-xs font-bold px-3 py-2 rounded-xl", style: { background: C.soft, color: C.blue } }, "⬇ Exportar vista"),
     /*#__PURE__*/React.createElement("button", { onClick: () => alertarTienda(vistaRows, vistaTab), className: "text-xs font-bold px-3 py-2 rounded-xl text-white", style: { background: C.amber } }, "✉ Alertar por mail")
   )),
@@ -4050,11 +4089,21 @@ function Operativa() {
       /*#__PURE__*/React.createElement("button", { onClick: () => setPage(p => Math.max(0, p - 1)), disabled: pageSafe <= 0, className: "text-xs font-bold px-3 py-1.5 rounded-lg disabled:opacity-40", style: { background: "#EEF1F5", color: C.gray } }, "← Anterior"),
       /*#__PURE__*/React.createElement("span", { className: "text-xs font-bold", style: { color: C.gray } }, "Hoja " + (pageSafe + 1) + " / " + totalPaginas),
       /*#__PURE__*/React.createElement("button", { onClick: () => setPage(p => Math.min(totalPaginas - 1, p + 1)), disabled: pageSafe >= totalPaginas - 1, className: "text-xs font-bold px-3 py-1.5 rounded-lg disabled:opacity-40", style: { background: "#EEF1F5", color: C.gray } }, "Siguiente →"))),
-  vistaRows.length > 0 ? /*#__PURE__*/React.createElement(Tabla, { rows: pageRows }) : /*#__PURE__*/React.createElement(Vacio, { msg: vistaTab === "criticos" ? "No hay pedidos críticos (+10 días hábiles)." : vistaTab === "nodespacho" ? "No hay pedidos despachados en WMS que sigan sin entregar en Fenicio." : vistaTab === "estancados" ? "No hay pedidos estancados (+2 días hábiles sin avanzar en el WMS)." : vistaTab === "inconsistencias" ? "Todos los estados coinciden." : vistaTab === "atrasados" ? "No hay pedidos atrasados para este periodo." : "No hay pedidos en esta vista." }),
+  vistaRows.length > 0 ? /*#__PURE__*/React.createElement(Tabla, { rows: pageRows }) : /*#__PURE__*/React.createElement(Vacio, { msg: vistaTab === "criticos" ? "No hay pedidos críticos (+10 días hábiles)." : vistaTab === "nodespacho" ? "No hay pedidos despachados en WMS que sigan sin entregar en Fenicio." : vistaTab === "estancados" ? "No hay pedidos estancados (+2 días hábiles sin avanzar en el WMS)." : vistaTab === "inconsistencias" ? "Todos los estados coinciden." : vistaTab === "depo0" ? "No hay pedidos en Depo 0 (sin stock)." : vistaTab === "atrasados" ? "No hay pedidos atrasados para este periodo." : "No hay pedidos en esta vista." }),
   totalPaginas > 1 && /*#__PURE__*/React.createElement("div", { className: "flex items-center justify-center gap-3 pt-1" },
     /*#__PURE__*/React.createElement("button", { onClick: () => setPage(p => Math.max(0, p - 1)), disabled: pageSafe <= 0, className: "text-xs font-bold px-3 py-1.5 rounded-lg disabled:opacity-40", style: { background: "#EEF1F5", color: C.gray } }, "← Anterior"),
     /*#__PURE__*/React.createElement("span", { className: "text-xs font-bold", style: { color: C.gray } }, "Hoja " + (pageSafe + 1) + " / " + totalPaginas),
-    /*#__PURE__*/React.createElement("button", { onClick: () => setPage(p => Math.min(totalPaginas - 1, p + 1)), disabled: pageSafe >= totalPaginas - 1, className: "text-xs font-bold px-3 py-1.5 rounded-lg disabled:opacity-40", style: { background: "#EEF1F5", color: C.gray } }, "Siguiente →"))));
+    /*#__PURE__*/React.createElement("button", { onClick: () => setPage(p => Math.min(totalPaginas - 1, p + 1)), disabled: pageSafe >= totalPaginas - 1, className: "text-xs font-bold px-3 py-1.5 rounded-lg disabled:opacity-40", style: { background: "#EEF1F5", color: C.gray } }, "Siguiente →")),
+  calData.length > 0 && /*#__PURE__*/React.createElement("div", { className: "bg-white rounded-2xl border p-4", style: { borderColor: C.line } },
+    /*#__PURE__*/React.createElement("div", { className: "text-sm font-bold mb-1" }, "Cumplimiento de entrega por día"),
+    /*#__PURE__*/React.createElement("div", { className: "text-[11px] mb-3", style: { color: C.gray } }, "% de pedidos entregados sobre el total de cada día de compra · pasá el mouse para ver el detalle"),
+    /*#__PURE__*/React.createElement("div", { className: "flex flex-wrap gap-1.5" }, calData.map(d => {
+      const col = d.pct >= 90 ? C.green : d.pct >= 70 ? C.amber : C.red;
+      const bg = d.pct >= 90 ? C.greenS : d.pct >= 70 ? C.amberS : C.redS;
+      return /*#__PURE__*/React.createElement("div", { key: d.dia, title: d.dia + " — " + d.entregados + "/" + d.total + " entregados", className: "rounded-lg px-2 py-1.5 text-center", style: { background: bg, minWidth: 54 } },
+        /*#__PURE__*/React.createElement("div", { className: "text-[10px] font-bold", style: { color: C.gray } }, d.dia.slice(8, 10) + "/" + d.dia.slice(5, 7)),
+        /*#__PURE__*/React.createElement("div", { className: "text-sm font-black fraunces", style: { color: col } }, d.pct + "%"));
+    })))));
 }
 
 /* ── App root ── */

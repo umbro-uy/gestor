@@ -7,22 +7,30 @@
 -- Ejecutar una sola vez en Supabase → SQL Editor.
 
 create table if not exists public.operativa_seguimiento (
-  pedido          text primary key,
-  tienda          text,
-  fecha           text,
-  estado_fen      text,
-  estado_wms      text,
-  estado_eco      text,
-  deposito        text,
-  fecha_despacho  text,
-  importe         text,
-  dias            int,
-  click_collect   boolean default false,
-  sin_wms         boolean default false,
-  comentario      text default '',
-  accionado       boolean default false,
-  actualizado     timestamptz default now()
+  pedido           text primary key,
+  tienda           text,
+  fecha            text,
+  estado_fen       text,
+  estado_wms       text,
+  estado_eco       text,
+  deposito         text,
+  fecha_despacho   text,
+  forma_entrega    text,
+  fecha_entrega    text,
+  importe          text,
+  dias             int,
+  click_collect    boolean default false,
+  sin_wms          boolean default false,
+  comentario       text default '',
+  comentario_fecha timestamptz,
+  accionado        boolean default false,
+  actualizado      timestamptz default now()
 );
+
+-- Si la tabla ya existía de antes, agregá las columnas nuevas:
+alter table public.operativa_seguimiento add column if not exists forma_entrega text;
+alter table public.operativa_seguimiento add column if not exists fecha_entrega text;
+alter table public.operativa_seguimiento add column if not exists comentario_fecha timestamptz;
 
 -- Mantener "actualizado" al día en cada cambio
 create or replace function public.set_actualizado()
