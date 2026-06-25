@@ -2813,22 +2813,42 @@ function Metas({
     const sucSinMapa = new Set();
     // Facturación REAL = suma de Importe (monto por renglón), agrupada por MES y tienda.
     // El archivo puede abarcar varios meses; cada mes se imputa por separado.
+    // Facturación REAL = suma de FACTURAS ÚNICAS (por Numero de comprobante), NO de renglones.
+    // Por cada factura se toma el Total del documento (que viene repetido por renglón); si no hay
+    // Total, se usa la suma de Importe de sus renglones. Así no se infla por facturas multi-renglón.
     const porMes = {};        // { "2026-06": { TimeOut: 123, ... } }
     const pedMesTienda = {};  // { "2026-06": { TimeOut: Set(pedidos) } }
+    const facMesTienda = {};  // { "2026-06": { TimeOut: { numero: {total, sumImp} } } }
     fab.forEach(r => {
       const suc = String(r.Sucursal || "").trim();
       const tienda = mapearTienda(suc);
       if (!tienda) { if (suc) sucSinMapa.add(suc); return; }
       const m = parseMesBAS(r.Fecha) || mes;
       const imp = Number(r.Importe) || 0;
-      if (!porMes[m]) porMes[m] = {};
-      porMes[m][tienda] = (porMes[m][tienda] || 0) + imp;
+      const tot = Number(r.Total) || 0;
+      const numero = (String(r.Numero || "").trim() || ("OBS:" + String(r.Observacion || "").trim())) + "|" + tienda;
+      if (!facMesTienda[m]) facMesTienda[m] = {};
+      if (!facMesTienda[m][tienda]) facMesTienda[m][tienda] = {};
+      const f = facMesTienda[m][tienda];
+      if (!f[numero]) f[numero] = { total: 0, sumImp: 0 };
+      f[numero].sumImp += imp;
+      if (tot > f[numero].total) f[numero].total = tot;
       const nro = extraerNroPedido(r.Observacion);
       if (nro) {
         if (!pedMesTienda[m]) pedMesTienda[m] = {};
         if (!pedMesTienda[m][tienda]) pedMesTienda[m][tienda] = new Set();
         pedMesTienda[m][tienda].add(nro);
       }
+    });
+    // Sumar facturas únicas por mes/tienda
+    const cantFacMes = {};
+    Object.entries(facMesTienda).forEach(([m, tt]) => {
+      porMes[m] = {}; cantFacMes[m] = {};
+      Object.entries(tt).forEach(([t, facs]) => {
+        const arr = Object.values(facs);
+        porMes[m][t] = arr.reduce((a, f) => a + (f.total > 0 ? f.total : f.sumImp), 0);
+        cantFacMes[m][t] = arr.length;
+      });
     });
     // NCD por mes (cantidad, monto, y también por tienda para descontar del real)
     const ncdPorMes = {};
@@ -2860,7 +2880,7 @@ function Metas({
         porMesNeto[m][t] = Math.max(0, fab - (ncdPorMesTienda[m]?.[t] || 0));
       });
     });
-    setResumenBAS({porMes, porMesNeto, ncdPorMes, ncdPorMesTienda, cantPedMes, meses, fabTotal:fab.length, ncdTotal:ncd.length, sucSinMapa:Array.from(sucSinMapa), colImporte:rowsBAS._colImporte, basCols, primeraFAB});
+    setResumenBAS({porMes, porMesNeto, ncdPorMes, ncdPorMesTienda, cantPedMes, cantFacMes, meses, fabTotal:fab.length, ncdTotal:ncd.length, sucSinMapa:Array.from(sucSinMapa), colImporte:rowsBAS._colImporte, basCols, primeraFAB});
     // Posicionar la vista de metas en el mes más reciente del archivo
     const mesReciente = meses[meses.length-1];
     if (mesReciente && mes !== mesReciente) setMes(mesReciente);
@@ -3286,7 +3306,7 @@ function Metas({
   }, fmtM(m), /*#__PURE__*/React.createElement("span", {
     className: "text-xs font-normal",
     style: {color: C.gray}
-  }, "Neto ", fmtUSD(Object.values(resumenBAS.porMesNeto?.[m]||{}).reduce((a,b)=>a+b,0)), " · Bruto ", fmtUSD(Object.values(resumenBAS.porMes[m]).reduce((a,b)=>a+b,0)), resumenBAS.ncdPorMes[m] ? ` · ${resumenBAS.ncdPorMes[m].cant} NCD (−${fmtUSD(resumenBAS.ncdPorMes[m].monto)})` : "")), /*#__PURE__*/React.createElement("div", {
+  }, "Neto ", fmtUSD(Object.values(resumenBAS.porMesNeto?.[m]||{}).reduce((a,b)=>a+b,0)), " · Bruto ", fmtUSD(Object.values(resumenBAS.porMes[m]).reduce((a,b)=>a+b,0)), resumenBAS.ncdPorMes[m] ? ` · ${resumenBAS.ncdPorMes[m].cant} NCD (−${fmtUSD(resumenBAS.ncdPorMes[m].monto)})` : "", " · " + Object.values(resumenBAS.cantFacMes?.[m] || {}).reduce((a, b) => a + b, 0) + " facturas únicas")), /*#__PURE__*/React.createElement("div", {
     className: "grid sm:grid-cols-3 gap-3"
   }, Object.entries(resumenBAS.porMes[m]).map(([tienda, fabBruto]) => {
     const neto = resumenBAS.porMesNeto?.[m]?.[tienda] ?? fabBruto;
