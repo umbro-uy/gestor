@@ -3522,8 +3522,18 @@ function Operativa() {
   // Carga el seguimiento ya analizado (con comentarios) al entrar a la pestaña, para que el análisis quede fijo.
   const cargarSeguimiento = useCallback(async () => {
     try {
-      const { data, error } = await supa.from("operativa_seguimiento").select("*").order("dias", { ascending: false });
-      if (error) { setPersistOK(false); return; } // tabla no creada u otro problema de acceso
+      // Supabase devuelve hasta 1000 filas por request → paginar para traer TODO el seguimiento
+      // (si no, con >1000 pedidos seguidos se cortaba en 1000 y, al ordenar por días, quedaban solo los más viejos).
+      const PAG = 1000;
+      let data = [], desde = 0;
+      for (;;) {
+        const { data: page, error } = await supa.from("operativa_seguimiento").select("*").order("dias", { ascending: false }).range(desde, desde + PAG - 1);
+        if (error) { setPersistOK(false); return; } // tabla no creada u otro problema de acceso
+        if (!page || !page.length) break;
+        data = data.concat(page);
+        if (page.length < PAG) break;
+        desde += PAG;
+      }
       setPersistOK(true);
       if (data && data.length) {
         const cm = {};
