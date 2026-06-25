@@ -3333,6 +3333,7 @@ function Operativa() {
     hasta: ""
   });
   const [resultado, setResultado] = useState(null);
+  const [entregaDiag, setEntregaDiag] = useState(null); // diagnóstico de la columna de fecha de entrega de Fenicio
   const [vistaTab, setVistaTab] = useState("atrasados");
   const [page, setPage] = useState(0);
   const [soloCC, setSoloCC] = useState("todos"); // todos | cc | nocc
@@ -3539,7 +3540,8 @@ function Operativa() {
     const colFechF = findCol(sF, [/fecha.*comien/i, /comienzo/i, /fecha.*pago/i, /^fecha/i]) || "Fecha comienzo";
     const colEstF = findCol(sF, [/estado.*entr/i, /entr.*estado/i]) || "Estado entrega";
     // Fecha de entrega REAL = la de Fenicio (estado "Pedido entregado"), no la del WMS (expedición manual, poco confiable)
-    const colFechEntFen = findCol(sF, [/fecha.*entreg/i, /entreg.*fecha/i]) || "";
+    // Se prueban varios nombres habituales de la columna de fecha de entrega de Fenicio.
+    const colFechEntFen = findCol(sF, [/fecha.*entreg/i, /entreg.*fecha/i, /fecha.*recib/i, /recib.*fecha/i, /fecha.*finaliz/i, /finaliz.*fecha/i, /fecha.*complet/i]) || "";
     const colImp = findCol(sF, [/importe.*total.*pedido/i, /importe.*pedido/i]) || findCol(sF, [/importe/i]) || "Importe total pedido";
     const sW = rowsB[0] || {};
     const colVenta = findCol(sW, [/^venta$/i, /venta/i]) || "Venta";
@@ -3600,6 +3602,9 @@ function Operativa() {
         sinWMS: !wms
       }));
     });
+    // Diagnóstico de la fecha de entrega: cuántos pedidos quedaron con tiempo de entrega calculado
+    // y qué columnas trae Fenicio (para identificar la correcta si no se detectó).
+    setEntregaDiag({ col: colFechEntFen, cols: Object.keys(sF), conEntrega: res.filter(r => r.leadtimeEntrega != null).length, total: res.length });
     const matchCount = res.filter(r => !r.sinWMS).length;
     if (res.length === 0) {
       alert("No se pudo leer el N° de pedido del reporte de Fenicio.\n\nColumna buscada: \"" + colNro + "\".\nColumnas encontradas: " + Object.keys(sF).join(", "));
@@ -4018,6 +4023,12 @@ function Operativa() {
     /*#__PURE__*/React.createElement(MetricCard, { label: "Tiempo a despacho", value: leadtimeProm != null ? leadtimeProm + "d" : "—", color: C.blue, sub: "Compra → despacho (prom.)" }),
     /*#__PURE__*/React.createElement(MetricCard, { label: "Tiempo de entrega", value: leadtimeEntProm != null ? leadtimeEntProm + "d" : "—", color: C.ink, sub: "Compra → entrega (prom.)" }),
     /*#__PURE__*/React.createElement(MetricCard, { label: "Sin WMS", value: sinWMS.length, color: sinWMS.length ? C.amber : C.gray, tab: sinWMS.length ? "sinwms" : null, sub: "No están en Encuentra" })),
+  leadtimeEntProm == null && entregaDiag && /*#__PURE__*/React.createElement("div", { className: "rounded-xl px-4 py-3 text-xs", style: { background: C.amberS, color: C.amber } },
+    /*#__PURE__*/React.createElement("b", null, "Tiempo de entrega sin datos. "),
+    entregaDiag.col ? ("Detecté la columna “" + entregaDiag.col + "” pero ningún pedido tiene una fecha de entrega válida (" + entregaDiag.conEntrega + " de " + entregaDiag.total + "). ") : "No encontré una columna de fecha de entrega en tu Fenicio. ",
+    "Columnas de tu Fenicio: ",
+    /*#__PURE__*/React.createElement("span", { style: { color: C.ink, fontWeight: 600 } }, (entregaDiag.cols || []).join(" · ")),
+    ". Decime cuál tiene la fecha en que se entregó el pedido al cliente y la conecto."),
   persistOK === false && /*#__PURE__*/React.createElement("div", { className: "rounded-xl px-4 py-3 text-xs font-medium", style: { background: C.amberS, color: C.amber } }, "⚠ La persistencia no está activa: falta crear la tabla en Supabase, así que los comentarios y el seguimiento NO se guardan entre sesiones. Ejecutá el SQL de sql/operativa_seguimiento.sql en Supabase → SQL Editor."),
   ccDepo9Arr.length > 0 && /*#__PURE__*/React.createElement("div", { className: "rounded-xl px-4 py-3 text-xs font-medium", style: { background: "#FEE2E2", color: "#B91C1C" } }, "⚠ " + ccDepo9Arr.length + " pedido(s) Click & Collect asignados a Depo 9 — según el criterio del WMS no deberían; revisar la derivación de depósito."),
   /*#__PURE__*/React.createElement("div", { className: "bg-white rounded-2xl border p-3 flex flex-wrap gap-2 items-end", style: { borderColor: C.line } },
