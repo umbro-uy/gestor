@@ -3585,7 +3585,8 @@ function Operativa() {
       setPersistOK(true);
       if (data && data.length) {
         const cm = {};
-        data.forEach(d => { cm[d.pedido] = { comentario: d.comentario || "", accionado: !!d.accionado, comentario_fecha: d.comentario_fecha || "" }; });
+        const histDe = d => Array.isArray(d.historial) && d.historial.length ? d.historial : (d.comentario ? [{ t: d.comentario, f: d.comentario_fecha || "" }] : []);
+        data.forEach(d => { cm[d.pedido] = { historial: histDe(d), accionado: !!d.accionado }; });
         setComentarios(cm);
         // Mostrar el seguimiento ya analizado aunque todavía no se suban archivos en esta sesión
         setResultado(data.map(d => calcDeriv({
@@ -3593,18 +3594,27 @@ function Operativa() {
           estadoFen: d.estado_fen || "-", estadoWMS: d.estado_wms || "-", estadoEco: d.estado_eco || "-",
           deposito: d.deposito || "-", fechaDespacho: d.fecha_despacho || "-", importe: d.importe || "-",
           formaEntrega: d.forma_entrega || "", fechaEntrega: d.fecha_entrega || "", sinWMS: !!d.sin_wms,
-          comentario: d.comentario || "", accionado: !!d.accionado, comentario_fecha: d.comentario_fecha || ""
+          historial: histDe(d), accionado: !!d.accionado
         })));
       }
     } catch (_) { setPersistOK(false); }
   }, []);
   useEffect(() => { cargarSeguimiento(); }, [cargarSeguimiento]);
-  // Guarda comentario / accionado de un pedido (no pisa el snapshot de estados) y actualiza el mapa persistido.
+  // Marca accionado (no toca el historial de comentarios).
   const guardarSeguimiento = async (pedido, campos) => {
-    if ("comentario" in campos) campos = { ...campos, comentario_fecha: new Date().toISOString() };
     setResultado(prev => (prev || []).map(r => r.pedido === pedido ? { ...r, ...campos } : r));
     setComentarios(prev => ({ ...prev, [pedido]: { ...(prev[pedido] || {}), ...campos } }));
     try { await supa.from("operativa_seguimiento").upsert({ pedido, ...campos }, { onConflict: "pedido" }); } catch (_) {}
+  };
+  // Agrega una nota al historial del pedido (bitácora con fecha; no se pisan las anteriores).
+  const agregarComentario = async (pedido, texto) => {
+    const t = String(texto || "").trim();
+    if (!t) return;
+    const entry = { t, f: new Date().toISOString() };
+    let nuevo = [];
+    setComentarios(prev => { nuevo = [...((prev[pedido] && prev[pedido].historial) || []), entry]; return { ...prev, [pedido]: { ...(prev[pedido] || {}), historial: nuevo } }; });
+    setResultado(prev => (prev || []).map(r => r.pedido === pedido ? { ...r, historial: [...(r.historial || []), entry] } : r));
+    try { await supa.from("operativa_seguimiento").upsert({ pedido, historial: nuevo, comentario: t, comentario_fecha: entry.f }, { onConflict: "pedido" }); } catch (_) {}
   };
   const cruzar = () => {
     if (!rowsA.length || !rowsB.length) {
@@ -3687,7 +3697,7 @@ function Operativa() {
     const relevante = r => r.atrasado || r.critico || r.posibleNoDespacho || r.estancado || r.inconsistente;
     const merged = res.map(r => {
       const c = comentarios[r.pedido] || {};
-      return { ...r, comentario: c.comentario || "", accionado: !!c.accionado };
+      return { ...r, historial: c.historial || [], accionado: !!c.accionado };
     });
     merged.sort((a, b) => (b.dias || 0) - (a.dias || 0));
     setResultado(merged);
@@ -3768,8 +3778,8 @@ function Operativa() {
         "Atrasado": r.atrasado ? "Si" : "", "Critico": r.critico ? "Si" : "",
         "Validar despacho": r.posibleNoDespacho ? "Si" : "", "Estancado": r.estancado ? "Si" : "",
         "Depo 0": r.sinStock ? "Si" : "", "C&C a depo 9": r.ccDepo9 ? "Si" : "", "Entregado": r.entregado ? "Si" : "",
-        "Accionado": r.accionado ? "Si" : "", "Comentario / accion": r.comentario || "",
-        "Fecha comentario": r.comentario_fecha ? new Date(r.comentario_fecha).toLocaleString("es-UY") : ""
+        "Accionado": r.accionado ? "Si" : "",
+        "Comentarios (historial)": (r.historial || []).map(h => (h.f ? new Date(h.f).toLocaleString("es-UY") + ": " : "") + h.t).join(" | ")
       }));
       const ws = XLSX.utils.json_to_sheet(limpias);
       const wb = XLSX.utils.book_new();
@@ -3859,7 +3869,7 @@ function Operativa() {
     /*#__PURE__*/React.createElement("td", { className: "px-3 py-2", style: { color: C.gray, fontSize: 10, maxWidth: 100, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, r.deposito),
     /*#__PURE__*/React.createElement("td", { className: "px-3 py-2" }, r.clickCollect ? /*#__PURE__*/React.createElement("span", { style: { background: "#EDE9FE", color: "#6D28D9", padding: "2px 6px", borderRadius: 6, fontSize: 10, fontWeight: 700, whiteSpace: "nowrap" } }, "C&C") : r.pickup ? /*#__PURE__*/React.createElement("span", { style: { background: "#DBEAFE", color: "#1D4ED8", padding: "2px 6px", borderRadius: 6, fontSize: 10, fontWeight: 700, whiteSpace: "nowrap" } }, "Pickup") : ""),
     /*#__PURE__*/React.createElement("td", { className: "px-3 py-2 text-center" }, /*#__PURE__*/React.createElement("input", { type: "checkbox", checked: !!r.accionado, onChange: e => guardarSeguimiento(r.pedido, { accionado: e.target.checked }), title: "Marcar como accionado" })),
-    /*#__PURE__*/React.createElement("td", { className: "px-3 py-2" }, /*#__PURE__*/React.createElement("input", { type: "text", defaultValue: r.comentario || "", placeholder: "Anotar acción…", onBlur: e => { if (e.target.value !== (r.comentario || "")) guardarSeguimiento(r.pedido, { comentario: e.target.value }); }, className: "px-2 py-1 rounded-lg border text-xs", style: { borderColor: C.line, minWidth: 180, width: "100%" } }), r.comentario_fecha ? /*#__PURE__*/React.createElement("div", { className: "text-[9px] mt-0.5", style: { color: C.gray } }, "✎ " + new Date(r.comentario_fecha).toLocaleDateString("es-UY") + " " + new Date(r.comentario_fecha).toLocaleTimeString("es-UY", { hour: "2-digit", minute: "2-digit" })) : null)))))));
+    /*#__PURE__*/React.createElement("td", { className: "px-3 py-2", style: { minWidth: 210 } }, (r.historial && r.historial.length) ? /*#__PURE__*/React.createElement("div", { style: { maxHeight: 72, overflowY: "auto", marginBottom: 4 } }, r.historial.slice().reverse().map((h, j) => /*#__PURE__*/React.createElement("div", { key: j, className: "text-[10px] leading-snug mb-0.5" }, /*#__PURE__*/React.createElement("span", { style: { color: C.gray } }, h.f ? new Date(h.f).toLocaleDateString("es-UY") + " " + new Date(h.f).toLocaleTimeString("es-UY", { hour: "2-digit", minute: "2-digit" }) + " · " : ""), h.t))) : null, /*#__PURE__*/React.createElement("input", { type: "text", placeholder: "Agregar nota…", onKeyDown: e => { if (e.key === "Enter") { agregarComentario(r.pedido, e.target.value); e.target.value = ""; } }, onBlur: e => { agregarComentario(r.pedido, e.target.value); e.target.value = ""; }, className: "px-2 py-1 rounded-lg border text-xs", style: { borderColor: C.line, minWidth: 180, width: "100%" } }))))))));
   return /*#__PURE__*/React.createElement("div", {
     className: "space-y-6"
   }, /*#__PURE__*/React.createElement(Title, {
