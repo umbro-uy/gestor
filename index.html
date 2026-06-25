@@ -491,7 +491,9 @@ function Collapse({
 
 // Logo de Umbro recreado como SVG (rombo concéntrico). Escalable y sin archivos externos.
 // h = alto en px. wordmark = agrega la palabra "umbro" debajo (para el login).
-const UmbroLogo = ({ h = 24, color = "#fff", wordmark = false, className = "", style = {} }) => {
+const UmbroLogo = ({ h = 24, color = "#fff", wordmark = false, row = false, className = "", style = {} }) => {
+  // h = alto del rombo en px. wordmark = agrega la palabra "umbro" (parte del logo).
+  // row = lockup horizontal (rombo + palabra al lado); por defecto vertical (rombo arriba, palabra abajo).
   const cx = 100, cy = 46;
   const dia = (rx, ry) => `M${cx} ${cy - ry}L${cx + rx} ${cy}L${cx} ${cy + ry}L${cx - rx} ${cy}Z`;
   const rings = [[98, 44], [80, 35.5], [60, 26.5], [43, 19], [23, 10], [9, 4]];
@@ -501,11 +503,15 @@ const UmbroLogo = ({ h = 24, color = "#fff", wordmark = false, className = "", s
     style: { display: "block" }
   }, /*#__PURE__*/React.createElement("path", { d, fill: color, fillRule: "evenodd" }));
   if (!wordmark) return /*#__PURE__*/React.createElement("span", { className, style: { display: "inline-flex", ...style } }, svg);
+  const word = /*#__PURE__*/React.createElement("span", {
+    style: { color, fontWeight: 800, fontSize: h * (row ? 0.92 : 0.66), lineHeight: 1, letterSpacing: "-0.04em", fontFamily: "'Poppins',sans-serif" }
+  }, "umbro");
   return /*#__PURE__*/React.createElement("span", {
-    className, style: { display: "inline-flex", flexDirection: "column", alignItems: "center", gap: h * 0.2, ...style }
-  }, svg, /*#__PURE__*/React.createElement("span", {
-    style: { color, fontWeight: 800, fontSize: h * 0.66, lineHeight: 1, letterSpacing: "-0.04em", fontFamily: "'Poppins',sans-serif" }
-  }, "umbro"));
+    className,
+    style: row
+      ? { display: "inline-flex", flexDirection: "row", alignItems: "center", gap: h * 0.42, ...style }
+      : { display: "inline-flex", flexDirection: "column", alignItems: "center", gap: h * 0.2, ...style }
+  }, svg, word);
 };
 
 /* ── Apariencia ── */
@@ -910,7 +916,7 @@ function Panel({
     className: "flex items-start justify-between gap-3 flex-wrap"
   }, /*#__PURE__*/React.createElement("div", {
     className: "flex items-center gap-3 sm:gap-4"
-  }, /*#__PURE__*/React.createElement(UmbroLogo, { h: 44, color: "#fff", style: { flexShrink: 0 } }), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+  }, /*#__PURE__*/React.createElement(UmbroLogo, { h: 30, color: "#fff", wordmark: true, row: true, style: { flexShrink: 0 } }), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
     className: "text-[11px] font-bold uppercase tracking-widest",
     style: {
       color: "rgba(255,255,255,0.45)"
@@ -997,7 +1003,7 @@ function Panel({
     title: "Salir"
   }, Ic.out))), /*#__PURE__*/React.createElement("nav", {
     className: "flex gap-1 mt-5 overflow-x-auto items-center"
-  }, /*#__PURE__*/React.createElement(UmbroLogo, { h: 20, color: "rgba(255,255,255,0.85)", style: { flexShrink: 0, alignSelf: "center", marginRight: 10, marginBottom: 6 } }), TABS.map(t => /*#__PURE__*/React.createElement("button", {
+  }, /*#__PURE__*/React.createElement(UmbroLogo, { h: 16, color: "#fff", wordmark: true, row: true, style: { flexShrink: 0, alignSelf: "center", marginRight: 14, marginBottom: 6 } }), TABS.map(t => /*#__PURE__*/React.createElement("button", {
     key: t.id,
     onClick: () => setTab(t.id),
     className: "flex items-center gap-1.5 px-3 sm:px-4 py-2.5 text-sm font-semibold rounded-t-xl whitespace-nowrap transition-colors",
