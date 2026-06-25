@@ -23,6 +23,7 @@ create table if not exists public.operativa_seguimiento (
   sin_wms          boolean default false,
   comentario       text default '',
   comentario_fecha timestamptz,
+  historial        jsonb default '[]'::jsonb,
   accionado        boolean default false,
   actualizado      timestamptz default now()
 );
@@ -31,6 +32,7 @@ create table if not exists public.operativa_seguimiento (
 alter table public.operativa_seguimiento add column if not exists forma_entrega text;
 alter table public.operativa_seguimiento add column if not exists fecha_entrega text;
 alter table public.operativa_seguimiento add column if not exists comentario_fecha timestamptz;
+alter table public.operativa_seguimiento add column if not exists historial jsonb default '[]'::jsonb;
 
 -- Mantener "actualizado" al día en cada cambio
 create or replace function public.set_actualizado()
