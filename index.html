@@ -3553,8 +3553,10 @@ function Operativa() {
     const t = String(texto || "").trim();
     if (!t) return;
     const entry = { t, f: new Date().toISOString() };
-    let nuevo = [];
-    setComentarios(prev => { nuevo = [...((prev[pedido] && prev[pedido].historial) || []), entry]; return { ...prev, [pedido]: { ...(prev[pedido] || {}), historial: nuevo } }; });
+    // nuevo se calcula de forma síncrona (no dentro del updater de setState) para que el upsert
+    // persista el historial completo y no un array vacío por el batching de React.
+    const nuevo = [...((comentarios[pedido] && comentarios[pedido].historial) || []), entry];
+    setComentarios(prev => ({ ...prev, [pedido]: { ...(prev[pedido] || {}), historial: [...((prev[pedido] && prev[pedido].historial) || []), entry] } }));
     setResultado(prev => (prev || []).map(r => r.pedido === pedido ? { ...r, historial: [...(r.historial || []), entry] } : r));
     try { await supa.from("operativa_seguimiento").upsert({ pedido, historial: nuevo, comentario: t, comentario_fecha: entry.f }, { onConflict: "pedido" }); } catch (_) {}
   };
@@ -3648,8 +3650,15 @@ function Operativa() {
       const c = comentarios[r.pedido] || {};
       return { ...r, historial: c.historial || [], accionado: !!c.accionado };
     });
-    merged.sort((a, b) => (b.dias || 0) - (a.dias || 0));
-    setResultado(merged);
+    // Conservar los pedidos YA SEGUIDOS (con comentario o marcados como accionado) que NO vinieron en
+    // los archivos nuevos, para no perder su seguimiento al recruzar. Se re-derivan para refrescar días.
+    const enCruce = new Set(merged.map(r => r.pedido));
+    setResultado(prevRes => {
+      const retenidos = (prevRes || [])
+        .filter(p => !enCruce.has(p.pedido) && ((p.historial && p.historial.length) || p.accionado))
+        .map(p => ({ ...calcDeriv(p), retenido: true }));
+      return merged.concat(retenidos).sort((a, b) => (b.dias || 0) - (a.dias || 0));
+    });
     setVistaTab("atrasados");
     setPage(0);
     // Persistir SOLO los pedidos accionables (snapshot); no pisa comentario/accionado existentes
@@ -3833,7 +3842,7 @@ function Operativa() {
     }, h)))), /*#__PURE__*/React.createElement("tbody", null, rows.map((r, i) => /*#__PURE__*/React.createElement("tr", {
     key: r.pedido || i,
     style: { borderTop: "1px solid " + C.line, background: r.accionado ? "#F0FDF4" : r.atrasado ? "#FFF5F5" : r.inconsistente ? "#FFFBEB" : "#fff" }
-  }, /*#__PURE__*/React.createElement("td", { className: "px-3 py-2 font-bold tabular-nums" }, r.pedido),
+  }, /*#__PURE__*/React.createElement("td", { className: "px-3 py-2 font-bold tabular-nums" }, r.pedido, r.retenido && /*#__PURE__*/React.createElement("span", { className: "ml-1.5 align-middle text-[9px] font-bold px-1.5 py-px rounded-full", style: { background: "#EEF1F5", color: C.gray }, title: "Seguimiento de una carga anterior — no vino en los archivos actuales" }, "previo")),
     /*#__PURE__*/React.createElement("td", { className: "px-3 py-2 text-xs font-semibold", style: { color: C.gray } }, r.tienda),
     /*#__PURE__*/React.createElement("td", { className: "px-3 py-2", style: { color: C.gray, whiteSpace: "nowrap" } }, r.fecha),
     /*#__PURE__*/React.createElement("td", { className: "px-3 py-2" }, /*#__PURE__*/React.createElement("span", { style: { background: r.entregado ? C.greenS : C.soft, color: r.entregado ? C.green : C.blue, padding: "2px 6px", borderRadius: 6, fontSize: 10, fontWeight: 600, whiteSpace: "nowrap" } }, r.estadoFen)),
