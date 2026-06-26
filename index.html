@@ -1072,6 +1072,42 @@ function Resumen({
   const vencidas = tareas.filter(vencida).length;
   const hechas = tareas.filter(t => t.estado === "hecho").length;
   const prog = objetivos.length ? Math.round(objetivos.reduce((a, o) => a + o.progreso, 0) / objetivos.length) : 0;
+  // ── Datos transversales para el resumen: facturación (metas_mensuales) y operativa (seguimiento) ──
+  const fmtUSD = n => "$" + Math.round(n || 0).toLocaleString("es-UY");
+  const MESNOM = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
+  const fmtMesCorto = m => MESNOM[(+String(m).split("-")[1]) - 1] || "";
+  const [metasM, setMetasM] = useState([]);
+  const [seguiR, setSeguiR] = useState([]);
+  useEffect(() => {
+    let vivo = true;
+    (async () => {
+      try { const { data: mm } = await supa.from("metas_mensuales").select("*"); if (vivo && mm) setMetasM(mm); } catch (_) {}
+      try {
+        let all = [], desde = 0;
+        for (;;) { const { data: pg, error } = await supa.from("operativa_seguimiento").select("pedido,dias,estado_fen,estado_wms,deposito").range(desde, desde + 999); if (error || !pg || !pg.length) break; all = all.concat(pg); if (pg.length < 1000) break; desde += 1000; }
+        if (vivo) setSeguiR(all);
+      } catch (_) {}
+    })();
+    return () => { vivo = false; };
+  }, []);
+  const mesActual = new Date().toISOString().slice(0, 7);
+  const anioActual = String(new Date().getFullYear());
+  const sumReal = arr => arr.reduce((a, m) => a + Number(m.real || 0), 0);
+  const sumMeta = arr => arr.reduce((a, m) => a + Number(m.meta || 0), 0);
+  const realMes = sumReal(metasM.filter(m => m.mes === mesActual));
+  const metaMes = sumMeta(metasM.filter(m => m.mes === mesActual));
+  const pctMes = metaMes > 0 ? Math.round(realMes / metaMes * 100) : null;
+  const colMes = pctMes == null ? C.gray : pctMes >= 100 ? C.green : pctMes >= 70 ? C.amber : C.red;
+  const OBJ_ANUAL = 100000000;
+  const realAnio = sumReal(metasM.filter(m => String(m.mes || "").startsWith(anioActual)));
+  const pctAnio = Math.round(realAnio / OBJ_ANUAL * 100);
+  const chartData = Array.from({ length: 12 }, (_, i) => { const m = anioActual + "-" + String(i + 1).padStart(2, "0"); return { m, real: sumReal(metasM.filter(x => x.mes === m)), meta: sumMeta(metasM.filter(x => x.mes === m)) }; });
+  const maxChart = Math.max(1, ...chartData.map(c => Math.max(c.real, c.meta)));
+  const esEnt = r => /entregad/i.test(String(r.estado_fen || "") + " " + String(r.estado_wms || ""));
+  const esCanc = r => /cancel/i.test(String(r.estado_fen || "") + " " + String(r.estado_wms || ""));
+  const activosOp = seguiR.filter(r => !esEnt(r) && !esCanc(r));
+  const atrasadosN = activosOp.filter(r => Number(r.dias) > 3).length;
+  const depo0N = activosOp.filter(r => String(r.deposito || "").replace(/\.0+$/, "").trim() === "0").length;
   const [editKpi, setEditKpi] = useState(null);
   const [draftKpi, setDraftKpi] = useState("");
   const updKpiG = async (k, val) => {
@@ -1127,29 +1163,33 @@ function Resumen({
     };
   };
   const statsBase = [{
-    l: "Tareas abiertas",
-    v: abiertas,
-    ic: Ic.clock,
+    l: "Facturación del mes",
+    v: fmtUSD(realMes),
+    sub: pctMes != null ? pctMes + "% de " + fmtUSD(metaMes) : "Meta sin definir",
+    ic: Ic.ops,
+    c: colMes,
+    s: C.greenS
+  }, {
+    l: "Acumulado " + anioActual,
+    v: fmtUSD(realAnio),
+    sub: pctAnio + "% del objetivo anual",
+    ic: Ic.trend,
     c: C.blue,
     s: C.soft
   }, {
-    l: "Vencidas",
-    v: vencidas,
+    l: "Pedidos atrasados",
+    v: seguiR.length ? String(atrasadosN) : "—",
+    sub: "Operativa · +3 días háb.",
     ic: Ic.alert,
-    c: C.red,
+    c: atrasadosN > 0 ? C.red : C.green,
     s: C.redS
   }, {
-    l: "Completadas",
-    v: hechas,
-    ic: Ic.ok,
-    c: C.green,
-    s: C.greenS
-  }, {
-    l: "Avance objetivos",
-    v: `${prog}%`,
-    ic: Ic.trend,
-    c: C.amber,
-    s: C.amberS
+    l: "Depo 0 (sin stock)",
+    v: seguiR.length ? String(depo0N) : "—",
+    sub: "Sin entregar · acción manual",
+    ic: Ic.alert,
+    c: depo0N > 0 ? "#7C3AED" : C.green,
+    s: "#EDE9FE"
   }];
   return /*#__PURE__*/React.createElement("div", {
     className: "space-y-8"
@@ -1175,11 +1215,18 @@ function Resumen({
       color: C.gray
     }
   }, s.l)), /*#__PURE__*/React.createElement("div", {
-    className: "text-3xl font-black tabular-nums",
+    className: "text-2xl font-black tabular-nums fraunces",
     style: {
       color: s.c
     }
-  }, s.v)))), /*#__PURE__*/React.createElement("section", null, /*#__PURE__*/React.createElement(Title, {
+  }, s.v), s.sub && /*#__PURE__*/React.createElement("div", { className: "text-[11px] mt-1.5 font-medium", style: { color: C.gray } }, s.sub)))), /*#__PURE__*/React.createElement("section", null, /*#__PURE__*/React.createElement(Title, {
+    eyebrow: "Análisis", title: "Facturación mensual " + anioActual
+  }), /*#__PURE__*/React.createElement("div", { className: "bg-white rounded-2xl border p-4", style: { borderColor: C.line } }, /*#__PURE__*/React.createElement("div", { className: "flex items-end gap-1.5", style: { height: 170 } }, chartData.map(c => {
+    const hPct = Math.round(c.real / maxChart * 100);
+    const metaPct = c.meta > 0 ? Math.round(Math.min(c.meta, maxChart) / maxChart * 100) : 0;
+    const esActual = c.m === mesActual;
+    return /*#__PURE__*/React.createElement("div", { key: c.m, className: "flex-1 flex flex-col items-center justify-end h-full", title: fmtMesCorto(c.m) + ": " + fmtUSD(c.real) + (c.meta > 0 ? " · meta " + fmtUSD(c.meta) : "") }, /*#__PURE__*/React.createElement("div", { className: "w-full relative flex items-end justify-center", style: { flex: 1, minHeight: 0 } }, c.meta > 0 && /*#__PURE__*/React.createElement("div", { style: { position: "absolute", left: 2, right: 2, bottom: metaPct + "%", borderTop: "2px dashed " + C.gray, opacity: 0.45 } }), /*#__PURE__*/React.createElement("div", { className: "rounded-t-md", style: { width: "72%", height: hPct + "%", minHeight: c.real > 0 ? 3 : 0, background: esActual ? C.blue : C.soft, border: esActual ? "none" : "1px solid " + C.line } })), /*#__PURE__*/React.createElement("div", { className: "text-[10px] mt-1 shrink-0", style: { color: esActual ? C.blue : C.gray, fontWeight: esActual ? 700 : 400 } }, fmtMesCorto(c.m)));
+  })), /*#__PURE__*/React.createElement("div", { className: "text-[10px] mt-3", style: { color: C.gray } }, "Barras = facturación neta real · línea punteada = meta del mes"))), /*#__PURE__*/React.createElement("section", null, /*#__PURE__*/React.createElement(Title, {
     eyebrow: "Indicadores clave",
     title: "Estado operativo",
     right: esAdmin && /*#__PURE__*/React.createElement("button", {
