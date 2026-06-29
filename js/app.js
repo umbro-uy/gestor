@@ -371,7 +371,7 @@ function Panel({
     data: data,
     recargar: cargar,
     esAdmin: esAdmin
-  })), /*#__PURE__*/React.createElement("div", { style: { display: tab === "operativa" ? "block" : "none" } }, /*#__PURE__*/React.createElement(Operativa, null)))));
+  })), /*#__PURE__*/React.createElement("div", { style: { display: tab === "operativa" ? "block" : "none" } }, /*#__PURE__*/React.createElement(Operativa, { yo: yo })))));
 }
 
 

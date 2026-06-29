@@ -17,6 +17,7 @@ function Resumen({
     profiles,
     kpis_g
   } = data;
+  const h = React.createElement;
   const abiertas = tareas.filter(t => t.estado !== "hecho").length;
   const vencidas = tareas.filter(vencida).length;
   const hechas = tareas.filter(t => t.estado === "hecho").length;
@@ -27,6 +28,7 @@ function Resumen({
   const fmtMesCorto = m => MESNOM[(+String(m).split("-")[1]) - 1] || "";
   const [metasM, setMetasM] = useState([]);
   const [seguiR, setSeguiR] = useState([]);
+  const [pendSnap, setPendSnap] = useState(null); // pendientes del último cruce (analisis_snapshot)
   useEffect(() => {
     let vivo = true;
     (async () => {
@@ -36,6 +38,7 @@ function Resumen({
         for (;;) { const { data: pg, error } = await supa.from("operativa_seguimiento").select("pedido,dias,estado_fen,estado_wms,deposito").range(desde, desde + 999); if (error || !pg || !pg.length) break; all = all.concat(pg); if (pg.length < 1000) break; desde += 1000; }
         if (vivo) setSeguiR(all);
       } catch (_) {}
+      try { const { data: snap } = await supa.from("analisis_snapshot").select("pendientes").eq("id", "ultimo").maybeSingle(); if (vivo && snap && snap.pendientes) setPendSnap(snap.pendientes); } catch (_) {}
     })();
     return () => { vivo = false; };
   }, []);
@@ -57,13 +60,56 @@ function Resumen({
   const activosOp = seguiR.filter(r => !esEnt(r) && !esCanc(r));
   const atrasadosN = activosOp.filter(r => Number(r.dias) > 3).length;
   const depo0N = activosOp.filter(r => String(r.deposito || "").replace(/\.0+$/, "").trim() === "0").length;
+  // ── KPIs automáticos: el valor sale de los datos reales (no se tipea a mano) ──
+  const pendTotR = pendSnap && pendSnap.grupos ? (pendSnap.grupos.revisar.length + pendSnap.grupos.pendienteOK.length + ((pendSnap.grupos.pcnManual || []).length)) : null;
+  const FUENTES = [
+    { id: "atrasados_op", l: "Pedidos atrasados (+3 días háb.)", tipo: "num" },
+    { id: "depo0_op", l: "Pedidos en Depo 0 (sin entregar)", tipo: "num" },
+    { id: "pendientes_factura", l: "Pendientes sin factura", tipo: "num" },
+    { id: "facturacion_mes", l: "Facturación neta del mes", tipo: "money" }
+  ];
+  const valoresAuto = {
+    atrasados_op: seguiR.length ? atrasadosN : null,
+    depo0_op: seguiR.length ? depo0N : null,
+    pendientes_factura: pendTotR,
+    facturacion_mes: metasM.length ? realMes : null
+  };
+  const esAuto = id => FUENTES.some(f => f.id === id);
+  const fmtAuto = id => {
+    const f = FUENTES.find(x => x.id === id);
+    const v = valoresAuto[id];
+    if (v == null) return "—";
+    return f && f.tipo === "money" ? fmtUSD(v) : Number(v).toLocaleString("es-UY");
+  };
+  const haceCuanto = iso => {
+    if (!iso) return "";
+    const dd = Math.floor((Date.now() - new Date(iso).getTime()) / 86400000);
+    return dd <= 0 ? "actualizado hoy" : dd === 1 ? "actualizado ayer" : "actualizado hace " + dd + " días";
+  };
   const [editKpi, setEditKpi] = useState(null);
   const [draftKpi, setDraftKpi] = useState("");
-  const updKpiG = async (k, val) => {
-    await supa.from("kpis_globales").update({
-      valor: val
-    }).eq("id", k.id);
+  const [draftFuente, setDraftFuente] = useState("manual");
+  const [draftMeta, setDraftMeta] = useState("");
+  const updKpiG = async (k, campos) => {
+    const full = { ...campos, actualizado: new Date().toISOString() };
+    const { error } = await supa.from("kpis_globales").update(full).eq("id", k.id);
+    if (error) {
+      // Las columnas nuevas (fuente / actualizado) tal vez no existen todavía → reintentar solo con las clásicas
+      const basic = {};
+      if (campos.valor !== undefined) basic.valor = campos.valor;
+      if (campos.meta !== undefined) basic.meta = campos.meta;
+      if (Object.keys(basic).length) await supa.from("kpis_globales").update(basic).eq("id", k.id);
+    }
     recargar();
+  };
+  const guardarKpi = k => {
+    const fuente = draftFuente === "manual" ? null : draftFuente;
+    updKpiG(k, {
+      fuente: fuente,
+      valor: fuente ? (k.valor || "—") : (draftKpi.trim() || "—"),
+      meta: draftMeta.trim() || "—"
+    });
+    setEditKpi(null);
   };
   const addKpiG = async () => {
     const n = window.prompt("Nombre del indicador (ej: Artículos en depo 0):");
@@ -221,13 +267,13 @@ function Resumen({
       style: {
         color: C.gray
       }
-    }, k.nombre, k.unidad ? ` (${k.unidad})` : "")), esAdmin && /*#__PURE__*/React.createElement("div", {
+    }, k.nombre, k.unidad ? ` (${k.unidad})` : ""), esAuto(k.fuente) && h("span", {
+      className: "text-[9px] font-black px-1.5 py-0.5 rounded-full self-center shrink-0",
+      style: { background: C.soft, color: C.blue }
+    }, "AUTO")), esAdmin && /*#__PURE__*/React.createElement("div", {
       className: "flex gap-1 shrink-0"
     }, editando ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("button", {
-      onClick: () => {
-        updKpiG(k, draftKpi);
-        setEditKpi(null);
-      },
+      onClick: () => guardarKpi(k),
       className: "p-1 rounded",
       style: {
         color: C.green
@@ -241,7 +287,9 @@ function Resumen({
     }, Ic.x)) : /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("button", {
       onClick: () => {
         setEditKpi(k.id);
-        setDraftKpi(k.valor);
+        setDraftKpi(esAuto(k.fuente) ? "" : (k.valor || ""));
+        setDraftFuente(k.fuente || "manual");
+        setDraftMeta(k.meta && k.meta !== "—" ? k.meta : "");
       },
       className: "p-1 rounded hover:bg-slate-100",
       style: {
@@ -253,34 +301,18 @@ function Resumen({
       style: {
         color: "#ddd"
       }
-    }, Ic.trash)))), editando ? /*#__PURE__*/React.createElement("input", {
-      autoFocus: true,
-      value: draftKpi,
-      onChange: e => setDraftKpi(e.target.value),
-      onKeyDown: e => {
-        if (e.key === "Enter") {
-          updKpiG(k, draftKpi);
-          setEditKpi(null);
-        }
-      },
-      className: "mt-3 w-full text-2xl font-black border-b-2 outline-none bg-transparent tabular-nums",
-      style: {
-        color: c,
-        borderColor: c
-      }
-    }) : /*#__PURE__*/React.createElement("div", {
-      className: "mt-3 flex items-baseline gap-2"
-    }, /*#__PURE__*/React.createElement("span", {
-      className: "text-3xl font-black tabular-nums",
-      style: {
-        color: c
-      }
-    }, k.valor), k.meta && k.meta !== "—" && /*#__PURE__*/React.createElement("span", {
-      className: "text-xs font-semibold",
-      style: {
-        color: C.gray
-      }
-    }, "/ meta: ", k.meta)));
+    }, Ic.trash)))), editando ? h("div", { className: "mt-3 space-y-2" },
+      h("select", { value: draftFuente, onChange: e => setDraftFuente(e.target.value), className: "w-full text-xs rounded-lg border px-2 py-1.5 outline-none bg-white", style: { borderColor: C.line } },
+        h("option", { value: "manual" }, "Manual (lo cargo a mano)"),
+        FUENTES.map(f => h("option", { key: f.id, value: f.id }, "Auto · " + f.l))),
+      draftFuente === "manual"
+        ? h("input", { autoFocus: true, value: draftKpi, onChange: e => setDraftKpi(e.target.value), onKeyDown: e => { if (e.key === "Enter") guardarKpi(k); }, placeholder: "Valor", className: "w-full text-2xl font-black border-b-2 outline-none bg-transparent tabular-nums", style: { color: c, borderColor: c } })
+        : h("div", { className: "text-2xl font-black tabular-nums", style: { color: c } }, fmtAuto(draftFuente), " ", h("span", { className: "text-[10px] font-bold", style: { color: C.gray } }, "(automático)")),
+      h("input", { value: draftMeta, onChange: e => setDraftMeta(e.target.value), onKeyDown: e => { if (e.key === "Enter") guardarKpi(k); }, placeholder: "Meta (opcional)", className: "w-full text-xs rounded-lg border px-2 py-1 outline-none", style: { borderColor: C.line } })) : h("div", { className: "mt-3" },
+      h("div", { className: "flex items-baseline gap-2" },
+        h("span", { className: "text-3xl font-black tabular-nums", style: { color: c } }, esAuto(k.fuente) ? fmtAuto(k.fuente) : (k.valor || "—")),
+        k.meta && k.meta !== "—" && h("span", { className: "text-xs font-semibold", style: { color: C.gray } }, "/ meta: ", k.meta)),
+      h("div", { className: "text-[10px] mt-1.5", style: { color: C.gray } }, esAuto(k.fuente) ? "Automático · se actualiza solo con los datos" : (k.actualizado ? haceCuanto(k.actualizado) : "Valor manual"))));
   }))), /*#__PURE__*/React.createElement("section", null, /*#__PURE__*/React.createElement(Title, {
     eyebrow: "Plan anual",
     title: "Objetivos 2026",

@@ -6,7 +6,7 @@
 
 /* ── Operativa — cruce Fenicio × Encuentra ── */
 /* COLUMNAS PRE-CONFIGURADAS: Fenicio "Nro. pedido"|"Fecha comienzo"|"Estado entrega" / WMS "Venta"|"Estado Encuentra"|"Estado ecommerce"|"Canal" */
-function Operativa() {
+function Operativa({ yo }) {
   // Fenicio: un slot por tienda; se concatenan antes del cruce
   const TIENDAS_FEN = [{k:"TimeOut",l:"TimeOut"},{k:"TiendaNacional",l:"Tienda Nacional"},{k:"Classico",l:"Classico"}];
   const [archivosFen, setArchivosFen] = useState({
@@ -250,7 +250,7 @@ function Operativa() {
   const agregarComentario = async (pedido, texto) => {
     const t = String(texto || "").trim();
     if (!t) return;
-    const entry = { t, f: new Date().toISOString() };
+    const entry = { t, f: new Date().toISOString(), a: (yo && yo.nombre) || "" };
     // nuevo se calcula de forma síncrona (no dentro del updater de setState) para que el upsert
     // persista el historial completo y no un array vacío por el batching de React.
     const nuevo = [...((comentarios[pedido] && comentarios[pedido].historial) || []), entry];
@@ -546,10 +546,10 @@ function Operativa() {
   }, count));
   const Tabla = ({ rows }) => /*#__PURE__*/React.createElement("div", {
     className: "bg-white rounded-2xl border overflow-hidden", style: { borderColor: C.line }
-  }, /*#__PURE__*/React.createElement("div", { className: "overflow-x-auto" }, /*#__PURE__*/React.createElement("table", {
-    className: "w-full min-w-[940px]", style: { fontSize: 12 }
-  }, /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", { style: { background: "#F6F7F9" } },
-    ["Pedido", "Tienda", "Fecha compra", "Estado Fenicio", "Estado WMS", "Dias hab.", "Deposito", "C&C", "Acc.", "Comentario / acción"].map(h => /*#__PURE__*/React.createElement("th", {
+  }, /*#__PURE__*/React.createElement("div", { className: "overflow-auto", style: { maxHeight: "72vh" } }, /*#__PURE__*/React.createElement("table", {
+    className: "w-full min-w-[1080px] sheet", style: { fontSize: 12 }
+  }, /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", null,
+    ["Pedido", "Tienda", "Fecha compra", "Estado Fenicio", "Estado WMS", "Dias hab.", "Deposito", "C&C", "Acc.", "Acción / comentarios"].map(h => /*#__PURE__*/React.createElement("th", {
       key: h, className: "px-3 py-2 text-left font-bold uppercase", style: { color: C.gray, fontSize: 10, whiteSpace: "nowrap" }
     }, h)))), /*#__PURE__*/React.createElement("tbody", null, rows.map((r, i) => /*#__PURE__*/React.createElement("tr", {
     key: r.pedido || i,
@@ -560,10 +560,10 @@ function Operativa() {
     /*#__PURE__*/React.createElement("td", { className: "px-3 py-2" }, /*#__PURE__*/React.createElement("span", { style: { background: r.entregado ? C.greenS : C.soft, color: r.entregado ? C.green : C.blue, padding: "2px 6px", borderRadius: 6, fontSize: 10, fontWeight: 600, whiteSpace: "nowrap" } }, r.estadoFen)),
     /*#__PURE__*/React.createElement("td", { className: "px-3 py-2" }, /*#__PURE__*/React.createElement("span", { style: { background: r.sinWMS ? C.amberS : r.inconsistente ? C.amberS : "#F1F4F8", color: r.sinWMS ? C.amber : r.inconsistente ? C.amber : C.gray, padding: "2px 6px", borderRadius: 6, fontSize: 10, fontWeight: 600, whiteSpace: "nowrap" } }, r.estadoWMS)),
     /*#__PURE__*/React.createElement("td", { className: "px-3 py-2" }, /*#__PURE__*/React.createElement("span", { style: { fontWeight: 700, color: r.atrasado ? C.red : r.dias > 1 ? C.amber : C.gray } }, r.dias != null ? r.dias : "—"), r.atrasado && /*#__PURE__*/React.createElement("span", { style: { color: C.red } }, " ⚠")),
-    /*#__PURE__*/React.createElement("td", { className: "px-3 py-2", style: { color: C.gray, fontSize: 10, maxWidth: 100, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, r.deposito),
+    /*#__PURE__*/React.createElement("td", { className: "px-3 py-2", style: { color: C.gray, fontSize: 11, maxWidth: 150, whiteSpace: "normal", wordBreak: "break-word" } }, r.deposito),
     /*#__PURE__*/React.createElement("td", { className: "px-3 py-2" }, r.clickCollect ? /*#__PURE__*/React.createElement("span", { style: { background: "#EDE9FE", color: "#6D28D9", padding: "2px 6px", borderRadius: 6, fontSize: 10, fontWeight: 700, whiteSpace: "nowrap" } }, "C&C") : r.pickup ? /*#__PURE__*/React.createElement("span", { style: { background: "#DBEAFE", color: "#1D4ED8", padding: "2px 6px", borderRadius: 6, fontSize: 10, fontWeight: 700, whiteSpace: "nowrap" } }, "Pickup") : ""),
     /*#__PURE__*/React.createElement("td", { className: "px-3 py-2 text-center" }, /*#__PURE__*/React.createElement("input", { type: "checkbox", checked: !!r.accionado, onChange: e => guardarSeguimiento(r.pedido, { accionado: e.target.checked }), title: "Marcar como accionado" })),
-    /*#__PURE__*/React.createElement("td", { className: "px-3 py-2", style: { minWidth: 210 } }, (r.historial && r.historial.length) ? /*#__PURE__*/React.createElement("div", { style: { maxHeight: 72, overflowY: "auto", marginBottom: 4 } }, r.historial.slice().reverse().map((h, j) => /*#__PURE__*/React.createElement("div", { key: j, className: "text-[10px] leading-snug mb-0.5" }, /*#__PURE__*/React.createElement("span", { style: { color: C.gray } }, h.f ? new Date(h.f).toLocaleDateString("es-UY") + " " + new Date(h.f).toLocaleTimeString("es-UY", { hour: "2-digit", minute: "2-digit" }) + " · " : ""), h.t))) : null, /*#__PURE__*/React.createElement("input", { type: "text", placeholder: "Agregar nota…", onKeyDown: e => { if (e.key === "Enter") { agregarComentario(r.pedido, e.target.value); e.target.value = ""; } }, onBlur: e => { agregarComentario(r.pedido, e.target.value); e.target.value = ""; }, className: "px-2 py-1 rounded-lg border text-xs", style: { borderColor: C.line, minWidth: 180, width: "100%" } }))))))));
+    /*#__PURE__*/React.createElement("td", { className: "px-3 py-2", style: { minWidth: 340, width: 360 } }, (r.historial && r.historial.length) ? /*#__PURE__*/React.createElement("div", { style: { maxHeight: 160, overflowY: "auto", marginBottom: 6 } }, r.historial.slice().reverse().map((h, j) => /*#__PURE__*/React.createElement("div", { key: j, className: "mb-1.5 pl-2", style: { borderLeft: "2px solid " + C.line } }, /*#__PURE__*/React.createElement("div", { className: "text-[10px] font-semibold", style: { color: C.gray } }, (h.f ? new Date(h.f).toLocaleDateString("es-UY") + " " + new Date(h.f).toLocaleTimeString("es-UY", { hour: "2-digit", minute: "2-digit" }) : "") + (h.a ? " · " + h.a : "")), /*#__PURE__*/React.createElement("div", { className: "text-[12px] leading-snug", style: { color: C.ink, whiteSpace: "pre-wrap", wordBreak: "break-word" } }, h.t)))) : null, /*#__PURE__*/React.createElement("input", { type: "text", placeholder: "Anotá qué se hizo y enter…", onKeyDown: e => { if (e.key === "Enter") { agregarComentario(r.pedido, e.target.value); e.target.value = ""; } }, onBlur: e => { agregarComentario(r.pedido, e.target.value); e.target.value = ""; }, className: "px-2 py-1.5 rounded-lg border text-xs", style: { borderColor: C.line, width: "100%" } }))))))));
   return /*#__PURE__*/React.createElement("div", {
     className: "space-y-3"
   }, /*#__PURE__*/React.createElement(Title, {

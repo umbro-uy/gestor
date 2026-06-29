@@ -559,6 +559,7 @@ function Metas({
   const [resumenBAS, setResumenBAS] = useState(null);
   const [pendientes, setPendientes] = useState(null);
   const [procesando, setProcesando] = useState(false);
+  const [snapOK, setSnapOK] = useState(null); // null=sin chequear, true=tabla ok, false=falta crear analisis_snapshot
   const cargarMetas = useCallback(async () => {
     const {
       data: d
@@ -572,11 +573,13 @@ function Metas({
   const cargarSnapshot = useCallback(async () => {
     try {
       const { data, error } = await supa.from("analisis_snapshot").select("*").eq("id", "ultimo").maybeSingle();
-      if (error || !data) return; // tabla no creada todavía o sin snapshot
+      if (error) { setSnapOK(false); return; } // tabla no creada → persistencia del análisis inactiva
+      setSnapOK(true);
+      if (!data) return; // tabla ok pero todavía sin snapshot guardado
       if (data.resumen) setResumenBAS(data.resumen);
       if (data.pendientes) setPendientes(data.pendientes);
       if (data.mes) setMes(data.mes);
-    } catch (_) {}
+    } catch (_) { setSnapOK(false); }
   }, []);
   // Guarda (upsert) el snapshot del último análisis. Solo se pasan los campos que cambian,
   // así guardar el cruce no pisa el resumen del BAS ni al revés.
@@ -1069,6 +1072,10 @@ function Metas({
           style: { borderColor: C.line }
         }))
     }),
+    snapOK === false && h("div", {
+      className: "rounded-xl px-4 py-3 text-xs font-medium",
+      style: { background: C.amberS, color: C.amber }
+    }, "⚠ La persistencia del análisis no está activa: falta crear la tabla en Supabase, así que lo que cargás (resumen del BAS y cruce) NO se guarda ni lo ven los demás al entrar. Ejecutá el SQL de sql/analisis_snapshot.sql en Supabase → SQL Editor."),
     // ── KPIs grandes arriba ──
     h("div", { className: "grid sm:grid-cols-3 gap-3" },
       kpi("Facturación neta · " + fmtM(mes), fmtUSD(realMes),

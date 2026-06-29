@@ -26,6 +26,11 @@
   .fraunces{font-family:'Poppins',sans-serif;letter-spacing:-0.02em;font-feature-settings:'tnum' 1;}
   input[type=range]{accent-color:var(--ac);}
   .drag-over{outline:2px dashed var(--ac);outline-offset:2px;background:var(--ac-s)!important;}
+  /* Tabla tipo planilla/sheet (Operativa): líneas de cuadrícula y encabezado fijo al hacer scroll */
+  .sheet{border-collapse:collapse;}
+  .sheet th,.sheet td{border-right:1px solid #EEF1F5;border-bottom:1px solid #EEF1F5;vertical-align:top;}
+  .sheet th:last-child,.sheet td:last-child{border-right:none;}
+  .sheet thead th{position:sticky;top:0;z-index:2;background:#EEF2F7;}
 </style>
 </head>
 <body>
