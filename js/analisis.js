@@ -1,0 +1,1234 @@
+/* ===================================================================
+   Análisis — cruce BAS/Fenicio/WMS, facturación y metas mensuales
+   Parte del Gestor del Equipo. Se carga como <script> clásico desde
+   index.html; comparte el ámbito global con los demás archivos js/.
+   =================================================================== */
+
+
+/* ── ResultadoCruce (componente separado para evitar hooks en IIFE) ── */
+function ResultadoCruce({
+  pendientes
+}) {
+  if (!pendientes) return null;
+  const {
+    grupos,
+    factDuplicadas,
+    pedDuplicados
+  } = pendientes;
+  const sumImporte = arr => arr.reduce((a, r) => a + (r.importe || 0), 0);
+  const exportarXLSX = (rows, nombre) => {
+    if (!rows || !rows.length) {
+      alert("No hay datos para exportar.");
+      return;
+    }
+    try {
+      const limpias = rows.map(r => {
+        const o = {};
+        Object.entries(r).forEach(([k, v]) => {
+          if (typeof v !== "object" && typeof v !== "function") o[k] = v;
+        });
+        return o;
+      });
+      const ws = XLSX.utils.json_to_sheet(limpias);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "Datos");
+      XLSX.writeFile(wb, `${nombre}.xlsx`);
+    } catch (e) {
+      alert("Error al exportar: " + e.message);
+    }
+  };
+  const fmtI = n => "$" + Math.round(n || 0).toLocaleString("es-UY");
+  const TABS = [{
+    id: "revisar",
+    l: "⚠ Revisar",
+    c: C.red,
+    s: C.redS,
+    arr: grupos.revisar
+  }, {
+    id: "facturaDup",
+    l: "Facturas duplicadas",
+    c: "#7C3AED",
+    s: "#F3F0FF",
+    arr: grupos.facturaDup || []
+  }, {
+    id: "pcnManual",
+    l: "PCN (manual)",
+    c: "#B45309",
+    s: "#FEF3C7",
+    arr: grupos.pcnManual || []
+  }, {
+    id: "pendienteOK",
+    l: "Pendiente OK",
+    c: C.blue,
+    s: C.soft,
+    arr: grupos.pendienteOK
+  }, {
+    id: "facturado",
+    l: "Facturado",
+    c: C.green,
+    s: C.greenS,
+    arr: grupos.facturado
+  }, {
+    id: "canceladoFactura",
+    l: "Cancelado c/factura",
+    c: "#BE123C",
+    s: "#FFE4E6",
+    arr: grupos.canceladoConFactura || []
+  }, {
+    id: "cancelado",
+    l: "Cancelados",
+    c: C.gray,
+    s: "#EEF1F5",
+    arr: grupos.cancelado
+  }];
+  const pcnArr = grupos.pcnManual || [];
+  const [tabAct, setTabAct] = useState(grupos.revisar.length > 0 ? "revisar" : (grupos.canceladoConFactura || []).length > 0 ? "canceladoFactura" : (grupos.facturaDup || []).length > 0 ? "facturaDup" : pcnArr.length > 0 ? "pcnManual" : "facturado");
+  const tabActual = TABS.find(t => t.id === tabAct) || TABS[0];
+  const POR_PAGINA = 25;
+  const [pagina, setPagina] = useState(0);
+  const irTab = id => { setTabAct(id); setPagina(0); };
+  const totalPags = Math.max(1, Math.ceil(tabActual.arr.length / POR_PAGINA));
+  const pagActual = Math.min(pagina, totalPags - 1);
+  const filasPagina = tabActual.arr.slice(pagActual * POR_PAGINA, pagActual * POR_PAGINA + POR_PAGINA);
+  const sinFacturaTotal = grupos.revisar.length + grupos.pendienteOK.length + pcnArr.length;
+  const sinFacturaUrgente = grupos.revisar.length;
+  const sinFacturaMonto = sumImporte(grupos.revisar) + sumImporte(grupos.pendienteOK) + sumImporte(pcnArr);
+  return /*#__PURE__*/React.createElement("div", {
+    className: "space-y-4"
+  }, sinFacturaTotal > 0 && /*#__PURE__*/React.createElement("div", {
+    className: "rounded-2xl p-4",
+    style: {background: sinFacturaUrgente > 0 ? "#FFF1F1" : "#EFF6FF", borderLeft: `4px solid ${sinFacturaUrgente > 0 ? C.red : C.blue}`}
+  }, /*#__PURE__*/React.createElement("div", {className:"font-black text-lg tabular-nums fraunces", style:{color: sinFacturaUrgente > 0 ? C.red : C.blue}},
+    sinFacturaTotal, " pedidos sin factura en BAS",
+    " — ", fmtI(sinFacturaMonto)
+  ), /*#__PURE__*/React.createElement("div", {className:"text-xs mt-1 space-x-1", style:{color:C.gray}},
+    sinFacturaUrgente > 0 && /*#__PURE__*/React.createElement("span", {style:{color:C.red, fontWeight:700}}, sinFacturaUrgente, " urgentes (despachados/entregados sin factura)"),
+    sinFacturaUrgente > 0 && (pcnArr.length > 0 || grupos.pendienteOK.length > 0) && " · ",
+    pcnArr.length > 0 && /*#__PURE__*/React.createElement("span", {style:{color:"#B45309", fontWeight:700}}, pcnArr.length, " PCN (personalizadas, facturar a mano)"),
+    pcnArr.length > 0 && grupos.pendienteOK.length > 0 && " · ",
+    grupos.pendienteOK.length > 0 && /*#__PURE__*/React.createElement("span", null, grupos.pendienteOK.length, " en proceso o recientes (OK por ahora)")
+  )), /*#__PURE__*/React.createElement("div", {
+    className: "grid grid-cols-3 sm:grid-cols-4 xl:grid-cols-7 gap-2"
+  }, TABS.map(t => /*#__PURE__*/React.createElement("button", {
+    key: t.id,
+    onClick: () => irTab(t.id),
+    className: "rounded-2xl p-3 text-left transition-all border",
+    style: {
+      background: tabAct === t.id ? t.c : "#fff",
+      color: tabAct === t.id ? "#fff" : t.c,
+      borderColor: tabAct === t.id ? t.c : C.line
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "text-xl font-black tabular-nums fraunces"
+  }, t.arr.length), /*#__PURE__*/React.createElement("div", {
+    className: "text-[10px] font-bold uppercase tracking-wide mt-0.5 leading-tight opacity-90"
+  }, t.l.replace("⚠ ", "")), t.arr[0]?.importe != null && /*#__PURE__*/React.createElement("div", {
+    className: "text-[10px] mt-0.5 opacity-75"
+  }, fmtI(sumImporte(t.arr)))))), grupos.revisar.length > 0 && /*#__PURE__*/React.createElement("div", {
+    className: "rounded-xl px-4 py-2.5 text-xs font-bold",
+    style: {
+      background: C.redS,
+      color: C.red
+    }
+  }, "⚠️ ", grupos.revisar.length, " pedidos despachados/entregados sin factura — requieren acción urgente."), (grupos.canceladoConFactura || []).length > 0 && /*#__PURE__*/React.createElement("div", {
+    className: "rounded-xl px-4 py-2.5 text-xs font-bold",
+    style: { background: "#FFE4E6", color: "#BE123C" }
+  }, "⚠️ ", grupos.canceladoConFactura.length, " pedido(s) CANCELADOS que tienen factura en el BAS — hay que anular la factura manualmente."), (grupos.facturaDup || []).length > 0 && /*#__PURE__*/React.createElement("div", {
+    className: "rounded-xl px-4 py-2.5 text-xs font-bold",
+    style: {
+      background: "#F3F0FF",
+      color: "#7C3AED"
+    }
+  }, "⚠️ ", grupos.facturaDup.length, " pedidos con facturas duplicadas en el BAS."), (pedDuplicados || []).length > 0 && /*#__PURE__*/React.createElement("div", {
+    className: "rounded-xl px-4 py-2.5 text-xs font-bold",
+    style: {
+      background: C.amberS,
+      color: C.amber
+    }
+  }, "⚠️ ", pedDuplicados.length, " números de pedido duplicados en Fenicio."), /*#__PURE__*/React.createElement("div", {
+    className: "bg-white rounded-2xl border overflow-hidden",
+    style: {
+      borderColor: C.line
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "px-4 py-3 border-b flex items-center justify-between gap-2",
+    style: {
+      borderColor: C.line
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "text-sm font-bold",
+    style: {
+      color: tabActual.c
+    }
+  }, tabActual.l.replace("⚠ ", ""), " — ", tabActual.arr.length, " pedido", tabActual.arr.length !== 1 ? "s" : ""), /*#__PURE__*/React.createElement("div", {
+    className: "flex items-center gap-2"
+  }, tabActual.arr[0]?.importe != null && /*#__PURE__*/React.createElement("span", {
+    className: "text-xs font-bold",
+    style: {
+      color: C.gray
+    }
+  }, fmtI(sumImporte(tabActual.arr))), tabActual.arr.length > 0 && /*#__PURE__*/React.createElement("button", {
+    onClick: () => exportarXLSX(tabActual.arr, `facturacion-${tabAct}`),
+    className: "text-xs font-bold px-2.5 py-1 rounded-lg flex items-center gap-1",
+    style: {
+      background: C.soft,
+      color: C.blue
+    }
+  }, "↓ Exportar XLSX"))), /*#__PURE__*/React.createElement("div", {
+    className: "overflow-x-auto"
+  }, /*#__PURE__*/React.createElement("table", {
+    className: "w-full",
+    style: {
+      fontSize: 12
+    }
+  }, /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", {
+    style: {
+      background: "#F6F7F9"
+    }
+  }, tabAct === "pedDup" ? ["Pedido", "Apariciones"].map(h => /*#__PURE__*/React.createElement("th", {
+    key: h,
+    className: "px-3 py-2 text-left font-bold uppercase",
+    style: {
+      color: C.gray,
+      fontSize: 10
+    }
+  }, h)) : tabAct === "facturaDup" ? ["Pedido", "FABs en BAS", "Notas de crédito", "Duplicadas netas", "Total"].map(h => /*#__PURE__*/React.createElement("th", {
+    key: h,
+    className: "px-3 py-2 text-left font-bold uppercase",
+    style: {
+      color: C.gray,
+      fontSize: 10
+    }
+  }, h)) : ["Pedido", "Fecha", "Estado Fenicio", "Estado WMS", "Motivo", "Importe"].map(h => /*#__PURE__*/React.createElement("th", {
+    key: h,
+    className: "px-3 py-2 text-left font-bold uppercase",
+    style: {
+      color: C.gray,
+      fontSize: 10
+    }
+  }, h)))), /*#__PURE__*/React.createElement("tbody", null, filasPagina.map((r, i) => /*#__PURE__*/React.createElement("tr", {
+    key: pagActual * POR_PAGINA + i,
+    style: {
+      borderTop: `1px solid ${C.line}`,
+      background: tabAct === "revisar" ? "#FFF8F8" : tabAct === "facturaDup" ? "#FAF8FF" : "#fff"
+    }
+  }, tabAct === "pedDup" ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("td", {
+    className: "px-3 py-2 font-bold tabular-nums"
+  }, r.nro), /*#__PURE__*/React.createElement("td", {
+    className: "px-3 py-2 font-bold",
+    style: {
+      color: C.red
+    }
+  }, r.apariciones, "×")) : tabAct === "facturaDup" ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("td", {
+    className: "px-3 py-2 font-bold tabular-nums"
+  }, r.nro), /*#__PURE__*/React.createElement("td", {
+    className: "px-3 py-2 font-bold tabular-nums",
+    style: {
+      color: "#7C3AED"
+    }
+  }, r.facturas), /*#__PURE__*/React.createElement("td", {
+    className: "px-3 py-2 tabular-nums",
+    style: {
+      color: C.gray
+    }
+  }, r.ncs), /*#__PURE__*/React.createElement("td", {
+    className: "px-3 py-2 font-bold tabular-nums",
+    style: {
+      color: C.red
+    }
+  }, r.facturas - r.ncs, " dup."), /*#__PURE__*/React.createElement("td", {
+    className: "px-3 py-2 font-bold tabular-nums"
+  }, "$", Math.round(r.total || 0).toLocaleString("es-UY"))) : /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("td", {
+    className: "px-3 py-2 font-bold tabular-nums"
+  }, r.nro), /*#__PURE__*/React.createElement("td", {
+    className: "px-3 py-2 whitespace-nowrap",
+    style: {
+      color: C.gray
+    }
+  }, String(r.fecha || "").slice(0, 10)), /*#__PURE__*/React.createElement("td", {
+    className: "px-3 py-2",
+    style: {
+      fontSize: 11
+    }
+  }, r.estadoFen), /*#__PURE__*/React.createElement("td", {
+    className: "px-3 py-2",
+    style: {
+      fontSize: 11,
+      color: /no est/i.test(r.estadoWMS || "") ? C.amber : C.gray
+    }
+  }, r.estadoWMS), /*#__PURE__*/React.createElement("td", {
+    className: "px-3 py-2",
+    style: {
+      fontSize: 11,
+      color: tabAct === "revisar" ? C.red : tabAct === "pendienteOK" ? C.blue : C.gray
+    }
+  }, r.razon || "—"), /*#__PURE__*/React.createElement("td", {
+    className: "px-3 py-2 font-bold tabular-nums"
+  }, "$", (r.importe || 0).toLocaleString("es-UY")))))))), tabActual.arr.length > 0 && /*#__PURE__*/React.createElement("div", {
+    className: "px-4 py-2.5 flex items-center justify-between gap-2 text-xs",
+    style: {
+      color: C.gray,
+      borderTop: `1px solid ${C.line}`
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "tabular-nums"
+  }, "Mostrando ", pagActual * POR_PAGINA + 1, "–", Math.min((pagActual + 1) * POR_PAGINA, tabActual.arr.length), " de ", tabActual.arr.length), totalPags > 1 && /*#__PURE__*/React.createElement("div", {
+    className: "flex items-center gap-1"
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: () => setPagina(p => Math.max(0, p - 1)),
+    disabled: pagActual === 0,
+    className: "px-2.5 py-1 rounded-lg font-bold disabled:opacity-30",
+    style: { background: C.soft, color: C.blue }
+  }, "‹ Anterior"), /*#__PURE__*/React.createElement("span", {
+    className: "px-2 font-bold tabular-nums",
+    style: { color: C.ink }
+  }, pagActual + 1, " / ", totalPags), /*#__PURE__*/React.createElement("button", {
+    onClick: () => setPagina(p => Math.min(totalPags - 1, p + 1)),
+    disabled: pagActual >= totalPags - 1,
+    className: "px-2.5 py-1 rounded-lg font-bold disabled:opacity-30",
+    style: { background: C.soft, color: C.blue }
+  }, "Siguiente ›"))), tabActual.arr.length === 0 && /*#__PURE__*/React.createElement("div", {
+    className: "px-4 py-6 text-sm text-center",
+    style: {
+      color: tabAct === "pcnManual" ? C.gray : C.green
+    }
+  }, tabAct === "pcnManual" ? "Los pedidos PCN (prendas personalizadas) se detectan desde el Monitor WMS (columna \"Articulo\", prefijo PCN). Si esto está vacío, cargá el Monitor Ecommerce o no hay PCN sin facturar." : "✓ Sin casos en esta categoría.")));
+}
+
+/* ── MesesAnio: componente separado para poder usar useState ── */
+function MesesAnio({
+  dataMeses,
+  anio,
+  fmtUSD,
+  colMeta,
+  fmtM
+}) {
+  const [expandido, setExpandido] = useState(false);
+  const mesActual = new Date().toISOString().slice(0, 7);
+  const visibles = expandido ? dataMeses : dataMeses.filter(d => d.tieneDatos || d.m === mesActual);
+  const C2 = {
+    blue: "var(--ac)",
+    soft: "var(--ac-s)",
+    ink: "var(--hd)",
+    gray: "#64748B",
+    line: "#E5E9F0"
+  };
+  return /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    className: "flex items-center justify-between mb-2"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "text-xs font-black uppercase tracking-wide",
+    style: {
+      color: C2.gray
+    }
+  }, "Mes a mes ", anio), /*#__PURE__*/React.createElement("button", {
+    onClick: () => setExpandido(v => !v),
+    className: "text-xs font-bold px-3 py-1 rounded-lg",
+    style: {
+      color: C2.blue,
+      background: C2.soft
+    }
+  }, expandido ? "Contraer ↑" : "Ver todos los meses ↓")), /*#__PURE__*/React.createElement("div", {
+    className: "bg-white rounded-2xl border overflow-hidden",
+    style: {
+      borderColor: C2.line
+    }
+  }, visibles.map((d, i) => {
+    const pct = d.mMeta > 0 ? Math.round(d.mReal / d.mMeta * 100) : d.mReal > 0 ? 100 : null;
+    const col = colMeta(pct);
+    const esMesActual = d.m === mesActual;
+    return /*#__PURE__*/React.createElement("div", {
+      key: d.m,
+      className: "flex items-center gap-3 px-4 py-2.5",
+      style: {
+        borderTop: i ? `1px solid ${C2.line}` : "none",
+        background: esMesActual ? "#F8FAFF" : "#fff"
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      className: "w-16 shrink-0 flex items-center gap-1.5"
+    }, /*#__PURE__*/React.createElement("span", {
+      className: "text-xs font-bold",
+      style: {
+        color: esMesActual ? C2.blue : C2.ink
+      }
+    }, fmtM(d.m)), esMesActual && /*#__PURE__*/React.createElement("span", {
+      className: "text-[9px] font-black px-1 rounded-full",
+      style: {
+        background: C2.soft,
+        color: C2.blue
+      }
+    }, "HOY")), /*#__PURE__*/React.createElement("div", {
+      className: "flex-1"
+    }, d.tieneDatos ? /*#__PURE__*/React.createElement(Bar, {
+      pct: Math.min(pct || 0, 100),
+      color: col,
+      h: 6
+    }) : /*#__PURE__*/React.createElement("div", {
+      className: "h-1.5 rounded-full",
+      style: {
+        background: "#EDF0F5"
+      }
+    })), /*#__PURE__*/React.createElement("div", {
+      className: "w-32 shrink-0 text-right"
+    }, d.tieneDatos ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+      className: "text-xs font-black tabular-nums",
+      style: {
+        color: col
+      }
+    }, pct != null ? `${pct}%` : "—"), /*#__PURE__*/React.createElement("div", {
+      className: "text-[10px] tabular-nums",
+      style: {
+        color: C2.gray
+      }
+    }, fmtUSD(d.mReal), "/", fmtUSD(d.mMeta))) : /*#__PURE__*/React.createElement("div", {
+      className: "text-[10px]",
+      style: {
+        color: "#C5CBD6"
+      }
+    }, "Sin datos")));
+  })));
+}
+
+/* ── ProgresoAnual: componente separado ── */
+function ProgresoAnual({
+  metas,
+  fmtUSD,
+  colMeta,
+  fmtM
+}) {
+  const anio = new Date().getFullYear();
+  const TIENDAS_META2 = ["TimeOut", "Tienda Nacional", "Classico", "MercadoLibre"];
+  const MESES_ANIO = Array.from({
+    length: 12
+  }, (_, i) => `${anio}-${String(i + 1).padStart(2, "0")}`);
+  const OBJ_ANUAL = 100000000;
+  let totalRealAnio = 0,
+    totalMetaAnio = 0;
+  const dataMeses = MESES_ANIO.map(m => {
+    const tiendas = TIENDAS_META2.map(t => metas.find(x => x.mes === m && x.tienda === t) || {
+      tienda: t,
+      meta: 0,
+      real: 0
+    });
+    const mReal = tiendas.reduce((a, t) => a + Number(t.real || 0), 0);
+    const mMeta = tiendas.reduce((a, t) => a + Number(t.meta || 0), 0);
+    totalRealAnio += mReal;
+    totalMetaAnio += mMeta;
+    return {
+      m,
+      mReal,
+      mMeta,
+      tieneDatos: mReal > 0 || mMeta > 0
+    };
+  });
+  const pctAnual = Math.round(totalRealAnio / OBJ_ANUAL * 100);
+  const colAnual = colMeta(pctAnual);
+  const C2 = {
+    blue: "var(--ac)",
+    soft: "var(--ac-s)",
+    ink: "var(--hd)",
+    gray: "#64748B",
+    line: "#E5E9F0"
+  };
+  return /*#__PURE__*/React.createElement("section", {
+    className: "space-y-4"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "bg-white rounded-2xl border p-5",
+    style: {
+      borderColor: C2.line
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "flex items-start justify-between gap-3 flex-wrap mb-3"
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    className: "text-xs font-black uppercase tracking-wide",
+    style: {
+      color: C2.gray
+    }
+  }, "Objetivo anual ", anio), /*#__PURE__*/React.createElement("div", {
+    className: "text-3xl font-black fraunces tabular-nums mt-0.5",
+    style: {
+      color: colAnual
+    }
+  }, fmtUSD(totalRealAnio)), /*#__PURE__*/React.createElement("div", {
+    className: "text-xs mt-0.5",
+    style: {
+      color: C2.gray
+    }
+  }, "de ", /*#__PURE__*/React.createElement("span", {
+    className: "font-bold",
+    style: {
+      color: C2.ink
+    }
+  }, "$100.000.000"), " objetivo · ", pctAnual, "% acumulado")), /*#__PURE__*/React.createElement("div", {
+    className: "text-right"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "text-xs font-bold uppercase tracking-wide",
+    style: {
+      color: C2.gray
+    }
+  }, "Ritmo necesario / mes"), /*#__PURE__*/React.createElement("div", {
+    className: "text-xl font-black fraunces tabular-nums",
+    style: {
+      color: C2.blue
+    }
+  }, fmtUSD(OBJ_ANUAL / 12)))), /*#__PURE__*/React.createElement(Bar, {
+    pct: pctAnual,
+    color: colAnual,
+    h: 12
+  })), /*#__PURE__*/React.createElement(MesesAnio, {
+    dataMeses: dataMeses,
+    anio: anio,
+    fmtUSD: fmtUSD,
+    colMeta: colMeta,
+    fmtM: fmtM
+  }));
+}
+
+/* ── Metas mensuales de facturación ── */
+const TIENDAS_META = ["TimeOut", "Tienda Nacional", "Classico", "MercadoLibre"];
+const MAPA_SUC = {
+  "WEB Time Out": "TimeOut",
+  "WEB Nacional": "Tienda Nacional",
+  "WEB Clásico": "Classico",
+  "WEB Clasico": "Classico"
+};
+// Lookup tolerante: primero exact match, luego palabras clave (case-insensitive, sin tildes)
+const mapearTienda = suc => {
+  const s = String(suc || "").trim();
+  if (MAPA_SUC[s]) return MAPA_SUC[s];
+  const sl = s.toLowerCase()
+    .replace(/[áàä]/g,"a").replace(/[éèë]/g,"e")
+    .replace(/[íìï]/g,"i").replace(/[óòö]/g,"o").replace(/[úùü]/g,"u");
+  if (sl.includes("time") || sl.includes("timeout")) return "TimeOut";
+  if (sl.includes("nacional")) return "Tienda Nacional";
+  if (sl.includes("clasico") || sl.includes("classico")) return "Classico";
+  return null;
+};
+function Metas({
+  data,
+  recargar,
+  esAdmin
+}) {
+  const mesActual = new Date().toISOString().slice(0, 7);
+  const [mes, setMes] = useState(mesActual);
+  const [metas, setMetas] = useState([]);
+  const [formMeta, setFormMeta] = useState(null);
+  const [archivoBAS, setArchivoBAS] = useState(null);
+  const [rowsBAS, setRowsBAS] = useState([]);
+  const TIENDAS_FEN_AN = [{
+    k: "TimeOut",
+    l: "TimeOut"
+  }, {
+    k: "TiendaNacional",
+    l: "Tienda Nacional"
+  }, {
+    k: "Classico",
+    l: "Classico"
+  }];
+  const INIT_OBJ_AN = {
+    TimeOut: null,
+    TiendaNacional: null,
+    Classico: null
+  };
+  const [archivosFenAn, setArchivosFenAn] = useState({
+    ...INIT_OBJ_AN
+  });
+  const [rowsFenAn, setRowsFenAn] = useState({
+    TimeOut: [],
+    TiendaNacional: [],
+    Classico: []
+  });
+  const [cargandoFenAn, setCargandoFenAn] = useState({
+    TimeOut: false,
+    TiendaNacional: false,
+    Classico: false
+  });
+  const rowsFen = [].concat(rowsFenAn.TimeOut.map(r => ({
+    ...r,
+    _tiendaFen: "TimeOut"
+  })), rowsFenAn.TiendaNacional.map(r => ({
+    ...r,
+    _tiendaFen: "Tienda Nacional"
+  })), rowsFenAn.Classico.map(r => ({
+    ...r,
+    _tiendaFen: "Classico"
+  })));
+  const [archivoWMS, setArchivoWMS] = useState(null);
+  const [rowsWMS, setRowsWMS] = useState([]);
+  const [cargandoBAS, setCargandoBAS] = useState(false);
+  const [cargandoWMS, setCargandoWMS] = useState(false);
+  const [resumenBAS, setResumenBAS] = useState(null);
+  const [pendientes, setPendientes] = useState(null);
+  const [procesando, setProcesando] = useState(false);
+  const cargarMetas = useCallback(async () => {
+    const {
+      data: d
+    } = await supa.from("metas_mensuales").select("*").order("mes", {
+      ascending: false
+    });
+    setMetas(d || []);
+  }, []);
+  // Auto-cargar el ÚLTIMO análisis guardado (resumen del BAS + pedidos del cruce), para verlo
+  // al entrar sin tener que volver a subir los archivos (se comparte entre personas).
+  const cargarSnapshot = useCallback(async () => {
+    try {
+      const { data, error } = await supa.from("analisis_snapshot").select("*").eq("id", "ultimo").maybeSingle();
+      if (error || !data) return; // tabla no creada todavía o sin snapshot
+      if (data.resumen) setResumenBAS(data.resumen);
+      if (data.pendientes) setPendientes(data.pendientes);
+      if (data.mes) setMes(data.mes);
+    } catch (_) {}
+  }, []);
+  // Guarda (upsert) el snapshot del último análisis. Solo se pasan los campos que cambian,
+  // así guardar el cruce no pisa el resumen del BAS ni al revés.
+  const guardarSnapshot = async campos => {
+    try { await supa.from("analisis_snapshot").upsert({ id: "ultimo", actualizado: new Date().toISOString(), ...campos }, { onConflict: "id" }); } catch (_) {}
+  };
+  useEffect(() => {
+    cargarMetas();
+    cargarSnapshot();
+  }, [cargarMetas, cargarSnapshot]);
+  // metasDeMes: real viene del BAS cargado (neto = FABs-NCDs) cuando está disponible,
+  // y cae a Supabase si no hay BAS en esta sesión.
+  const metasDeMes = TIENDAS_META.map(t => {
+    const base = metas.find(m => m.mes === mes && m.tienda === t) || { mes, tienda: t, meta: 0, real: 0, notas: "" };
+    const realBAS = resumenBAS?.porMesNeto?.[mes]?.[t];
+    return realBAS != null ? { ...base, real: realBAS } : base;
+  });
+  const guardarMeta = async f => {
+    await supa.from("metas_mensuales").upsert({
+      mes: f.mes,
+      tienda: f.tienda,
+      meta: Number(f.meta || 0),
+      real: Number(f.real || 0),
+      notas: f.notas || ""
+    }, {
+      onConflict: "mes,tienda"
+    });
+    setFormMeta(null);
+    cargarMetas();
+  };
+  const leerBAS = e => {
+    const file = e && e.target && e.target.files ? e.target.files[0] : null;
+    if (!file) return;
+    setCargandoBAS(true); setArchivoBAS(file.name);
+    const reader = new FileReader();
+    reader.onload = ev => {
+      try {
+        const data = new Uint8Array(ev.target.result);
+        const wb = XLSX.read(data, {type:"array"});
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        const ref = ws["!ref"];
+        if(!ref){setRowsBAS([]);setCargandoBAS(false);return;}
+        const rng = XLSX.utils.decode_range(ref);
+        const hdrs = [];
+        for(let C=rng.s.c;C<=Math.min(rng.e.c,200);C++){
+          const cell=ws[XLSX.utils.encode_cell({r:rng.s.r,c:C})];
+          hdrs.push(cell?String(cell.v||""):"");
+        }
+        const hdrsNoVacios=hdrs.filter(h=>h.trim().length>0);
+        // Buscar columna por nombre EXACTO primero, luego por patrón (fallback)
+        const exact=name=>hdrs.findIndex(h=>h.trim().toLowerCase()===name.toLowerCase());
+        const fi=pts=>hdrs.findIndex(h=>pts.some(p=>p.test(h)));
+        const pick=(name,pats)=>{const e=exact(name);return e>=0?e:fi(pats);};
+        const iA=pick("Abreviado",[/abrevi/i]);
+        const iN=pick("Anulado",[/anulad/i]);
+        const iNum=pick("Numero",[/^numero$/i,/^nro$/i,/comprob/i]);   // nº de factura/comprobante
+        const iItm=pick("Coditm",[/^coditm$/i,/^sku$/i,/^codart/i]);   // SKU del artículo
+        const iDesc=pick("Descripcion",[/^descripcion$/i]);
+        const iImp=pick("Importe",[/^importe$/i,/^monto$/i]);          // monto por renglón (CON IVA)
+        const iIva=pick("IVA",[/^iva$/i,/^i\.?\s*v\.?\s*a\.?$/i,/^imp.*iva$/i]); // IVA por renglón → facturación neta = Importe − IVA
+        const iO=pick("Observacion",[/^observacion$/i,/observ/i]);     // contiene nº de pedido Fenicio
+        const iT=pick("Total",[/^total$/i]);                           // total de documento (repetido por renglón)
+        const iS=pick("Sucursal",[/sucursal/i,/local/i]);
+        const iF=pick("Fecha",[/^fecha$/i]);
+        console.log("BAS cols:",{iA,iN,iNum,iItm,iImp,iIva,iO,iT,iS,iF});
+        if(iA<0){alert("Col Abreviado no encontrada.\nColumnas del archivo: "+hdrsNoVacios.slice(0,25).join(", "));setCargandoBAS(false);return;}
+        const cl2=C=>{let s='',n=C;do{s=String.fromCharCode(65+n%26)+s;n=Math.floor(n/26)-1;}while(n>=0);return s;};
+        const L=i=>i>=0?cl2(i):null;
+        const lA=L(iA),lN=L(iN),lNum=L(iNum),lItm=L(iItm),lDesc=L(iDesc),lImp=L(iImp),lIva=L(iIva),lO=L(iO),lT=L(iT),lS=L(iS),lF=L(iF);
+        const gv=(l,R)=>{if(!l)return'';const cl=ws[l+R];if(!cl)return'';return String(cl.w!==undefined&&cl.w!==''?cl.w:cl.v!==undefined?cl.v:'')||"";};
+        // Para columnas numéricas leer el valor raw de Excel (no el texto formateado)
+        const gvn=(l,R)=>{if(!l)return 0;const cl=ws[l+R];if(!cl)return 0;if(typeof cl.v==='number')return cl.v;const s=String(cl.w||cl.v||'0').trim().replace(/\s/g,'');if(!s||s==='-')return 0;if(s.includes('.')&&s.includes(',')){const li=s.lastIndexOf(',');return li>s.lastIndexOf('.')?parseFloat(s.replace(/\./g,'').replace(',','.'))||0:parseFloat(s.replace(/,/g,''))||0;}if(s.includes('.')&&!s.includes(',')){const p=s.split('.');return p.length>2||p[1]?.length===3?parseFloat(s.replace(/\./g,''))||0:parseFloat(s)||0;}if(s.includes(',')&&!s.includes('.')){const p=s.split(',');return p.length>2||p[1]?.length===3?parseFloat(s.replace(/,/g,''))||0:parseFloat(s.replace(',','.'))||0;}return parseFloat(s)||0;};
+        // Fecha: preferir el número de serie de Excel (cl.v) — evita ambigüedad D/M vs M/D del texto formateado
+        const gvd=(l,R)=>{if(!l)return'';const cl=ws[l+R];if(!cl)return'';if(typeof cl.v==='number')return cl.v;return String(cl.w||cl.v||'');};
+        const colLetras=hdrs.map((_,i)=>cl2(i));
+        const rows=[];
+        let primeraFAB=null;
+        for(let R=rng.s.r+2;R<=rng.e.r+1;R++){
+          const ab=lA?gv(lA,R).trim():'';
+          if(!ab)continue;
+          const row={Abreviado:ab,Anulado:lN?gv(lN,R):'0',Numero:lNum?gv(lNum,R):'',Sku:lItm?gv(lItm,R):'',Descripcion:lDesc?gv(lDesc,R):'',Importe:lImp?gvn(lImp,R):0,Iva:lIva?gvn(lIva,R):0,Observacion:lO?gv(lO,R):'',Total:lT?gvn(lT,R):0,Sucursal:lS?gv(lS,R):'',Fecha:lF?gvd(lF,R):''};
+          rows.push(row);
+          if(!primeraFAB && (ab==="FAB"||ab==="FA")){
+            const raw={};
+            hdrs.forEach((h,i)=>{if(h.trim())raw[h]=gv(colLetras[i],R);});
+            primeraFAB=raw;
+          }
+        }
+        console.log("BAS: "+rows.length+" filas. FAB:"+rows.filter(r=>r.Abreviado==="FAB").length);
+        rows._colImporte=iImp>=0?hdrs[iImp]:null;
+        rows._colIva=iIva>=0?hdrs[iIva]:null;
+        rows._hdrs=hdrsNoVacios.slice(0,25);
+        rows._primeraFAB=primeraFAB;
+        setRowsBAS(rows);
+      }catch(err){alert("Error BAS: "+err.message);}
+      setCargandoBAS(false);
+    };
+    reader.readAsArrayBuffer(file);
+  };
+  const leerFenicio = tienda => e => {
+    const file = e && e.target && e.target.files ? e.target.files[0] : null;
+    if (!file) return;
+    const k = tienda.replace(" ", "");
+    setCargandoFenAn(p => ({...p, [k]: true}));
+    setArchivosFenAn(p => ({...p, [k]: file.name}));
+    const reader = new FileReader();
+    reader.onload = ev => {
+      try {
+        const wb = XLSX.read(ev.target.result, {type: "binary"});
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        // Los .xls de Fenicio son HTML; SheetJS deja etiquetas <td> dentro de cada celda → limpiarlas
+        const clean = v => String(v == null ? "" : v).replace(/<[^>]*>/g, "").replace(/&nbsp;/gi, " ").replace(/&amp;/gi, "&").replace(/&lt;/gi, "<").replace(/&gt;/gi, ">").replace(/&#?\w+;/g, "").trim();
+        const data = XLSX.utils.sheet_to_json(ws, {header: 1, raw: false, defval: ""}).map(r => (r || []).map(clean));
+        let hIdx = -1;
+        for (let i = 0; i < Math.min(8, data.length); i++) {
+          if ((data[i] || []).some(c => String(c || "").toLowerCase().includes("pedido"))) {
+            hIdx = i; break;
+          }
+        }
+        if (hIdx < 0) {
+          alert("⚠ " + tienda + ": este archivo no contiene los datos del reporte (parece ser solo el “cascarón” de exportación de " + (file.name||"") + ", 10 KB).\n\nVolvé a exportar desde Fenicio y guardá el reporte como UN SOLO archivo (no “página web completa”).");
+          const kErr = tienda.replace(" ", "");
+          setRowsFenAn(p => ({...p, [kErr]: []}));
+          setCargandoFenAn(p => ({...p, [kErr]: false}));
+          return;
+        }
+        const headers = data[hIdx].map(String);
+        const rows = data.slice(hIdx + 1).map(r => {
+          const o = {};
+          headers.forEach((h, i) => o[h] = r[i] || "");
+          return o;
+        }).filter(r => /^\d+$/.test(String(Object.values(r)[0] || "").trim()));
+        const k2 = tienda.replace(" ", "");
+        if (!rows.length) alert("⚠ " + tienda + ": no se encontraron pedidos en el archivo. Verificá que sea el reporte de ventas correcto.");
+        setRowsFenAn(p => ({...p, [k2]: rows}));
+      } catch (err) {
+        alert("Error Fenicio: " + err.message);
+      }
+      const k3 = tienda.replace(" ", "");
+      setCargandoFenAn(p => ({...p, [k3]: false}));
+    };
+    reader.readAsBinaryString(file);
+  };
+  const extraerNroPedido = obs => {
+    const s = String(obs || "").trim();
+    // "123456/texto" o "123456 texto"
+    const m1 = s.match(/^(\d{4,10})[\/\s]/);
+    if (m1) return m1[1];
+    // Solo número (4-10 dígitos)
+    const m2 = s.match(/^(\d{4,10})$/);
+    if (m2) return m2[1];
+    // Número de 5-8 dígitos en cualquier parte del string
+    const m3 = s.match(/\b(\d{5,8})\b/);
+    if (m3) return m3[1];
+    return null;
+  };
+  const leerWMS = e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    setCargandoWMS(true);
+    setArchivoWMS(file.name);
+    const reader = new FileReader();
+    reader.onload = ev => {
+      try {
+        const wb = XLSX.read(ev.target.result, {
+          type: "binary",
+          cellText: true
+        });
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        const data = XLSX.utils.sheet_to_json(ws, {
+          header: 1,
+          raw: false,
+          defval: ""
+        });
+        const headers = data[0].map(String);
+        setRowsWMS(data.slice(1).map(r => {
+          const o = {};
+          headers.forEach((h, i) => o[h] = r[i] || "");
+          return o;
+        }));
+      } catch (err) {
+        alert("Error WMS: " + err.message);
+      }
+      setCargandoWMS(false);
+    };
+    reader.readAsBinaryString(file);
+  };
+
+  // ── Lógica core separada para poder combinarla ──
+  const parseMesBAS = f => {
+    if (!f) return null;
+    const s = String(f).trim();
+    const iso = s.match(/^(\d{4})-(\d{2})/);              // 2026-05-02
+    if (iso) return `${iso[1]}-${iso[2]}`;
+    const dmy = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/); // DD/MM/YYYY
+    if (dmy) return `${dmy[3]}-${dmy[2].padStart(2, "0")}`;
+    const n = parseFloat(s);                               // serial Excel
+    if (!isNaN(n) && n > 40000 && n < 50000) {
+      const d = new Date(Math.round((n - 25569) * 86400 * 1000));
+      const y = d.getUTCFullYear(), m = String(d.getUTCMonth() + 1).padStart(2, "0");
+      if (y >= 2020 && y <= 2030) return `${y}-${m}`;
+    }
+    return null;
+  };
+  const _coreBAS = async () => {
+    console.log('_coreBAS inicio. rowsBAS:',rowsBAS.length);
+    if(!rowsBAS.length)return;
+    const fab = rowsBAS.filter(r => {
+      const a = String(r.Abreviado||"").trim().toUpperCase();
+      return (a === "FAB" || a === "FA") && String(r.Anulado||"0").trim() !== "1";
+    });
+    const ncd = rowsBAS.filter(r => {
+      const a = String(r.Abreviado||"").trim().toUpperCase();
+      return (a.startsWith("NCD") || a.startsWith("NTC") || a === "NC") && String(r.Anulado||"0").trim() !== "1";
+    });
+    const sucSinMapa = new Set();
+    // Facturación NETA = suma por renglón de (Importe − IVA), agrupada por MES y tienda.
+    // El "Importe" del BAS viene CON IVA por renglón; se le resta la columna "IVA" para quedar en
+    // facturación neta (sin impuesto). Se suma por renglón —no por documento— porque el Importe ya es
+    // por línea, así que no se infla por facturas multi-renglón. El archivo puede abarcar varios meses.
+    const porMes = {};        // { "2026-06": { TimeOut: 123, ... } } facturación neta sin IVA
+    const pedMesTienda = {};  // { "2026-06": { TimeOut: Set(pedidos) } }
+    const facMesTienda = {};  // { "2026-06": { TimeOut: Set(numeroFactura) } } solo para CONTAR facturas únicas
+    fab.forEach(r => {
+      const suc = String(r.Sucursal || "").trim();
+      const tienda = mapearTienda(suc);
+      if (!tienda) { if (suc) sucSinMapa.add(suc); return; }
+      const m = parseMesBAS(r.Fecha) || mes;
+      const neto = (Number(r.Importe) || 0) - (Number(r.Iva) || 0);  // facturación sin IVA del renglón
+      if (!porMes[m]) porMes[m] = {};
+      porMes[m][tienda] = (porMes[m][tienda] || 0) + neto;
+      const numero = (String(r.Numero || "").trim() || ("OBS:" + String(r.Observacion || "").trim())) + "|" + tienda;
+      if (!facMesTienda[m]) facMesTienda[m] = {};
+      if (!facMesTienda[m][tienda]) facMesTienda[m][tienda] = new Set();
+      facMesTienda[m][tienda].add(numero);
+      const nro = extraerNroPedido(r.Observacion);
+      if (nro) {
+        if (!pedMesTienda[m]) pedMesTienda[m] = {};
+        if (!pedMesTienda[m][tienda]) pedMesTienda[m][tienda] = new Set();
+        pedMesTienda[m][tienda].add(nro);
+      }
+    });
+    // Cantidad de facturas únicas por mes/tienda (para mostrar)
+    const cantFacMes = {};
+    Object.entries(facMesTienda).forEach(([m, tt]) => {
+      cantFacMes[m] = {};
+      Object.entries(tt).forEach(([t, s]) => { cantFacMes[m][t] = s.size; });
+    });
+    // NCD por mes (cantidad, monto, y también por tienda para descontar del real)
+    const ncdPorMes = {};
+    const ncdPorMesTienda = {};  // { "2026-06": { TimeOut: 340063, ... } }
+    ncd.forEach(r => {
+      const suc = String(r.Sucursal || "").trim();
+      const tienda = mapearTienda(suc);
+      const m = parseMesBAS(r.Fecha) || mes;
+      const imp = Math.abs((Number(r.Importe) || 0) - (Number(r.Iva) || 0));  // nota de crédito neta (sin IVA)
+      if (!ncdPorMes[m]) ncdPorMes[m] = {cant:0, monto:0};
+      ncdPorMes[m].cant++;
+      ncdPorMes[m].monto += imp;
+      if (tienda) {
+        if (!ncdPorMesTienda[m]) ncdPorMesTienda[m] = {};
+        ncdPorMesTienda[m][tienda] = (ncdPorMesTienda[m][tienda] || 0) + imp;
+      }
+    });
+    const meses = Object.keys(porMes).sort();
+    // cantidad de pedidos únicos por mes/tienda (para mostrar)
+    const cantPedMes = {};
+    Object.entries(pedMesTienda).forEach(([m,tt])=>{ cantPedMes[m]={}; Object.entries(tt).forEach(([t,s])=>cantPedMes[m][t]=s.size); });
+    const primeraFAB = rowsBAS._primeraFAB || null;
+    const basCols = rowsBAS._hdrs || [];
+    // Real NETO por mes/tienda = FABs - NCDs (para mostrar en Metas y guardar en Supabase)
+    const porMesNeto = {};
+    Object.entries(porMes).forEach(([m,tt]) => {
+      porMesNeto[m] = {};
+      Object.entries(tt).forEach(([t,fab]) => {
+        porMesNeto[m][t] = Math.max(0, fab - (ncdPorMesTienda[m]?.[t] || 0));
+      });
+    });
+    const resumen = {porMes, porMesNeto, ncdPorMes, ncdPorMesTienda, cantPedMes, cantFacMes, meses, fabTotal:fab.length, ncdTotal:ncd.length, sucSinMapa:Array.from(sucSinMapa), colImporte:rowsBAS._colImporte, colIva:rowsBAS._colIva, basCols, primeraFAB};
+    setResumenBAS(resumen);
+    // Posicionar la vista de metas en el mes más reciente del archivo
+    const mesReciente = meses[meses.length-1];
+    if (mesReciente && mes !== mesReciente) setMes(mesReciente);
+    guardarSnapshot({ mes: mesReciente || mes, resumen });
+    // Guardar en Supabase: una fila por (mes, tienda)
+    if (esAdmin && supa) {
+      try {
+        for (const [m, tt] of Object.entries(porMesNeto)) {
+          for (const [tienda, real] of Object.entries(tt)) {
+            await supa.from('metas_mensuales').upsert({mes:m, tienda, real:Math.round(real)}, {onConflict:'mes,tienda'});
+          }
+        }
+        const {data:kpisG} = await supa.from('kpis_globales').select('id,nombre');
+        const kpiNC = kpisG?.find(k=>k.nombre.toLowerCase().includes('nota')&&k.nombre.toLowerCase().includes('cr'));
+        const ncdReciente = mesReciente && ncdPorMes[mesReciente] ? ncdPorMes[mesReciente].cant : ncd.length;
+        if(kpiNC) await supa.from('kpis_globales').update({valor:String(ncdReciente)}).eq('id',kpiNC.id);
+        cargarMetas();
+      } catch(e) { console.warn('Supabase _coreBAS:',e.message); }
+    }
+  };
+  const _coreCruce = async () => {
+    const findCol = (sample, patterns) => Object.keys(sample).find(k => patterns.some(p => p.test(k))) || "";
+    const sF = rowsFen[0] || {};
+    const colNro = findCol(sF, [/nro\.?\s*ped/i, /ped.*nro/i]) || "Nro. pedido";
+    const colFechF = findCol(sF, [/fecha.*pago/i, /fecha.*com/i, /comienzo/i, /^fecha/i]) || "Fecha pago";
+    const colEstF = findCol(sF, [/estado.*entr/i, /entr.*estado/i]) || "Estado entrega";
+    const colEstPago = findCol(sF, [/^estado$/i]) || "Estado";
+    const colImp = findCol(sF, [/importe.*total.*pedido/i, /importe.*pedido/i]) || findCol(sF, [/importe/i]) || "Importe total pedido";
+    const colSku = findCol(sF, [/^sku$/i, /sku/i, /c[oó]d.*art/i]) || "SKU";
+
+    const esFAB = r => { const a=String(r.Abreviado||"").trim().toUpperCase(); return (a==="FAB"||a==="FA") && String(r.Anulado||"0").trim()!=="1"; };
+    const esNCD = r => { const a=String(r.Abreviado||"").trim().toUpperCase(); return (a.startsWith("NCD")||a.startsWith("NTC")||a==="NC") && String(r.Anulado||"0").trim()!=="1"; };
+    const fab = rowsBAS.filter(esFAB);
+    const ncd = rowsBAS.filter(esNCD);
+
+    // Facturas por pedido: contar FACTURAS distintas (Numero), no renglones de cada factura
+    const factsXPed = {};
+    fab.forEach(r => {
+      const nro = extraerNroPedido(r.Observacion);
+      if (!nro) return;
+      if (!factsXPed[nro]) factsXPed[nro] = { invoices: new Set(), total: 0 };
+      factsXPed[nro].invoices.add(String(r.Numero || r.Observacion || ""));
+      factsXPed[nro].total += Number(r.Importe) || 0;
+    });
+    const ncsXPed = {};
+    ncd.forEach(r => { const nro = extraerNroPedido(r.Observacion); if (nro) ncsXPed[nro] = (ncsXPed[nro] || 0) + 1; });
+    const nInvoices = nro => factsXPed[nro] ? factsXPed[nro].invoices.size : 0;
+    const netFacturas = nro => nInvoices(nro) - (ncsXPed[nro] || 0);
+    const factDuplicadas = Object.keys(factsXPed)
+      .filter(nro => netFacturas(nro) > 1)
+      .map(nro => ({ nro, facturas: nInvoices(nro), ncs: ncsXPed[nro] || 0, total: factsXPed[nro].total }));
+
+    // ── PCN (prendas personalizadas): sus SKU con prefijo "PCN" SÓLO viven en el Monitor WMS
+    //    (columna "Articulo"), NO en los reportes de Fenicio. Se detectan acá, no en Fenicio.
+    const wmsMap = {};
+    const pcnXVenta = {};   // { venta: { arts:[], estadoEnc, estadoEco, importe, deposito, fecha } }
+    if (rowsWMS.length) {
+      const sW = rowsWMS[0] || {};
+      const colArt = findCol(sW, [/art[ií]culo/i, /^sku$/i, /c[oó]d.*art/i]) || "Articulo";
+      const colVenta = findCol(sW, [/^venta$/i, /venta/i]) || "Venta";
+      const colEstEnc = findCol(sW, [/estado.*encuentra/i]) || "Estado Encuentra";
+      const colEstEco = findCol(sW, [/estado.*ecom/i]) || "Estado ecommerce";
+      const colDep = findCol(sW, [/dep[oó]sito/i]) || "Deposito pedido";
+      const colImpW = findCol(sW, [/^importe$/i, /importe/i]) || "Importe";
+      const colFechW = findCol(sW, [/fecha.*ped/i, /^fecha/i]) || "Fecha pedido";
+      rowsWMS.forEach(r => {
+        const k = String(r[colVenta] || "").trim();
+        if (k && !wmsMap[k]) wmsMap[k] = r;
+        const art = String(r[colArt] || "").trim();
+        if (k && art.toUpperCase().startsWith("PCN")) {
+          if (!pcnXVenta[k]) pcnXVenta[k] = { arts: [], estadoEnc: String(r[colEstEnc]||""), estadoEco: String(r[colEstEco]||""), importe: Number(r[colImpW]||0), deposito: String(r[colDep]||""), fecha: String(r[colFechW]||"").slice(0,10) };
+          if (!pcnXVenta[k].arts.includes(art)) pcnXVenta[k].arts.push(art);
+        }
+      });
+    }
+
+    // Agrupar líneas de Fenicio por pedido (Fenicio trae 1 fila por SKU)
+    const fenPed = {};
+    rowsFen.forEach(r => {
+      const nro = String(r[colNro] || "").trim();
+      if (!nro) return;
+      if (!fenPed[nro]) fenPed[nro] = { nro, fecha: String(r[colFechF]||"").slice(0,10), estadoFen: String(r[colEstF]||""), estadoPago: String(r[colEstPago]||""), importe: Number(r[colImp]||0), lineas: 0, pcn: false, skusPcn: [] };
+      fenPed[nro].lineas++;
+    });
+    // Marcar como PCN los pedidos de Fenicio que el WMS identifica con artículo personalizado
+    Object.keys(pcnXVenta).forEach(v => { if (fenPed[v]) { fenPed[v].pcn = true; fenPed[v].skusPcn = pcnXVenta[v].arts.slice(); } });
+    const pedDuplicados = []; // en export por línea, un pedido con varias filas es normal; no es duplicado
+
+    const hoy = new Date().toISOString().slice(0, 10);
+    // Criterio de facturación automática: SOLO se espera factura si el pedido ya fue procesado,
+    // es decir si llegó al menos a "Orden liberada" (o estados posteriores: pronto para despacho,
+    // despachado, en tránsito, recibido en tienda, listo para retirar, entregado). Antes de eso
+    // (pedido recibido / preparando / items pedidos / confirmados) el pedido NO se procesó, así que
+    // todavía no se factura y no debe contar como "sin factura".
+    const reLiberado = /clasificad|orden\s*liberad|liberad|pronto.*despach|despachad|tr[aá]nsito|camino|recibid[oa]?\s*(en\s*)?tienda|listo.*retir|entregad/i;
+    const reDespEntr = /despachad|tr[aá]nsito|camino|recibid[oa]?\s*(en\s*)?tienda|entregad/i;
+    const grupos = { facturado: [], facturaDup: [], pendienteOK: [], pcnManual: [], revisar: [], cancelado: [], canceladoConFactura: [] };
+
+    Object.values(fenPed).forEach(p => {
+      const { nro, fecha, estadoFen, estadoPago, importe, pcn, skusPcn } = p;
+      const wms = wmsMap[nro];
+      const estadoWMS = wms ? (wms["Estado Encuentra"] || wms["Estado ecommerce"] || "—") : "No está en WMS";
+      const tieneF = nInvoices(nro) > 0;
+      const esDupF = netFacturas(nro) > 1;
+      const base = { nro, fecha, estadoFen, estadoPago, estadoWMS, importe, pcn, skusPcn: (skusPcn||[]).join(", ") };
+      if (/cancelad/i.test(estadoWMS) || /cancelad/i.test(estadoFen) || /cancelad/i.test(estadoPago)) {
+        // Un pedido cancelado NO debería tener factura. Si la tiene, hay que anularla a mano → avisar.
+        if (tieneF) grupos.canceladoConFactura.push({ ...base, nFact: nInvoices(nro), razon: "Cancelado CON factura — anular la factura manualmente ⚠️" });
+        else grupos.cancelado.push(base);
+        return;
+      }
+      if (tieneF) {
+        if (esDupF) grupos.facturaDup.push({ ...base, nFact: nInvoices(nro), nNCs: ncsXPed[nro] || 0 });
+        else grupos.facturado.push(base);
+        return;
+      }
+      // Sin factura:
+      if (pcn) { grupos.pcnManual.push({ ...base, razon: "Prenda personalizada (PCN) — facturar/forzar manualmente" }); return; }
+      // Solo se espera factura si el pedido fue procesado (orden liberada o más). Si no, no se factura todavía.
+      const liberado = reLiberado.test(estadoFen) || reLiberado.test(estadoWMS);
+      if (!liberado) { grupos.pendienteOK.push({ ...base, razon: "Sin orden liberada — todavía no se procesó (no se factura)" }); return; }
+      if (reDespEntr.test(estadoFen) || reDespEntr.test(estadoWMS)) { grupos.revisar.push({ ...base, razon: "Despachado/entregado SIN factura ⚠️" }); return; }
+      if (fecha >= hoy) { grupos.pendienteOK.push({ ...base, razon: "Orden liberada hoy — a facturar" }); return; }
+      grupos.revisar.push({ ...base, razon: "Orden liberada sin factura — verificar" });
+    });
+
+    // Pedidos PCN presentes en el WMS pero ausentes del reporte de Fenicio
+    // (p.ej. cuando no se cargó el Fenicio de Tienda Nacional). Igual deben analizarse.
+    Object.entries(pcnXVenta).forEach(([v, info]) => {
+      if (fenPed[v]) return; // ya procesado arriba
+      const tieneF = nInvoices(v) > 0;
+      const estadoWMS = info.estadoEnc || info.estadoEco || "—";
+      const base = { nro: v, fecha: info.fecha, estadoFen: "— (sólo en WMS)", estadoPago: "", estadoWMS, importe: info.importe, pcn: true, skusPcn: info.arts.join(", ") };
+      if (/cancelad/i.test(estadoWMS) || /cancelad/i.test(info.estadoEco)) {
+        if (tieneF) grupos.canceladoConFactura.push({ ...base, nFact: nInvoices(v), razon: "Cancelado CON factura — anular la factura manualmente ⚠️" });
+        else grupos.cancelado.push(base);
+        return;
+      }
+      if (tieneF) { grupos.facturado.push(base); return; }
+      grupos.pcnManual.push({ ...base, razon: `Prenda personalizada (PCN) sin factura — forzar manualmente${info.arts.length ? " · " + info.arts.length + " art." : ""}` });
+    });
+
+    const totalPedidos = Object.keys(fenPed).length + Object.keys(pcnXVenta).filter(v => !fenPed[v]).length;
+    const pend = { grupos, factDuplicadas, pedDuplicados, totalPedidos };
+    setPendientes(pend);
+    guardarSnapshot({ pendientes: pend });
+    if (esAdmin) {
+      const pendCount = grupos.revisar.length + grupos.pcnManual.length + grupos.facturaDup.length;
+      const { data: kpisG } = await supa.from("kpis_globales").select("id,nombre");
+      const kpi = kpisG?.find(k => k.nombre.toLowerCase().includes("factur") && k.nombre.toLowerCase().includes("pendiente"));
+      if (kpi) await supa.from("kpis_globales").update({ valor: String(pendCount) }).eq("id", kpi.id);
+    }
+  };
+  const procesarTodo = async () => {
+    if (!rowsBAS.length) {
+      alert("Cargá el BAS primero.");
+      return;
+    }
+    setProcesando(true);
+    try {
+      await _coreBAS();
+      if (rowsFen.length || rowsWMS.length) await _coreCruce();
+    } finally {
+      setProcesando(false);
+    }
+  };
+  const fmtUSD = n => "$" + Math.round(n || 0).toLocaleString("es-UY");
+  const fmtM = m => {
+    if (!m) return "";
+    const [y, mo] = m.split("-");
+    const ns = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
+    return `${ns[Number(mo) - 1]} ${y}`;
+  };
+  const colMeta = pct => pct == null ? C.gray : pct >= 100 ? C.green : pct >= 70 ? C.amber : C.red;
+  const h = React.createElement;
+  // ── KPIs del mes seleccionado ──
+  const realMes = metasDeMes.reduce((a, m) => a + Number(m.real || 0), 0);
+  const metaMes = metasDeMes.reduce((a, m) => a + Number(m.meta || 0), 0);
+  const pctMes = metaMes > 0 ? Math.round(realMes / metaMes * 100) : null;
+  const colMes = colMeta(pctMes);
+  const pedidosMes = resumenBAS ? Object.values(resumenBAS.cantPedMes?.[mes] || {}).reduce((a, b) => a + b, 0) : null;
+  const facturasMes = resumenBAS ? Object.values(resumenBAS.cantFacMes?.[mes] || {}).reduce((a, b) => a + b, 0) : null;
+  const pcnArrM = pendientes ? (pendientes.grupos.pcnManual || []) : [];
+  const pendUrg = pendientes ? pendientes.grupos.revisar.length : null;
+  const pendTot = pendientes ? (pendientes.grupos.revisar.length + pendientes.grupos.pendienteOK.length + pcnArrM.length) : null;
+  const kpi = (eyebrow, valor, sub, color, extra) => h("div", {
+    className: "bg-white rounded-2xl border p-4 flex flex-col",
+    style: { borderColor: C.line }
+  }, h("div", {
+    className: "text-[11px] font-bold uppercase tracking-wide",
+    style: { color: C.gray }
+  }, eyebrow), h("div", {
+    className: "text-3xl font-black fraunces tabular-nums mt-1",
+    style: { color: color || C.ink }
+  }, valor), extra, sub && h("div", {
+    className: "text-xs mt-1",
+    style: { color: C.gray }
+  }, sub));
+  return h("div", { className: "space-y-4" },
+    h(Title, {
+      eyebrow: "Análisis",
+      title: "Facturación y metas",
+      right: h("div", { className: "flex items-center gap-2" },
+        h("span", { className: "text-[11px] font-bold uppercase tracking-wide", style: { color: C.gray } }, "Período"),
+        h("input", {
+          type: "month",
+          value: mes,
+          onChange: e => setMes(e.target.value),
+          className: "text-sm rounded-xl border px-3 py-1.5 outline-none",
+          style: { borderColor: C.line }
+        }))
+    }),
+    // ── KPIs grandes arriba ──
+    h("div", { className: "grid sm:grid-cols-3 gap-3" },
+      kpi("Facturación neta · " + fmtM(mes), fmtUSD(realMes),
+        pctMes != null ? pctMes + "% de " + fmtUSD(metaMes) : "Meta sin definir",
+        colMes,
+        h("div", { className: "mt-2" }, h(Bar, { pct: pctMes, color: colMes, h: 8 }))),
+      kpi("Pedidos del mes", pedidosMes != null ? pedidosMes.toLocaleString("es-UY") : "—",
+        resumenBAS ? (facturasMes + " facturas únicas") : "Cargá el BAS para ver pedidos",
+        C.ink),
+      kpi("Pendientes sin factura", pendTot != null ? pendTot.toLocaleString("es-UY") : "—",
+        pendientes ? (pendUrg > 0 ? pendUrg + " urgentes (despachados sin factura)" : "Sin urgentes ✓") : "Cargá Fenicio para cruzar",
+        pendUrg > 0 ? C.red : (pendientes ? C.green : C.ink))),
+    // ── Desglose por tienda (plegable) ──
+    h(Collapse, {
+      title: "Desglose por tienda",
+      subtitle: "Meta vs. real del mes · " + metasDeMes.length + " tiendas",
+      badge: pctMes != null ? h(Chip, { color: colMes, soft: C.soft }, pctMes + "%") : null
+    }, h("div", { className: "grid sm:grid-cols-2 xl:grid-cols-4 gap-3" },
+      metasDeMes.map(m => {
+        const pct = m.meta > 0 ? Math.round((m.real || 0) / m.meta * 100) : null;
+        const col = colMeta(pct);
+        return h("div", { key: m.tienda, className: "rounded-2xl border p-4", style: { borderColor: C.line } },
+          h("div", { className: "flex items-start justify-between mb-3" },
+            h("div", null,
+              h("div", { className: "text-xs font-black uppercase tracking-wide", style: { color: C.gray } }, m.tienda),
+              h("div", { className: "text-2xl font-black fraunces tabular-nums", style: { color: col } }, pct != null ? pct + "%" : "—")),
+            esAdmin && h("button", {
+              onClick: () => setFormMeta({ mes: m.mes, tienda: m.tienda, meta: m.meta || "", real: m.real || "", notas: m.notas || "" }),
+              className: "p-1.5 rounded-lg hover:bg-slate-100",
+              style: { color: C.gray }
+            }, Ic.edit)),
+          h(Bar, { pct: pct, color: col }),
+          h("div", { className: "flex justify-between text-xs mt-1.5", style: { color: C.gray } },
+            h("span", null, "Real: ", h("b", { style: { color: C.ink } }, fmtUSD(m.real))),
+            h("span", null, "Meta: ", fmtUSD(m.meta))),
+          m.tienda === "MercadoLibre" && h("div", { className: "text-[10px] mt-1", style: { color: C.gray } }, "Actualización manual (no está en BAS)"));
+      }))),
+    // ── Progreso anual (plegable) ──
+    (metas.length > 0 || resumenBAS) && h(Collapse, {
+      title: "Progreso anual y mes a mes",
+      subtitle: "Objetivo " + new Date().getFullYear() + " · $100.000.000"
+    }, h(ProgresoAnual, {
+      metas: resumenBAS ? metas.map(m => { const r = resumenBAS.porMesNeto?.[m.mes]?.[m.tienda]; return r != null ? { ...m, real: r } : m; }) : metas,
+      fmtUSD: fmtUSD,
+      colMeta: colMeta,
+      fmtM: fmtM
+    })),
+    // ── Cargar archivos y analizar (plegable; abierto si todavía no se analizó) ──
+    h(Collapse, {
+      title: "Cargar archivos y analizar",
+      subtitle: "BAS (obligatorio) · Fenicio y WMS (opcionales)",
+      defaultOpen: !resumenBAS,
+      badge: archivoBAS ? h(Chip, { color: C.green, soft: C.greenS }, "BAS ✓") : null
+    }, h("p", { className: "text-xs mb-3", style: { color: C.gray } },
+        "Subí el archivo de facturación del ERP (BAS): la app calcula el total facturado de TimeOut, Tienda Nacional y Classico y actualiza las barras. MercadoLibre se actualiza manualmente."),
+      h("div", { className: "space-y-3" },
+        h("div", { className: "rounded-2xl border p-4 space-y-2", style: { borderColor: C.line } },
+          h("div", { className: "font-bold text-sm" }, "BAS — ERP de facturación ",
+            h("span", { className: "text-xs font-normal", style: { color: C.gray } }, "(actualiza los reales de las 3 tiendas)")),
+          h("label", {
+            className: "flex items-center gap-2 p-3 rounded-xl border-2 border-dashed cursor-pointer",
+            style: { borderColor: archivoBAS ? "#86EFAC" : C.line, background: archivoBAS ? C.greenS : "transparent" }
+          }, h("span", { style: { color: archivoBAS ? C.green : C.blue, display: "inline-flex" } }, archivoBAS ? Ic.ok : Ic.upload),
+            h("span", { className: "text-sm font-semibold", style: { color: archivoBAS ? C.green : C.gray } }, cargandoBAS ? "Leyendo..." : archivoBAS || "Subí el archivo (.xlsx)"),
+            h("input", { type: "file", accept: ".xlsx,.xls", className: "hidden", onChange: leerBAS }))),
+        h("div", null,
+          h("div", { className: "text-sm font-bold mb-2", style: { color: C.ink } }, "Fenicio — Reportes de ventas ",
+            h("span", { className: "text-xs font-normal", style: { color: C.gray } }, "(opcional · uno por tienda, se concatenan)")),
+          h("div", { className: "grid sm:grid-cols-3 gap-3" },
+            TIENDAS_FEN_AN.map(t => h("div", { key: t.k, className: "rounded-2xl border p-3 space-y-2", style: { borderColor: C.line } },
+              h("div", { className: "text-xs font-bold" }, t.l),
+              h("label", {
+                className: "flex items-center gap-2 p-2.5 rounded-xl border-2 border-dashed cursor-pointer",
+                style: { borderColor: archivosFenAn[t.k] ? "#86EFAC" : C.line, background: archivosFenAn[t.k] ? C.greenS : "transparent" }
+              }, h("span", { style: { color: archivosFenAn[t.k] ? C.green : C.blue, display: "inline-flex" } }, archivosFenAn[t.k] ? Ic.ok : Ic.upload),
+                h("span", { className: "text-xs font-semibold truncate", style: { color: archivosFenAn[t.k] ? C.green : C.gray } }, cargandoFenAn[t.k] ? "Leyendo..." : archivosFenAn[t.k] || "Subí el .xls"),
+                h("input", { type: "file", accept: ".xlsx,.xls,.csv", className: "hidden", onChange: leerFenicio(t.k) })),
+              rowsFenAn[t.k] && rowsFenAn[t.k].length > 0 && h("div", { className: "text-[10px] font-semibold", style: { color: C.gray } }, rowsFenAn[t.k].length, " pedidos")))),
+          rowsFen.length > 0 && h("div", { className: "text-xs font-semibold mt-2", style: { color: C.green } }, "Total: ", rowsFen.length, " pedidos cargados")),
+        h("div", { className: "rounded-2xl border p-4 space-y-3", style: { borderColor: C.line } },
+          h("div", { className: "font-bold text-sm" }, "Encuentra — Monitor WMS ",
+            h("span", { className: "text-xs font-normal", style: { color: C.gray } }, "(opcional, agrega el estado del depósito a cada pendiente)")),
+          h("label", {
+            className: "flex items-center gap-2 p-3 rounded-xl border-2 border-dashed cursor-pointer",
+            style: { borderColor: archivoWMS ? "#86EFAC" : C.line, background: archivoWMS ? C.greenS : "transparent" }
+          }, h("span", { style: { color: archivoWMS ? C.green : C.blue, display: "inline-flex" } }, archivoWMS ? Ic.ok : Ic.upload),
+            h("span", { className: "text-sm font-semibold", style: { color: archivoWMS ? C.green : C.gray } }, cargandoWMS ? "Leyendo..." : archivoWMS || "Subí el Monitor Ecommerce (.xlsx)"),
+            h("input", { type: "file", accept: ".xlsx,.xls", className: "hidden", onChange: leerWMS })),
+          h("div", { className: "text-xs", style: { color: C.gray } }, "Columnas usadas: ",
+            h("span", { className: "px-1.5 py-px rounded-md", style: { background: "#F1F4F8" } }, "Venta"), " ",
+            h("span", { className: "px-1.5 py-px rounded-md", style: { background: "#F1F4F8" } }, "Estado Encuentra"),
+            " — permite ver en qué estado está cada pendiente en el depósito."))),
+      h("div", { className: "flex gap-2 mt-4 flex-wrap" },
+        h("button", {
+          onClick: procesarTodo,
+          disabled: !rowsBAS.length || procesando,
+          className: "text-sm font-bold text-white px-6 py-2.5 rounded-xl disabled:opacity-40",
+          style: { background: C.blue }
+        }, procesando ? "Analizando..." : "Analizar"))),
+    // ── Detalle del BAS por mes (plegable) ──
+    resumenBAS && h(Collapse, {
+      title: "Detalle del BAS por mes",
+      subtitle: resumenBAS.fabTotal + " FAB · " + resumenBAS.ncdTotal + " NCD · " + ((resumenBAS.meses || []).map(fmtM).join(", ") || "—") + " · facturación = " + (resumenBAS.colImporte || "Importe") + " − " + (resumenBAS.colIva || "IVA"),
+      badge: esAdmin ? h(Chip, { color: C.green, soft: C.greenS }, "✓ Metas") : null
+    }, h("div", { className: "space-y-4" },
+      !resumenBAS.colIva && h("div", {
+        className: "rounded-xl px-4 py-2 text-xs font-semibold",
+        style: { background: C.redS, color: C.red }
+      }, "⚠ No encontré la columna de IVA en el BAS, así que la facturación quedó CON IVA (Importe sin restar). Columnas detectadas: ", (resumenBAS.basCols || []).join(", "), ". Decime cómo se llama la columna del IVA y la ajusto."),
+      resumenBAS.sucSinMapa && resumenBAS.sucSinMapa.length > 0 && h("div", {
+        className: "rounded-xl px-4 py-2 text-xs font-semibold",
+        style: { background: C.amberS, color: C.amber }
+      }, "⚠ Sucursales no reconocidas (no se suman a ninguna tienda): ", resumenBAS.sucSinMapa.join(" · "), "."),
+      resumenBAS.fabTotal > 0 && (!resumenBAS.meses || resumenBAS.meses.length === 0) && h("div", {
+        className: "rounded-xl px-4 py-2 text-xs font-semibold",
+        style: { background: "#FFF3CD", color: "#856404" }
+      }, h("div", { className: "font-bold mb-1" }, "⚠ No se pudo imputar facturación — primer FAB del archivo:"),
+        resumenBAS.primeraFAB ? h("table", { style: { borderCollapse: "collapse", width: "100%", fontSize: 11 } },
+          Object.entries(resumenBAS.primeraFAB).map(([k, v]) => h("tr", { key: k },
+            h("td", { style: { padding: "1px 8px 1px 0", fontWeight: 700, whiteSpace: "nowrap", verticalAlign: "top" } }, k),
+            h("td", { style: { padding: "1px 0", wordBreak: "break-all" } }, String(v) || "(vacío)")))) :
+          h("span", null, "Columnas: ", (resumenBAS.basCols || []).join(", "))),
+      (resumenBAS.meses || []).map(m => h("div", { key: m, className: "space-y-2" },
+        h("div", { className: "text-sm font-black fraunces flex items-baseline gap-2 flex-wrap", style: { color: C.ink } }, fmtM(m),
+          h("span", { className: "text-xs font-normal", style: { color: C.gray } },
+            "Neto ", fmtUSD(Object.values(resumenBAS.porMesNeto?.[m] || {}).reduce((a, b) => a + b, 0)),
+            " · Bruto ", fmtUSD(Object.values(resumenBAS.porMes[m]).reduce((a, b) => a + b, 0)),
+            resumenBAS.ncdPorMes[m] ? " · " + resumenBAS.ncdPorMes[m].cant + " NCD (−" + fmtUSD(resumenBAS.ncdPorMes[m].monto) + ")" : "",
+            " · " + Object.values(resumenBAS.cantFacMes?.[m] || {}).reduce((a, b) => a + b, 0) + " facturas únicas")),
+        h("div", { className: "grid sm:grid-cols-3 gap-3" },
+          Object.entries(resumenBAS.porMes[m]).map(([tienda, fabBruto]) => {
+            const neto = resumenBAS.porMesNeto?.[m]?.[tienda] ?? fabBruto;
+            const ncdT = resumenBAS.ncdPorMesTienda?.[m]?.[tienda] || 0;
+            return h("div", { key: tienda, className: "rounded-xl p-3", style: { background: "#F6F7F9" } },
+              h("div", { className: "text-xs font-bold uppercase tracking-wide mb-1", style: { color: C.gray } }, tienda),
+              h("div", { className: "text-xl font-black tabular-nums fraunces", style: { color: C.ink } }, fmtUSD(neto)),
+              ncdT > 0 && h("div", { className: "text-xs", style: { color: C.amber } }, "−", fmtUSD(ncdT), " NCD"),
+              h("div", { className: "text-xs", style: { color: C.gray } }, ((resumenBAS.cantPedMes[m] || {})[tienda] || 0), " pedidos"));
+          }))))) ),
+    // ── Pedidos (siempre visible, paginado) ──
+    pendientes && h(ResultadoCruce, { pendientes: pendientes }),
+    // ── Modal edición de meta ──
+    formMeta && h("div", {
+      className: "fixed inset-0 z-50 flex items-center justify-center p-4",
+      style: { background: "rgba(14,27,51,0.45)" },
+      onClick: () => setFormMeta(null)
+    }, h("div", {
+      className: "bg-white rounded-2xl p-5 w-full max-w-sm space-y-3 shadow-2xl",
+      onClick: e => e.stopPropagation()
+    }, h("h3", { className: "font-black text-lg fraunces", style: { color: C.ink } }, "Meta — ", formMeta.tienda),
+      h("div", null, h("label", { className: "text-xs font-bold uppercase tracking-wide block mb-1", style: { color: C.gray } }, "Mes"),
+        h("input", { type: "month", value: formMeta.mes, onChange: e => setFormMeta({ ...formMeta, mes: e.target.value }), className: "w-full text-sm rounded-xl border px-3 py-2 outline-none", style: { borderColor: C.line } })),
+      h("div", null, h("label", { className: "text-xs font-bold uppercase tracking-wide block mb-1", style: { color: C.gray } }, "Meta ($)"),
+        h(Inp, { type: "number", placeholder: "ej: 8300000", value: formMeta.meta, onChange: e => setFormMeta({ ...formMeta, meta: e.target.value }) })),
+      h("div", null, h("label", { className: "text-xs font-bold uppercase tracking-wide block mb-1", style: { color: C.gray } }, "Real hasta ahora ($) ",
+        formMeta.tienda !== "MercadoLibre" && h("span", { style: { color: C.blue } }, "(se actualiza desde el BAS)")),
+        h(Inp, { type: "number", placeholder: "opcional", value: formMeta.real, onChange: e => setFormMeta({ ...formMeta, real: e.target.value }) })),
+      h("div", null, h("label", { className: "text-xs font-bold uppercase tracking-wide block mb-1", style: { color: C.gray } }, "Notas"),
+        h(Inp, { value: formMeta.notas, onChange: e => setFormMeta({ ...formMeta, notas: e.target.value }) })),
+      h("div", { className: "flex gap-2 justify-end pt-1" },
+        h("button", { onClick: () => setFormMeta(null), className: "text-xs font-bold px-3 py-2 rounded-xl", style: { color: C.gray } }, "Cancelar"),
+        h("button", { onClick: () => guardarMeta(formMeta), className: "text-sm font-bold text-white px-5 py-2 rounded-xl", style: { background: C.blue } }, "Guardar")))));
+}
