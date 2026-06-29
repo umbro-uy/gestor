@@ -26,11 +26,12 @@
   .fraunces{font-family:'Poppins',sans-serif;letter-spacing:-0.02em;font-feature-settings:'tnum' 1;}
   input[type=range]{accent-color:var(--ac);}
   .drag-over{outline:2px dashed var(--ac);outline-offset:2px;background:var(--ac-s)!important;}
-  /* Tabla tipo planilla/sheet (Operativa): líneas de cuadrícula y encabezado fijo al hacer scroll */
-  .sheet{border-collapse:collapse;}
-  .sheet th,.sheet td{border-right:1px solid #EEF1F5;border-bottom:1px solid #EEF1F5;vertical-align:top;}
-  .sheet th:last-child,.sheet td:last-child{border-right:none;}
-  .sheet thead th{position:sticky;top:0;z-index:2;background:#EEF2F7;}
+  /* Tabla tipo planilla/sheet (Operativa): cuadrícula visible, celdas compactas y encabezado fijo */
+  .sheet{border-collapse:collapse;font-variant-numeric:tabular-nums;}
+  .sheet th,.sheet td{border:1px solid #C2C9D4;padding:4px 8px!important;vertical-align:top;}
+  .sheet thead th{position:sticky;top:0;z-index:3;background:#DCE3ED;color:#334155;font-weight:700;font-size:10px;text-transform:uppercase;letter-spacing:.03em;box-shadow:inset 0 -1px 0 #9aa6b6;}
+  .sheet tbody td:first-child,.sheet thead th:first-child{position:sticky;left:0;z-index:2;}
+  .sheet thead th:first-child{z-index:4;}
 </style>
 </head>
 <body>
