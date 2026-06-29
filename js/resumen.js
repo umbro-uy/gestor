@@ -9,7 +9,8 @@ function Resumen({
   data,
   setTab,
   esAdmin,
-  recargar
+  recargar,
+  activo
 }) {
   const {
     tareas,
@@ -30,7 +31,11 @@ function Resumen({
   const [seguiR, setSeguiR] = useState([]);
   const [pendSnap, setPendSnap] = useState(null); // pendientes del último cruce (analisis_snapshot)
   const [operSnap, setOperSnap] = useState(null); // resumen de Operativa (operativa_snapshot) — fuente única
+  const [operSnapOK, setOperSnapOK] = useState(null); // null=sin chequear, false=falta crear la tabla
+  // Se recarga CADA VEZ que se entra a Resumen (activo), no solo al montar: así refleja al instante
+  // lo último que se cruzó en Operativa/Análisis sin tener que recargar toda la app.
   useEffect(() => {
+    if (activo === false) return;
     let vivo = true;
     (async () => {
       try { const { data: mm } = await supa.from("metas_mensuales").select("*"); if (vivo && mm) setMetasM(mm); } catch (_) {}
@@ -40,10 +45,15 @@ function Resumen({
         if (vivo) setSeguiR(all);
       } catch (_) {}
       try { const { data: snap } = await supa.from("analisis_snapshot").select("pendientes").eq("id", "ultimo").maybeSingle(); if (vivo && snap && snap.pendientes) setPendSnap(snap.pendientes); } catch (_) {}
-      try { const { data: os } = await supa.from("operativa_snapshot").select("*").eq("id", "ultimo").maybeSingle(); if (vivo && os) setOperSnap(os); } catch (_) {}
+      try {
+        const { data: os, error } = await supa.from("operativa_snapshot").select("*").eq("id", "ultimo").maybeSingle();
+        if (!vivo) return;
+        if (error) { setOperSnapOK(false); }
+        else { setOperSnapOK(true); if (os) setOperSnap(os); }
+      } catch (_) { if (vivo) setOperSnapOK(false); }
     })();
     return () => { vivo = false; };
-  }, []);
+  }, [activo]);
   const mesActual = new Date().toISOString().slice(0, 7);
   const anioActual = String(new Date().getFullYear());
   const sumReal = arr => arr.reduce((a, m) => a + Number(m.real || 0), 0);
@@ -213,7 +223,10 @@ function Resumen({
   }];
   return /*#__PURE__*/React.createElement("div", {
     className: "space-y-8"
-  }, /*#__PURE__*/React.createElement("div", {
+  }, operSnapOK === false && h("div", {
+    className: "rounded-xl px-4 py-3 text-xs font-medium",
+    style: { background: C.amberS, color: C.amber }
+  }, "⚠ Para que el Resumen refleje lo de Operativa falta crear la tabla en Supabase. Ejecutá el SQL de sql/operativa_snapshot.sql en Supabase → SQL Editor y después cruzá una vez en Operativa."), /*#__PURE__*/React.createElement("div", {
     className: "grid grid-cols-2 lg:grid-cols-4 gap-3"
   }, statsBase.map(s => /*#__PURE__*/React.createElement("div", {
     key: s.l,

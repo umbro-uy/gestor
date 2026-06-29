@@ -437,10 +437,15 @@ function Operativa({ yo }) {
     if (r.leadtime != null) b.lt.push(r.leadtime);
     if (r.leadtimeEntrega != null) b.ltE.push(r.leadtimeEntrega);
   });
-  const mesesTend = Object.keys(bucketsTend).sort().slice(-8); // últimos meses con datos
-  const serieCumpl = mesesTend.map(m => ({ m, v: bucketsTend[m].total ? Math.round(bucketsTend[m].entreg / bucketsTend[m].total * 100) : null }));
-  const serieDesp = mesesTend.map(m => ({ m, v: percentil(bucketsTend[m].lt, PCTL) }));
-  const serieEnt = mesesTend.map(m => ({ m, v: percentil(bucketsTend[m].ltE, PCTL) }));
+  // Mes corriente (o el último con datos si el mes actual aún no tiene pedidos cargados)
+  const mesesTend = Object.keys(bucketsTend).sort();
+  const mesCorrienteKey = new Date().toISOString().slice(0, 7);
+  const mesCurKey = bucketsTend[mesCorrienteKey] ? mesCorrienteKey : (mesesTend.length ? mesesTend[mesesTend.length - 1] : mesCorrienteKey);
+  const bCur = bucketsTend[mesCurKey] || null;
+  const cumplCur = bCur && bCur.total ? Math.round(bCur.entreg / bCur.total * 100) : null;
+  const despCur = bCur ? percentil(bCur.lt, PCTL) : null;
+  const entCur = bCur ? percentil(bCur.ltE, PCTL) : null;
+  const fmtMesLargo = m => ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"][(+m.split("-")[1]) - 1] + " " + m.slice(0, 4);
   // % de cumplimiento de entrega por día de compra (para el calendario)
   const calData = useMemo(() => {
     if (!resultado) return [];
@@ -548,32 +553,27 @@ function Operativa({ yo }) {
      /*#__PURE__*/React.createElement("div", { className: "text-xl font-black fraunces tabular-nums", style: { color, lineHeight: 1.1 } }, value),
      sub && /*#__PURE__*/React.createElement("div", { className: "text-[10px]", style: { color: C.gray, lineHeight: 1.1 } }, sub));
   // Mini gráfico de evolución mensual para un KPI (barras por mes; resalta el último mes con dato)
-  const MiniTend = ({ titulo, serie, unidad, color, nota }) => {
+  // Barra de progreso del CUMPLIMIENTO del mes corriente, con la meta 90–95% marcada.
+  const ProgresoMes = () => {
     const ce = React.createElement;
-    const conDato = serie.filter(s => s.v != null);
-    const max = Math.max(1, ...conDato.map(s => s.v));
-    const ultIdx = serie.reduce((acc, s, i) => s.v != null ? i : acc, -1);
-    const ult = ultIdx >= 0 ? serie[ultIdx].v : null;
-    const prevIdx = serie.reduce((acc, s, i) => (s.v != null && i < ultIdx) ? i : acc, -1);
-    const prev = prevIdx >= 0 ? serie[prevIdx].v : null;
-    const delta = (ult != null && prev != null) ? ult - prev : null;
+    const META_MIN = 90, META_MAX = 95;
+    const col = cumplCur == null ? C.gray : cumplCur >= META_MIN ? C.green : cumplCur >= 70 ? C.amber : C.red;
+    const pctFill = Math.max(0, Math.min(100, cumplCur || 0));
     return ce("div", { className: "bg-white rounded-2xl border p-4", style: { borderColor: C.line } },
-      ce("div", { className: "flex items-baseline justify-between mb-2" },
-        ce("span", { className: "text-[11px] font-bold uppercase tracking-wide", style: { color: C.gray } }, titulo),
-        ce("span", { className: "text-2xl font-black fraunces tabular-nums", style: { color } }, ult != null ? ult + unidad : "—")),
-      conDato.length === 0
-        ? ce("div", { className: "text-[11px] py-6 text-center", style: { color: C.gray } }, "Sin datos por mes todavía")
-        : ce("div", { className: "flex items-end gap-1", style: { height: 64 } },
-            serie.map(s => {
-              const hPct = s.v != null ? Math.round(s.v / max * 100) : 0;
-              const esUlt = serie.indexOf(s) === ultIdx;
-              return ce("div", { key: s.m, className: "flex-1 flex flex-col items-center justify-end h-full", title: fmtMesT(s.m) + ": " + (s.v != null ? s.v + unidad : "s/d") },
-                ce("div", { className: "w-full flex items-end justify-center", style: { flex: 1, minHeight: 0 } },
-                  ce("div", { className: "rounded-t", style: { width: "68%", height: hPct + "%", minHeight: s.v != null ? 3 : 0, background: esUlt ? color : C.soft, border: esUlt ? "none" : "1px solid " + C.line } })),
-                ce("div", { className: "text-[9px] mt-1", style: { color: esUlt ? color : C.gray, fontWeight: esUlt ? 700 : 400 } }, MES_NOM_T[(+s.m.split("-")[1]) - 1]));
-            })),
-      ce("div", { className: "text-[10px] mt-2", style: { color: C.gray } },
-        nota + (delta != null ? " · vs mes previo " + (delta > 0 ? "+" : "") + delta + unidad : "")));
+      ce("div", { className: "flex items-baseline justify-between mb-2 flex-wrap gap-1" },
+        ce("span", { className: "text-[11px] font-bold uppercase tracking-wide", style: { color: C.gray } },
+          "Cumplimiento de ", ce("span", { style: { color: C.ink } }, fmtMesLargo(mesCurKey))),
+        ce("span", { className: "text-3xl font-black fraunces tabular-nums", style: { color: col } }, cumplCur != null ? cumplCur + "%" : "—")),
+      ce("div", { style: { position: "relative", height: 18, borderRadius: 9, background: "#EEF1F5", overflow: "hidden" } },
+        ce("div", { title: "Meta 90–95%", style: { position: "absolute", left: META_MIN + "%", width: (META_MAX - META_MIN) + "%", top: 0, bottom: 0, background: "rgba(14,138,95,0.22)" } }),
+        ce("div", { style: { position: "absolute", left: 0, top: 0, bottom: 0, width: pctFill + "%", background: col, borderRadius: 9, transition: "width .3s" } })),
+      ce("div", { style: { position: "relative", height: 13, marginTop: 2 } },
+        ce("span", { style: { position: "absolute", left: META_MIN + "%", transform: "translateX(-50%)", fontSize: 9, color: C.gray } }, "90%"),
+        ce("span", { style: { position: "absolute", left: META_MAX + "%", transform: "translateX(-50%)", fontSize: 9, color: C.gray } }, "95%")),
+      ce("div", { className: "text-[11px] mt-1", style: { color: C.gray } },
+        cumplCur != null
+          ? bCur.entreg + " de " + bCur.total + " entregados · meta 90–95%" + (despCur != null ? " · despacho P90 " + despCur + "d" : "") + (entCur != null ? " · entrega P90 " + entCur + "d" : "")
+          : "Cargá archivos para ver el cumplimiento del mes · meta 90–95%"));
   };
   const TabBtn = ({
     id,
@@ -835,11 +835,8 @@ function Operativa({ yo }) {
     /*#__PURE__*/React.createElement(AccionCard, { label: "Validar despacho", value: noDespacho.length, color: "#B45309", tab: "nodespacho", sub: "Despachado WMS, sin entregar" }),
     /*#__PURE__*/React.createElement(AccionCard, { label: "Estancados", value: estancados.length, color: C.amber, tab: "estancados", sub: "Sin avanzar +2d" }),
     /*#__PURE__*/React.createElement(AccionCard, { label: "Depo 0", value: sinStockArr.length, color: "#7C3AED", tab: "depo0", sub: "Sin stock — acción manual" })),
-  /*#__PURE__*/React.createElement("div", { className: "text-[11px] font-bold uppercase tracking-widest", style: { color: C.blue } }, "Cómo venimos por mes (P90)"),
-  /*#__PURE__*/React.createElement("div", { className: "grid grid-cols-1 sm:grid-cols-3 gap-2" },
-    /*#__PURE__*/React.createElement(MiniTend, { titulo: "Tasa cumplimiento", serie: serieCumpl, unidad: "%", color: C.green, nota: "% entregados por mes de compra" }),
-    /*#__PURE__*/React.createElement(MiniTend, { titulo: "Tiempo a despacho", serie: serieDesp, unidad: "d", color: C.blue, nota: "P90 por mes de compra" }),
-    /*#__PURE__*/React.createElement(MiniTend, { titulo: "Tiempo de entrega", serie: serieEnt, unidad: "d", color: C.ink, nota: "P90 por mes de compra" })),
+  /*#__PURE__*/React.createElement("div", { className: "text-[11px] font-bold uppercase tracking-widest", style: { color: C.blue } }, "Cumplimiento del mes"),
+  /*#__PURE__*/React.createElement(ProgresoMes, null),
   /*#__PURE__*/React.createElement("div", { className: "grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2" },
     /*#__PURE__*/React.createElement(MetricCard, { label: "Total pedidos", value: resultado.length, color: C.blue, tab: "todos" }),
     /*#__PURE__*/React.createElement(MetricCard, { label: "Entregados", value: entregadosArr.length, color: C.green, sub: tasaCumpl + "% cumplimiento" }),

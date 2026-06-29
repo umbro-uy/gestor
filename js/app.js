@@ -353,7 +353,8 @@ function Panel({
     data: data,
     setTab: setTab,
     esAdmin: esAdmin,
-    recargar: cargar
+    recargar: cargar,
+    activo: tab === "resumen"
   })), /*#__PURE__*/React.createElement("div", { style: { display: tab === "tareas" ? "block" : "none" } }, /*#__PURE__*/React.createElement(Tareas, {
     data: data,
     recargar: cargar,
