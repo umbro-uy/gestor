@@ -1039,7 +1039,8 @@ function Panel({
   })), /*#__PURE__*/React.createElement("div", { style: { display: tab === "tareas" ? "block" : "none" } }, /*#__PURE__*/React.createElement(Tareas, {
     data: data,
     recargar: cargar,
-    esAdmin: esAdmin
+    esAdmin: esAdmin,
+    yo: yo
   })), /*#__PURE__*/React.createElement("div", { style: { display: tab === "equipo" ? "block" : "none" } }, /*#__PURE__*/React.createElement(Equipo, {
     data: data,
     recargar: cargar,
@@ -1437,7 +1438,8 @@ function Resumen({
 function Tareas({
   data,
   recargar,
-  esAdmin
+  esAdmin,
+  yo
 }) {
   const {
     tareas,
@@ -1449,6 +1451,16 @@ function Tareas({
   const [form, setForm] = useState(null);
   const [dragging, setDragging] = useState(null);
   const [dragOver, setDragOver] = useState(null);
+  const [comentAbierto, setComentAbierto] = useState(null); // id de la tarea con los comentarios abiertos
+  // Agrega un comentario (bitácora con fecha y autor) a una tarea, sin pisar los anteriores.
+  const agregarComentarioTarea = async (t, texto) => {
+    const txt = String(texto || "").trim();
+    if (!txt) return;
+    const entry = { t: txt, f: new Date().toISOString(), a: (yo && yo.nombre) || "" };
+    const nuevo = [...(Array.isArray(t.comentarios) ? t.comentarios : []), entry];
+    await supa.from("tareas").update({ comentarios: nuevo }).eq("id", t.id);
+    recargar();
+  };
   let visibles = tareas.filter(t => filtro === "todos" || t.miembro_id === filtro || filtro === "sin" && !t.miembro_id);
   if (filtroTienda !== "todas") visibles = visibles.filter(t => t.tienda === filtroTienda);
   const mover = async (t, dir) => {
@@ -1473,6 +1485,7 @@ function Tareas({
   const crear = async f => {
     await supa.from("tareas").insert({
       titulo: f.titulo.trim(),
+      descripcion: (f.descripcion || "").trim() || null,
       miembro_id: esAdmin ? f.miembro || null : null,
       objetivo_id: f.objetivo || null,
       prioridad: f.prioridad,
@@ -1540,6 +1553,7 @@ function Tareas({
     }, m.nombre))), /*#__PURE__*/React.createElement("button", {
       onClick: () => setForm({
         titulo: "",
+        descripcion: "",
         miembro: "",
         objetivo: "",
         prioridad: "media",
@@ -1609,7 +1623,10 @@ function Tareas({
         className: "flex items-start justify-between gap-1"
       }, /*#__PURE__*/React.createElement("div", {
         className: `text-sm font-semibold leading-snug ${t.estado === "hecho" ? "line-through opacity-50" : ""}`
-      }, t.titulo)), /*#__PURE__*/React.createElement("div", {
+      }, t.titulo)), t.descripcion && /*#__PURE__*/React.createElement("div", {
+        className: "text-xs mt-1 leading-snug",
+        style: { color: C.gray, whiteSpace: "pre-wrap" }
+      }, t.descripcion), /*#__PURE__*/React.createElement("div", {
         className: "flex flex-wrap items-center gap-1 mt-2"
       }, /*#__PURE__*/React.createElement(Chip, {
         color: p.c,
@@ -1666,13 +1683,23 @@ function Tareas({
         style: {
           color: C.gray
         }
-      }, Ic.right)), esAdmin && /*#__PURE__*/React.createElement("button", {
+      }, Ic.right), /*#__PURE__*/React.createElement("button", {
+        onClick: () => setComentAbierto(comentAbierto === t.id ? null : t.id),
+        className: "p-1 rounded hover:bg-slate-100 flex items-center gap-0.5 text-[10px] font-bold",
+        style: { color: (t.comentarios && t.comentarios.length) ? C.blue : C.gray }
+      }, "💬", (t.comentarios && t.comentarios.length) ? /*#__PURE__*/React.createElement("span", null, t.comentarios.length) : null)), esAdmin && /*#__PURE__*/React.createElement("button", {
         onClick: () => borrar(t),
         className: "p-1 rounded hover:bg-red-50",
         style: {
           color: "#ddd"
         }
-      }, Ic.trash)));
+      }, Ic.trash)), comentAbierto === t.id && /*#__PURE__*/React.createElement("div", {
+        className: "mt-2 pt-2 space-y-1.5",
+        style: { borderTop: "1px solid " + C.line }
+      }, (t.comentarios || []).map((c, i) => /*#__PURE__*/React.createElement("div", { key: i, className: "text-[11px] leading-snug" },
+        /*#__PURE__*/React.createElement("span", { style: { color: C.gray } }, (c.a ? c.a + " · " : "") + (c.f ? new Date(c.f).toLocaleDateString("es-UY") : "") + (c.a || c.f ? ": " : "")),
+        c.t)),
+        /*#__PURE__*/React.createElement("input", { type: "text", placeholder: "Agregar comentario…", onKeyDown: e => { if (e.key === "Enter") { agregarComentarioTarea(t, e.target.value); e.target.value = ""; } }, className: "w-full text-xs rounded-lg border px-2 py-1 outline-none", style: { borderColor: C.line } })));
     })));
   })));
 }
@@ -1698,6 +1725,13 @@ function FormTarea({
       titulo: e.target.value
     }),
     onKeyDown: e => e.key === "Enter" && form.titulo.trim() && crear(form)
+  }), /*#__PURE__*/React.createElement("textarea", {
+    placeholder: "Descripción (opcional)…",
+    value: form.descripcion || "",
+    onChange: e => setForm({ ...form, descripcion: e.target.value }),
+    rows: 2,
+    className: "w-full text-sm rounded-xl border px-3 py-2 outline-none focus:ring-2 focus:ring-blue-200",
+    style: { borderColor: C.line, resize: "vertical" }
   }), /*#__PURE__*/React.createElement("div", {
     className: "grid grid-cols-2 sm:grid-cols-3 gap-2"
   }, esAdmin && /*#__PURE__*/React.createElement(Sel, {
@@ -3819,10 +3853,14 @@ function Operativa() {
   const ccDepo9Arr = resultado ? resultado.filter(r => r.ccDepo9) : [];
   const entregadosArr = resultado ? resultado.filter(r => r.entregado) : [];
   const tasaCumpl = resultado && resultado.length ? Math.round(entregadosArr.length / resultado.length * 100) : 0;
+  // KPIs operativos por PERCENTIL (no promedio): el P90 refleja la experiencia de la gran mayoría
+  // de los pedidos y no se distorsiona con outliers, a diferencia del promedio.
+  const percentil = (arr, p) => { if (!arr.length) return null; const s = [...arr].sort((a, b) => a - b); const idx = Math.max(0, Math.min(s.length - 1, Math.ceil(p / 100 * s.length) - 1)); return s[idx]; };
+  const PCTL = 90;
   const leadtimes = resultado ? resultado.filter(r => r.leadtime != null).map(r => r.leadtime) : [];
-  const leadtimeProm = leadtimes.length ? Math.round(leadtimes.reduce((a, b) => a + b, 0) / leadtimes.length * 10) / 10 : null;
+  const leadtimeProm = percentil(leadtimes, PCTL);
   const leadtimesEnt = resultado ? resultado.filter(r => r.leadtimeEntrega != null).map(r => r.leadtimeEntrega) : [];
-  const leadtimeEntProm = leadtimesEnt.length ? Math.round(leadtimesEnt.reduce((a, b) => a + b, 0) / leadtimesEnt.length * 10) / 10 : null;
+  const leadtimeEntProm = percentil(leadtimesEnt, PCTL);
   // % de cumplimiento de entrega por día de compra (para el calendario)
   const calData = useMemo(() => {
     if (!resultado) return [];
@@ -4193,8 +4231,8 @@ function Operativa() {
     /*#__PURE__*/React.createElement(MetricCard, { label: "Total pedidos", value: resultado.length, color: C.blue, tab: "todos" }),
     /*#__PURE__*/React.createElement(MetricCard, { label: "Entregados", value: entregadosArr.length, color: C.green, sub: tasaCumpl + "% cumplimiento" }),
     /*#__PURE__*/React.createElement(MetricCard, { label: "Tasa cumplimiento", value: tasaCumpl + "%", color: tasaCumpl >= 90 ? C.green : tasaCumpl >= 70 ? C.amber : C.red, sub: entregadosArr.length + " de " + resultado.length }),
-    /*#__PURE__*/React.createElement(MetricCard, { label: "Tiempo a despacho", value: leadtimeProm != null ? leadtimeProm + "d" : "—", color: C.blue, sub: "Compra → despacho (prom.)" }),
-    /*#__PURE__*/React.createElement(MetricCard, { label: "Tiempo de entrega", value: leadtimeEntProm != null ? leadtimeEntProm + "d" : "—", color: C.ink, sub: "Compra → entrega (prom.)" }),
+    /*#__PURE__*/React.createElement(MetricCard, { label: "Tiempo a despacho", value: leadtimeProm != null ? leadtimeProm + "d" : "—", color: C.blue, sub: "Compra → despacho (P90)" }),
+    /*#__PURE__*/React.createElement(MetricCard, { label: "Tiempo de entrega", value: leadtimeEntProm != null ? leadtimeEntProm + "d" : "—", color: C.ink, sub: "Compra → entrega (P90)" }),
     /*#__PURE__*/React.createElement(MetricCard, { label: "Sin WMS", value: sinWMS.length, color: sinWMS.length ? C.amber : C.gray, tab: sinWMS.length ? "sinwms" : null, sub: "No están en Encuentra" })),
   leadtimeEntProm == null && entregaDiag && /*#__PURE__*/React.createElement("div", { className: "rounded-xl px-4 py-3 text-xs", style: { background: C.amberS, color: C.amber } },
     /*#__PURE__*/React.createElement("b", null, "Tiempo de entrega sin datos. "),
