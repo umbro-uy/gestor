@@ -10,7 +10,8 @@ function Resumen({
   setTab,
   esAdmin,
   recargar,
-  activo
+  activo,
+  syncTick
 }) {
   const {
     tareas,
@@ -53,7 +54,7 @@ function Resumen({
       } catch (_) { if (vivo) setOperSnapOK(false); }
     })();
     return () => { vivo = false; };
-  }, [activo]);
+  }, [activo, syncTick]);
   const mesActual = new Date().toISOString().slice(0, 7);
   const anioActual = String(new Date().getFullYear());
   const sumReal = arr => arr.reduce((a, m) => a + Number(m.real || 0), 0);
