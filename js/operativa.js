@@ -199,7 +199,9 @@ function Operativa({ yo, activo, syncTick }) {
     const depo = String(row.deposito || "").replace(/\.0+$/, "").trim();
     // Depo 0 = el WMS no encontró stock → acción manual, PERO solo si el pedido sigue "vivo":
     // si ya se entregó, canceló, despachó, está en tránsito/recibido o es PCN (personalizado), se gestionó.
-    const movidoODespachado = movidoWMS || listoRetiro || /despach|tr[aá]nsito|camino|recib/i.test(estadoFen) || /tr[aá]nsito|camino/i.test(estadoWMS);
+    // "Listo para enviar"/"pronto para despacho" = el pedido YA está preparado → tiene stock, no es Depo 0.
+    const listoEnviar = /listo.*env[ií]|pronto.*despach|en\s*env[ií]o/i.test(estadoFen) || /pronto.*despach|env[ií]o\s*pronto/i.test(estadoWMS);
+    const movidoODespachado = movidoWMS || listoRetiro || listoEnviar || /despach|tr[aá]nsito|camino|recib/i.test(estadoFen) || /tr[aá]nsito|camino/i.test(estadoWMS);
     const sinStock = depo === "0" && !entregado && !cancelado && !movidoODespachado && !row.pcn;
     const ccDepo9 = clickCollect && depo === "9";  // C&C no debería pedirse a depo 9
     // Tiempo a despacho: días corridos compra → "Fecha despacho" del WMS (dato real; la entrega no se registra)
