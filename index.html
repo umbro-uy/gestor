@@ -67,13 +67,20 @@ window.addEventListener("error",function(e){
 })();
 </script>
 
-<script src="js/core.js"></script>
-<script src="js/resumen.js"></script>
-<script src="js/tareas.js"></script>
-<script src="js/equipo.js"></script>
-<script src="js/objetivos.js"></script>
-<script src="js/analisis.js"></script>
-<script src="js/operativa.js"></script>
-<script src="js/app.js"></script>
+<script>
+// Carga los módulos js/ con un parámetro anti-caché, así cada deploy se ve al instante y no quedan
+// versiones viejas guardadas por el navegador / GitHub Pages (era la causa de que los cambios no
+// "tomaran" sin importar cuántas veces se recargara). async=false mantiene el orden de ejecución.
+(function () {
+  var V = Date.now();
+  var mods = ["core", "resumen", "tareas", "equipo", "objetivos", "analisis", "operativa", "app"];
+  mods.forEach(function (f) {
+    var s = document.createElement("script");
+    s.src = "js/" + f + ".js?v=" + V;
+    s.async = false;
+    document.head.appendChild(s);
+  });
+})();
+</script>
 </body>
 </html>

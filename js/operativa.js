@@ -53,6 +53,7 @@ function Operativa({ yo, activo, syncTick }) {
   const [comentarios, setComentarios] = useState({}); // pedido -> { comentario, accionado, comentario_fecha } (persistido)
   const [persistOK, setPersistOK] = useState(null); // null=sin chequear, true=tabla ok, false=falta crear tabla
   const [ultimaSync, setUltimaSync] = useState(null); // hora de la última lectura del seguimiento compartido
+  const [snapError, setSnapError] = useState(null); // mensaje si falló guardar el resumen compartido (operativa_snapshot)
   const cruceEnSesion = useRef(false); // true si crucé archivos en esta sesión (para no pisar mi cruce con el auto-refresh)
   const [filtroEstadoFen, setFiltroEstadoFen] = useState("");
   const [filtroDeposito, setFiltroDeposito] = useState("");
@@ -415,7 +416,7 @@ function Operativa({ yo, activo, syncTick }) {
       try {
         const lt = finalRows.filter(r => r.leadtime != null).map(r => r.leadtime);
         const ltE = finalRows.filter(r => r.leadtimeEntrega != null).map(r => r.leadtimeEntrega);
-        await supa.from("operativa_snapshot").upsert({
+        const { error } = await supa.from("operativa_snapshot").upsert({
           id: "ultimo",
           total: finalRows.length,
           atrasados: finalRows.filter(r => r.atrasado).length,
@@ -430,7 +431,10 @@ function Operativa({ yo, activo, syncTick }) {
           leadtime_entrega: percentil(ltE, PCTL),
           actualizado: new Date().toISOString()
         }, { onConflict: "id" });
-      } catch (_) {}
+        // Si falla (tabla/columna/permiso), lo mostramos en vez de tragarlo en silencio: era la razón
+        // por la que el Resumen no coincidía sin que se viera ningún error.
+        setSnapError(error ? (error.message || error.details || JSON.stringify(error)) : null);
+      } catch (e) { setSnapError(e.message || String(e)); }
     })();
   };
   const atrasados = resultado ? resultado.filter(r => r.atrasado) : [];
@@ -880,6 +884,7 @@ function Operativa({ yo, activo, syncTick }) {
     /*#__PURE__*/React.createElement("span", { style: { color: C.ink, fontWeight: 600 } }, (entregaDiag.cols || []).join(" · ")),
     ". Decime cuál tiene la fecha en que se entregó el pedido al cliente y la conecto."),
   persistOK === false && /*#__PURE__*/React.createElement("div", { className: "rounded-xl px-4 py-3 text-xs font-medium", style: { background: C.amberS, color: C.amber } }, "⚠ La persistencia no está activa: falta crear la tabla en Supabase, así que los comentarios y el seguimiento NO se guardan entre sesiones. Ejecutá el SQL de sql/operativa_seguimiento.sql en Supabase → SQL Editor."),
+  snapError && /*#__PURE__*/React.createElement("div", { className: "rounded-xl px-4 py-3 text-xs font-medium", style: { background: C.redS, color: C.red } }, "⚠ No se pudo guardar el resumen compartido de Operativa (por eso el Resumen no coincide). Detalle: " + snapError + ". Suele ser que falta correr sql/operativa_snapshot.sql, o que la tabla quedó con columnas distintas."),
   ccDepo9Arr.length > 0 && /*#__PURE__*/React.createElement("div", { className: "rounded-xl px-4 py-3 text-xs font-medium", style: { background: "#FEE2E2", color: "#B91C1C" } }, "⚠ " + ccDepo9Arr.length + " pedido(s) Click & Collect asignados a Depo 9 — según el criterio del WMS no deberían; revisar la derivación de depósito."),
   /*#__PURE__*/React.createElement("div", { className: "bg-white rounded-2xl border p-3 flex flex-wrap gap-2 items-end", style: { borderColor: C.line } },
     /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", { className: "text-[10px] font-bold uppercase block mb-1", style: { color: C.gray } }, "Buscar pedido"), /*#__PURE__*/React.createElement("input", { type: "text", value: buscar, onChange: e => { setBuscar(e.target.value); setPage(0); }, placeholder: "N° pedido…", className: "px-2 py-1.5 rounded-lg border text-xs", style: { borderColor: C.line } })),
