@@ -6,7 +6,7 @@
 
 /* ── Operativa — cruce Fenicio × Encuentra ── */
 /* COLUMNAS PRE-CONFIGURADAS: Fenicio "Nro. pedido"|"Fecha comienzo"|"Estado entrega" / WMS "Venta"|"Estado Encuentra"|"Estado ecommerce"|"Canal" */
-function Operativa({ yo }) {
+function Operativa({ yo, activo, syncTick }) {
   // Fenicio: un slot por tienda; se concatenan antes del cruce
   const TIENDAS_FEN = [{k:"TimeOut",l:"TimeOut"},{k:"TiendaNacional",l:"Tienda Nacional"},{k:"Classico",l:"Classico"}];
   const [archivosFen, setArchivosFen] = useState({
@@ -52,6 +52,8 @@ function Operativa({ yo }) {
   const [ccCol, setCcCol] = useState("");
   const [comentarios, setComentarios] = useState({}); // pedido -> { comentario, accionado, comentario_fecha } (persistido)
   const [persistOK, setPersistOK] = useState(null); // null=sin chequear, true=tabla ok, false=falta crear tabla
+  const [ultimaSync, setUltimaSync] = useState(null); // hora de la última lectura del seguimiento compartido
+  const cruceEnSesion = useRef(false); // true si crucé archivos en esta sesión (para no pisar mi cruce con el auto-refresh)
   const [filtroEstadoFen, setFiltroEstadoFen] = useState("");
   const [filtroDeposito, setFiltroDeposito] = useState("");
   const [filtroDiasMin, setFiltroDiasMin] = useState("");
@@ -223,6 +225,8 @@ function Operativa({ yo }) {
         desde += PAG;
       }
       setPersistOK(true);
+      setUltimaSync(new Date());
+      cruceEnSesion.current = false;
       if (data && data.length) {
         const cm = {};
         const histDe = d => Array.isArray(d.historial) && d.historial.length ? d.historial : (d.comentario ? [{ t: d.comentario, f: d.comentario_fecha || "" }] : []);
@@ -239,7 +243,13 @@ function Operativa({ yo }) {
       }
     } catch (_) { setPersistOK(false); }
   }, []);
-  useEffect(() => { cargarSeguimiento(); }, [cargarSeguimiento]);
+  // Trae el seguimiento compartido al entrar a la pestaña y cada vez que otro usuario cambia algo
+  // (realtime → syncTick). No pisa un cruce recién hecho en esta sesión (para eso está el botón Actualizar).
+  useEffect(() => {
+    if (activo === false) return;
+    if (cruceEnSesion.current) return;
+    cargarSeguimiento();
+  }, [activo, syncTick, cargarSeguimiento]);
   // Marca accionado (no toca el historial de comentarios).
   const guardarSeguimiento = async (pedido, campos) => {
     setResultado(prev => (prev || []).map(r => r.pedido === pedido ? { ...r, ...campos } : r));
@@ -362,6 +372,8 @@ function Operativa({ yo }) {
       .map(p => ({ ...calcDeriv(p), retenido: true }));
     const finalRows = merged.concat(retenidos).sort((a, b) => (b.dias || 0) - (a.dias || 0));
     setResultado(finalRows);
+    cruceEnSesion.current = true;
+    setUltimaSync(new Date());
     setVistaTab("atrasados");
     setPage(0);
     // Persistir SOLO los pedidos accionables (snapshot); no pisa comentario/accionado existentes
@@ -860,7 +872,9 @@ function Operativa({ yo }) {
     /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", { className: "text-[10px] font-bold uppercase block mb-1", style: { color: C.gray } }, "Días ≥"), /*#__PURE__*/React.createElement("input", { type: "number", value: filtroDiasMin, min: "0", onChange: e => { setFiltroDiasMin(e.target.value); setPage(0); }, placeholder: "0", className: "px-2 py-1.5 rounded-lg border text-xs", style: { borderColor: C.line, width: 72 } })),
     (filtroEstadoFen || filtroDeposito || filtroDiasMin || buscar) ? /*#__PURE__*/React.createElement("button", { onClick: () => { setFiltroEstadoFen(""); setFiltroDeposito(""); setFiltroDiasMin(""); setBuscar(""); setPage(0); }, className: "text-xs font-bold px-3 py-1.5 rounded-lg", style: { background: "#EEF1F5", color: C.gray } }, "Limpiar") : null), /*#__PURE__*/React.createElement("div", {
     className: "flex gap-2 flex-wrap items-center justify-end"
-  }, /*#__PURE__*/React.createElement("button", { onClick: () => exportarOper(vistaRows, "operativa-" + vistaTab), className: "text-xs font-bold px-3 py-2 rounded-xl", style: { background: C.soft, color: C.blue } }, "⬇ Exportar vista"),
+  }, /*#__PURE__*/React.createElement("span", { className: "text-[10px] mr-1", style: { color: C.gray } }, ultimaSync ? "Última act.: " + ultimaSync.toLocaleTimeString("es-UY", { hour: "2-digit", minute: "2-digit" }) : ""),
+    /*#__PURE__*/React.createElement("button", { onClick: () => cargarSeguimiento(), title: "Traer lo último que cargó el equipo (comentarios y pedidos de otros usuarios)", className: "text-xs font-bold px-3 py-2 rounded-xl", style: { background: C.greenS, color: C.green } }, "↻ Actualizar"),
+    /*#__PURE__*/React.createElement("button", { onClick: () => exportarOper(vistaRows, "operativa-" + vistaTab), className: "text-xs font-bold px-3 py-2 rounded-xl", style: { background: C.soft, color: C.blue } }, "⬇ Exportar vista"),
     /*#__PURE__*/React.createElement("button", { onClick: () => alertarTienda(vistaRows, vistaTab), className: "text-xs font-bold px-3 py-2 rounded-xl text-white", style: { background: C.amber } }, "✉ Alertar por mail")),
   /*#__PURE__*/React.createElement("div", { className: "flex items-center justify-between flex-wrap gap-2 px-1" },
     /*#__PURE__*/React.createElement("div", { className: "text-[11px]", style: { color: C.gray } }, /*#__PURE__*/React.createElement("b", { style: { color: C.ink } }, ({ atrasados: "Atrasados", criticos: "Críticos", nodespacho: "Validar despacho", estancados: "Estancados", depo0: "Depo 0", sinwms: "Sin WMS", todos: "Todos" }[vistaTab] || "Atrasados")), " · " + vistaRows.length + " pedido(s)" + (ccCol ? " · C&C por columna “" + ccCol + "”" : " · C&C por estado “Listo para retirar”")),

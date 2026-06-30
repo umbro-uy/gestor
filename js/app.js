@@ -127,6 +127,7 @@ function Panel({
   sesion
 }) {
   const [tab, setTab] = useState("resumen");
+  const [syncTick, setSyncTick] = useState(0); // se incrementa con cada cambio en la base (realtime) → refresca secciones
   const [data, setData] = useState({
     profiles: [],
     objetivos: [],
@@ -175,7 +176,7 @@ function Panel({
     const c = supa.channel("ch").on("postgres_changes", {
       event: "*",
       schema: "public"
-    }, () => cargar()).subscribe();
+    }, () => { cargar(); setSyncTick(t => t + 1); }).subscribe();
     return () => supa.removeChannel(c);
   }, [cargar]);
   useEffect(() => {
@@ -354,7 +355,8 @@ function Panel({
     setTab: setTab,
     esAdmin: esAdmin,
     recargar: cargar,
-    activo: tab === "resumen"
+    activo: tab === "resumen",
+    syncTick: syncTick
   })), /*#__PURE__*/React.createElement("div", { style: { display: tab === "tareas" ? "block" : "none" } }, /*#__PURE__*/React.createElement(Tareas, {
     data: data,
     recargar: cargar,
@@ -372,7 +374,7 @@ function Panel({
     data: data,
     recargar: cargar,
     esAdmin: esAdmin
-  })), /*#__PURE__*/React.createElement("div", { style: { display: tab === "operativa" ? "block" : "none" } }, /*#__PURE__*/React.createElement(Operativa, { yo: yo })))));
+  })), /*#__PURE__*/React.createElement("div", { style: { display: tab === "operativa" ? "block" : "none" } }, /*#__PURE__*/React.createElement(Operativa, { yo: yo, activo: tab === "operativa", syncTick: syncTick })))));
 }
 
 
