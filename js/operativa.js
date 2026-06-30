@@ -230,7 +230,7 @@ function Operativa({ yo, activo, syncTick }) {
       if (data && data.length) {
         const cm = {};
         const histDe = d => Array.isArray(d.historial) && d.historial.length ? d.historial : (d.comentario ? [{ t: d.comentario, f: d.comentario_fecha || "" }] : []);
-        data.forEach(d => { cm[d.pedido] = { historial: histDe(d), accionado: !!d.accionado }; });
+        data.forEach(d => { cm[d.pedido] = { historial: histDe(d), accionado: !!d.accionado, tienda: d.tienda || "" }; });
         setComentarios(cm);
         // Mostrar el seguimiento ya analizado aunque todavía no se suban archivos en esta sesión
         setResultado(data.map(d => calcDeriv({
@@ -389,6 +389,23 @@ function Operativa({ yo, activo, syncTick }) {
         }));
         for (let i = 0; i < payload.length; i += 200) {
           await supa.from("operativa_seguimiento").upsert(payload.slice(i, i + 200), { onConflict: "pedido" });
+        }
+        // Limpiar de la tabla COMPARTIDA los pedidos que ya NO van en la planilla, así el seguimiento
+        // refleja el ÚLTIMO cruce y no arrastra pedidos viejos (era la causa de que Resumen mostrara
+        // 617 en vez de los 272 reales). Regla:
+        //  · ENTREGADO en este cruce → se borra SIEMPRE (aunque tenga comentario): ya está resuelto.
+        //  · No accionable y sin nota ni accionado (de una tienda cruzada) → se borra.
+        //  · Con comentario / accionado y NO entregado → se mantiene (sigue pendiente, la nota importa).
+        const keepSet = new Set(aSeguir.map(r => r.pedido));
+        const entregadosEnCruce = new Set(merged.filter(r => r.entregado).map(r => r.pedido));
+        const tiendasEnCruce = new Set(merged.map(r => r.tienda));
+        const aBorrar = Object.entries(comentarios).filter(([p, c]) => {
+          if (keepSet.has(p)) return false;
+          if (entregadosEnCruce.has(p)) return true;
+          return tiendasEnCruce.has(c.tienda) && !(c.historial && c.historial.length) && !c.accionado;
+        }).map(([p]) => p);
+        for (let i = 0; i < aBorrar.length; i += 200) {
+          await supa.from("operativa_seguimiento").delete().in("pedido", aBorrar.slice(i, i + 200));
         }
       } catch (_) {}
     })();
