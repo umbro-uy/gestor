@@ -421,12 +421,12 @@ function Operativa({ yo, activo, syncTick }) {
         const { error } = await supa.from("operativa_snapshot").upsert({
           id: "ultimo",
           total: finalRows.length,
-          atrasados: finalRows.filter(r => r.atrasado).length,
-          criticos: finalRows.filter(r => r.critico).length,
-          no_despacho: finalRows.filter(r => r.posibleNoDespacho).length,
-          estancados: finalRows.filter(r => r.estancado).length,
-          depo0: finalRows.filter(r => r.sinStock).length,
-          sin_wms: finalRows.filter(r => r.sinWMS).length,
+          atrasados: finalRows.filter(r => r.atrasado && !esCancEf(r)).length,
+          criticos: finalRows.filter(r => r.critico && !esCancEf(r)).length,
+          no_despacho: finalRows.filter(r => r.posibleNoDespacho && !esCancEf(r)).length,
+          estancados: finalRows.filter(r => r.estancado && !esCancEf(r)).length,
+          depo0: finalRows.filter(r => r.sinStock && !esCancEf(r)).length,
+          sin_wms: finalRows.filter(r => r.sinWMS && !esCancEf(r)).length,
           entregados: finalRows.filter(r => r.entregado).length,
           tasa_cumpl: finalRows.length ? Math.round(finalRows.filter(r => r.entregado).length / finalRows.length * 100) : 0,
           leadtime_despacho: percentil(lt, PCTL),
@@ -439,13 +439,17 @@ function Operativa({ yo, activo, syncTick }) {
       } catch (e) { setSnapError(e.message || String(e)); }
     })();
   };
-  const atrasados = resultado ? resultado.filter(r => r.atrasado) : [];
-  const criticos = resultado ? resultado.filter(r => r.critico) : [];
-  const inconsistentes = resultado ? resultado.filter(r => r.inconsistente) : [];
-  const noDespacho = resultado ? resultado.filter(r => r.posibleNoDespacho) : [];
-  const estancados = resultado ? resultado.filter(r => r.estancado) : [];
-  const sinWMS = resultado ? resultado.filter(r => r.sinWMS) : [];
-  const sinStockArr = resultado ? resultado.filter(r => r.sinStock) : [];
+  // Cancelado "efectivo": Fenicio/WMS no siempre marcan la cancelación (el pedido queda en "Listo para
+  // enviar"), pero el equipo la anota en el comentario ("Cancelado…"). Si el comentario dice cancelado/
+  // anulado, el pedido está resuelto → NO cuenta como atrasado/crítico/estancado/etc.
+  const esCancEf = r => r.cancelado || (Array.isArray(r.historial) && r.historial.some(h => /cancel|anul/i.test(String(h && h.t || ""))));
+  const atrasados = resultado ? resultado.filter(r => r.atrasado && !esCancEf(r)) : [];
+  const criticos = resultado ? resultado.filter(r => r.critico && !esCancEf(r)) : [];
+  const inconsistentes = resultado ? resultado.filter(r => r.inconsistente && !esCancEf(r)) : [];
+  const noDespacho = resultado ? resultado.filter(r => r.posibleNoDespacho && !esCancEf(r)) : [];
+  const estancados = resultado ? resultado.filter(r => r.estancado && !esCancEf(r)) : [];
+  const sinWMS = resultado ? resultado.filter(r => r.sinWMS && !esCancEf(r)) : [];
+  const sinStockArr = resultado ? resultado.filter(r => r.sinStock && !esCancEf(r)) : [];
   const ccDepo9Arr = resultado ? resultado.filter(r => r.ccDepo9) : [];
   const entregadosArr = resultado ? resultado.filter(r => r.entregado) : [];
   const tasaCumpl = resultado && resultado.length ? Math.round(entregadosArr.length / resultado.length * 100) : 0;
