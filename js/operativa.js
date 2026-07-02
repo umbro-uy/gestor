@@ -185,9 +185,14 @@ function Operativa({ yo, activo, syncTick }) {
     const movidoWMS = despachadoWMS || String(estadoWMS).toLowerCase().includes("recib");
     // "Listo para retirar" / "Pedido recibido en tienda": el pedido ya está pronto en el pickup
     // esperando al cliente. No hay nada que accionar → NO es atrasado/crítico/estancado.
-    const listoRetiro = /listo.*retir/i.test(estadoFen) || /listo.*retir/i.test(estadoWMS) || /recibid[oa]?\s*(en\s*)?tienda/i.test(estadoWMS);
-    const atrasado = !entregado && !cancelado && !listoRetiro && dias != null && dias > filtroDias;
-    const critico = !entregado && !cancelado && !listoRetiro && dias != null && dias > 10;
+    const listoRetiro = /listo.*retir|recibid/i.test(estadoFen) || /listo.*retir/i.test(estadoWMS) || /recibid[oa]?\s*(en\s*)?tienda/i.test(estadoWMS);
+    // En tránsito / despachado = el pedido YA salió del depósito → no es un "atraso" nuestro.
+    const enTransito = /tr[aá]nsito|en\s*camino|en\s*viaje/i.test(estadoFen) || /tr[aá]nsito|en\s*camino/i.test(estadoWMS);
+    // Atrasado/crítico SOLO si el pedido sigue en preparación (no entregado, no cancelado, no listo para
+    // retirar/recibido, no en tránsito, no despachado) y pasó el tiempo. El resto ya se gestionó o salió.
+    const enPreparacion = !entregado && !cancelado && !listoRetiro && !enTransito && !despachadoWMS && !/despach/i.test(estadoFen);
+    const atrasado = enPreparacion && dias != null && dias > filtroDias;
+    const critico = enPreparacion && dias != null && dias > 10;
     // "Validar despacho": Monitor dice despachado pero Fenicio no pasó a entregado tras +2 días hábiles
     const posibleNoDespacho = despachadoWMS && !fenEntregado && (diasDesp != null ? diasDesp > 2 : (dias != null && dias > 2));
     const inconsistente = posibleNoDespacho;
@@ -213,7 +218,8 @@ function Operativa({ yo, activo, syncTick }) {
     return { ...row, dias, diasDesp, fenEntregado, wmsEntregado, entregado, cancelado, despachadoWMS, atrasado, critico, inconsistente, posibleNoDespacho, estancado, listoRetiro, clickCollect, pickup, sinStock, ccDepo9, leadtime, leadtimeEntrega };
   };
   // Carga el seguimiento ya analizado (con comentarios) al entrar a la pestaña, para que el análisis quede fijo.
-  const cargarSeguimiento = useCallback(async () => {
+  const cargarSeguimiento = useCallback(async (opts) => {
+    const manual = !!(opts && opts.manual === true);
     try {
       // Supabase devuelve hasta 1000 filas por request → paginar para traer TODO el seguimiento
       // (si no, con >1000 pedidos seguidos se cortaba en 1000 y, al ordenar por días, quedaban solo los más viejos).
@@ -227,9 +233,12 @@ function Operativa({ yo, activo, syncTick }) {
         if (page.length < PAG) break;
         desde += PAG;
       }
+      // Si mientras cargábamos se hizo un cruce en esta sesión (y no es recarga manual con el botón),
+      // NO pisamos el cruce: era la causa de que al cambiar de pestaña "se borrara" y volviera al anterior.
+      if (cruceEnSesion.current && !manual) return;
       setPersistOK(true);
       setUltimaSync(new Date());
-      cruceEnSesion.current = false;
+      if (manual) cruceEnSesion.current = false;
       if (data && data.length) {
         const cm = {};
         const histDe = d => Array.isArray(d.historial) && d.historial.length ? d.historial : (d.comentario ? [{ t: d.comentario, f: d.comentario_fecha || "" }] : []);
@@ -370,9 +379,23 @@ function Operativa({ yo, activo, syncTick }) {
     // Conservar los pedidos YA SEGUIDOS (con comentario o marcados como accionado) que NO vinieron en
     // los archivos nuevos, para no perder su seguimiento al recruzar. Se re-derivan para refrescar días.
     const enCruce = new Set(merged.map(r => r.pedido));
+    // Al retener, refrescamos el estado desde el WMS ACTUAL (el Monitor trae TODOS los pedidos, incluso
+    // los que Fenicio ya no lista por estar cancelados/entregados). Así un pedido retenido que hoy figura
+    // "Cancelado" en el WMS deja de contar como atrasado, aunque no venga en el Fenicio de hoy.
     const retenidos = (resultado || [])
       .filter(p => !enCruce.has(p.pedido) && ((p.historial && p.historial.length) || p.accionado))
-      .map(p => ({ ...calcDeriv(p), retenido: true }));
+      .map(p => {
+        const w = wmsMap[String(p.pedido).trim()];
+        const base = w ? {
+          ...p,
+          estadoWMS: w[colEstEnc] || p.estadoWMS,
+          estadoEco: w[colEstEco] || p.estadoEco,
+          deposito: String(w[colDep] || p.deposito || "-").replace(/\.0+$/, "").trim(),
+          fechaDespacho: w[colFechDesp] || p.fechaDespacho,
+          sinWMS: false
+        } : p;
+        return { ...calcDeriv(base), retenido: true };
+      });
     const finalRows = merged.concat(retenidos).sort((a, b) => (b.dias || 0) - (a.dias || 0));
     setResultado(finalRows);
     cruceEnSesion.current = true;
@@ -901,7 +924,7 @@ function Operativa({ yo, activo, syncTick }) {
     (filtroEstadoFen || filtroDeposito || filtroDiasMin || buscar) ? /*#__PURE__*/React.createElement("button", { onClick: () => { setFiltroEstadoFen(""); setFiltroDeposito(""); setFiltroDiasMin(""); setBuscar(""); setPage(0); }, className: "text-xs font-bold px-3 py-1.5 rounded-lg", style: { background: "#EEF1F5", color: C.gray } }, "Limpiar") : null), /*#__PURE__*/React.createElement("div", {
     className: "flex gap-2 flex-wrap items-center justify-end"
   }, /*#__PURE__*/React.createElement("span", { className: "text-[10px] mr-1", style: { color: C.gray } }, ultimaSync ? "Última act.: " + ultimaSync.toLocaleTimeString("es-UY", { hour: "2-digit", minute: "2-digit" }) : ""),
-    /*#__PURE__*/React.createElement("button", { onClick: () => cargarSeguimiento(), title: "Traer lo último que cargó el equipo (comentarios y pedidos de otros usuarios)", className: "text-xs font-bold px-3 py-2 rounded-xl", style: { background: C.greenS, color: C.green } }, "↻ Actualizar"),
+    /*#__PURE__*/React.createElement("button", { onClick: () => cargarSeguimiento({ manual: true }), title: "Traer lo último que cargó el equipo (comentarios y pedidos de otros usuarios)", className: "text-xs font-bold px-3 py-2 rounded-xl", style: { background: C.greenS, color: C.green } }, "↻ Actualizar"),
     /*#__PURE__*/React.createElement("button", { onClick: () => exportarOper(vistaRows, "operativa-" + vistaTab), className: "text-xs font-bold px-3 py-2 rounded-xl", style: { background: C.soft, color: C.blue } }, "⬇ Exportar vista"),
     /*#__PURE__*/React.createElement("button", { onClick: () => alertarTienda(vistaRows, vistaTab), className: "text-xs font-bold px-3 py-2 rounded-xl text-white", style: { background: C.amber } }, "✉ Alertar por mail")),
   /*#__PURE__*/React.createElement("div", { className: "flex items-center justify-between flex-wrap gap-2 px-1" },
