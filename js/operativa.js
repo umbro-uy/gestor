@@ -54,7 +54,8 @@ function Operativa({ yo, activo, syncTick }) {
   const [persistOK, setPersistOK] = useState(null); // null=sin chequear, true=tabla ok, false=falta crear tabla
   const [ultimaSync, setUltimaSync] = useState(null); // hora de la última lectura del seguimiento compartido
   const [snapError, setSnapError] = useState(null); // mensaje si falló guardar el resumen compartido (operativa_snapshot)
-  const cruceEnSesion = useRef(false); // true si crucé archivos en esta sesión (para no pisar mi cruce con el auto-refresh)
+  const [operSnap, setOperSnap] = useState(null); // resumen COMPARTIDO (operativa_snapshot): números que ven todos, = Resumen
+  const cruceEnSesion = useRef(false); // true si crucé archivos en esta sesión (no interrumpir mi cruce con el realtime)
   const [filtroEstadoFen, setFiltroEstadoFen] = useState("");
   const [filtroDeposito, setFiltroDeposito] = useState("");
   const [filtroDiasMin, setFiltroDiasMin] = useState("");
@@ -218,11 +219,11 @@ function Operativa({ yo, activo, syncTick }) {
     return { ...row, dias, diasDesp, fenEntregado, wmsEntregado, entregado, cancelado, despachadoWMS, atrasado, critico, inconsistente, posibleNoDespacho, estancado, listoRetiro, clickCollect, pickup, sinStock, ccDepo9, leadtime, leadtimeEntrega };
   };
   // Carga el seguimiento ya analizado (con comentarios) al entrar a la pestaña, para que el análisis quede fijo.
-  const cargarSeguimiento = useCallback(async (opts) => {
-    const manual = !!(opts && opts.manual === true);
+  const cargarSeguimiento = useCallback(async () => {
     try {
+      // Snapshot COMPARTIDO (números que ve todo el equipo, iguales a Resumen)
+      try { const { data: os } = await supa.from("operativa_snapshot").select("*").eq("id", "ultimo").maybeSingle(); if (os) setOperSnap(os); } catch (_) {}
       // Supabase devuelve hasta 1000 filas por request → paginar para traer TODO el seguimiento
-      // (si no, con >1000 pedidos seguidos se cortaba en 1000 y, al ordenar por días, quedaban solo los más viejos).
       const PAG = 1000;
       let data = [], desde = 0;
       for (;;) {
@@ -233,35 +234,36 @@ function Operativa({ yo, activo, syncTick }) {
         if (page.length < PAG) break;
         desde += PAG;
       }
-      // Si mientras cargábamos se hizo un cruce en esta sesión (y no es recarga manual con el botón),
-      // NO pisamos el cruce: era la causa de que al cambiar de pestaña "se borrara" y volviera al anterior.
-      if (cruceEnSesion.current && !manual) return;
       setPersistOK(true);
       setUltimaSync(new Date());
-      if (manual) cruceEnSesion.current = false;
-      if (data && data.length) {
-        const cm = {};
-        const histDe = d => Array.isArray(d.historial) && d.historial.length ? d.historial : (d.comentario ? [{ t: d.comentario, f: d.comentario_fecha || "" }] : []);
-        data.forEach(d => { cm[d.pedido] = { historial: histDe(d), accionado: !!d.accionado, tienda: d.tienda || "" }; });
-        setComentarios(cm);
-        // Mostrar el seguimiento ya analizado aunque todavía no se suban archivos en esta sesión
-        setResultado(data.map(d => calcDeriv({
-          pedido: d.pedido, tienda: d.tienda || "-", fecha: d.fecha || "",
-          estadoFen: d.estado_fen || "-", estadoWMS: d.estado_wms || "-", estadoEco: d.estado_eco || "-",
-          deposito: d.deposito || "-", fechaDespacho: d.fecha_despacho || "-", importe: d.importe || "-",
-          formaEntrega: d.forma_entrega || "", fechaEntrega: d.fecha_entrega || "", sinWMS: !!d.sin_wms,
-          historial: histDe(d), accionado: !!d.accionado
-        })));
-      }
+      cruceEnSesion.current = false; // al leer lo compartido ya no estoy mirando "mi" cruce local
+      const cm = {};
+      const histDe = d => Array.isArray(d.historial) && d.historial.length ? d.historial : (d.comentario ? [{ t: d.comentario, f: d.comentario_fecha || "" }] : []);
+      (data || []).forEach(d => { cm[d.pedido] = { historial: histDe(d), accionado: !!d.accionado, tienda: d.tienda || "" }; });
+      setComentarios(cm);
+      // Mostrar el seguimiento COMPARTIDO (accionables + comentarios de todos) aunque no se suban archivos
+      setResultado((data || []).map(d => calcDeriv({
+        pedido: d.pedido, tienda: d.tienda || "-", fecha: d.fecha || "",
+        estadoFen: d.estado_fen || "-", estadoWMS: d.estado_wms || "-", estadoEco: d.estado_eco || "-",
+        deposito: d.deposito || "-", fechaDespacho: d.fecha_despacho || "-", importe: d.importe || "-",
+        formaEntrega: d.forma_entrega || "", fechaEntrega: d.fecha_entrega || "", sinWMS: !!d.sin_wms,
+        historial: histDe(d), accionado: !!d.accionado
+      })));
     } catch (_) { setPersistOK(false); }
   }, []);
-  // Trae el seguimiento compartido al entrar a la pestaña y cada vez que otro usuario cambia algo
-  // (realtime → syncTick). No pisa un cruce recién hecho en esta sesión (para eso está el botón Actualizar).
+  // Al ENTRAR a la pestaña (o al montar) traemos siempre lo último compartido: así ves lo que cargó el
+  // equipo y coincide con Resumen. (Esto resetea "mi cruce local".)
+  useEffect(() => {
+    if (activo === false) return;
+    cargarSeguimiento();
+  }, [activo, cargarSeguimiento]);
+  // En VIVO: cuando otro usuario cambia algo (realtime → syncTick) recargamos, salvo que estés en medio
+  // de tu propio cruce (para no interrumpírtelo). Cuando cambies de pestaña y vuelvas, verás lo último.
   useEffect(() => {
     if (activo === false) return;
     if (cruceEnSesion.current) return;
     cargarSeguimiento();
-  }, [activo, syncTick, cargarSeguimiento]);
+  }, [syncTick, cargarSeguimiento]);
   // Marca accionado (no toca el historial de comentarios).
   const guardarSeguimiento = async (pedido, campos) => {
     setResultado(prev => (prev || []).map(r => r.pedido === pedido ? { ...r, ...campos } : r));
@@ -441,7 +443,14 @@ function Operativa({ yo, activo, syncTick }) {
       try {
         const lt = finalRows.filter(r => r.leadtime != null).map(r => r.leadtime);
         const ltE = finalRows.filter(r => r.leadtimeEntrega != null).map(r => r.leadtimeEntrega);
-        const { error } = await supa.from("operativa_snapshot").upsert({
+        // Resumen del mes corriente (para la barra de cumplimiento), calculado del cruce COMPLETO
+        const mkNow = new Date().toISOString().slice(0, 7);
+        const bk = {};
+        finalRows.forEach(r => { const d = parseFecha(r.fecha); if (!d) return; const m = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0"); const b = bk[m] || (bk[m] = { total: 0, entreg: 0, lt: [], ltE: [] }); b.total++; if (r.entregado) b.entreg++; if (r.leadtime != null) b.lt.push(r.leadtime); if (r.leadtimeEntrega != null) b.ltE.push(r.leadtimeEntrega); });
+        const mk = bk[mkNow] ? mkNow : Object.keys(bk).sort().pop();
+        const bC = mk ? bk[mk] : null;
+        const serie = bC ? { mesKey: mk, total: bC.total, entregados: bC.entreg, cumpl: bC.total ? Math.round(bC.entreg / bC.total * 100) : null, despachoP90: percentil(bC.lt, PCTL), entregaP90: percentil(bC.ltE, PCTL) } : null;
+        const snap = {
           id: "ultimo",
           total: finalRows.length,
           atrasados: finalRows.filter(r => r.atrasado && !esCancEf(r)).length,
@@ -454,10 +463,12 @@ function Operativa({ yo, activo, syncTick }) {
           tasa_cumpl: finalRows.length ? Math.round(finalRows.filter(r => r.entregado).length / finalRows.length * 100) : 0,
           leadtime_despacho: percentil(lt, PCTL),
           leadtime_entrega: percentil(ltE, PCTL),
+          serie: serie,
           actualizado: new Date().toISOString()
-        }, { onConflict: "id" });
-        // Si falla (tabla/columna/permiso), lo mostramos en vez de tragarlo en silencio: era la razón
-        // por la que el Resumen no coincidía sin que se viera ningún error.
+        };
+        setOperSnap(snap); // que las tarjetas de volumen/cumplimiento muestren mi cruce al instante
+        const { error } = await supa.from("operativa_snapshot").upsert(snap, { onConflict: "id" });
+        // Si falla (tabla/columna/permiso), lo mostramos en vez de tragarlo en silencio.
         setSnapError(error ? (error.message || error.details || JSON.stringify(error)) : null);
       } catch (e) { setSnapError(e.message || String(e)); }
     })();
@@ -507,6 +518,20 @@ function Operativa({ yo, activo, syncTick }) {
   const cumplCur = bCur && bCur.total ? Math.round(bCur.entreg / bCur.total * 100) : null;
   const despCur = bCur ? percentil(bCur.lt, PCTL) : null;
   const entCur = bCur ? percentil(bCur.ltE, PCTL) : null;
+  // ── Números de VOLUMEN / cumplimiento: salen del snapshot COMPARTIDO (iguales a Resumen y a lo que
+  // ve todo el equipo). Si todavía no hay snapshot, caen a lo calculado de lo cargado en esta sesión. ──
+  const volTotal = operSnap ? (operSnap.total || 0) : (resultado ? resultado.length : 0);
+  const volEntreg = operSnap ? (operSnap.entregados || 0) : entregadosArr.length;
+  const volTasa = operSnap ? (operSnap.tasa_cumpl || 0) : tasaCumpl;
+  const volDesp = operSnap ? operSnap.leadtime_despacho : leadtimeProm;
+  const volEnt = operSnap ? operSnap.leadtime_entrega : leadtimeEntProm;
+  const serieSnap = operSnap && operSnap.serie ? operSnap.serie : null;
+  const cumplShown = serieSnap ? serieSnap.cumpl : cumplCur;
+  const despShown = serieSnap ? serieSnap.despachoP90 : despCur;
+  const entShown = serieSnap ? serieSnap.entregaP90 : entCur;
+  const mesShownKey = serieSnap ? serieSnap.mesKey : mesCurKey;
+  const entregMesShown = serieSnap ? serieSnap.entregados : (bCur ? bCur.entreg : null);
+  const totalMesShown = serieSnap ? serieSnap.total : (bCur ? bCur.total : null);
   const fmtMesLargo = m => ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"][(+m.split("-")[1]) - 1] + " " + m.slice(0, 4);
   // % de cumplimiento de entrega por día de compra (para el calendario)
   const calData = useMemo(() => {
@@ -619,13 +644,13 @@ function Operativa({ yo, activo, syncTick }) {
   const ProgresoMes = () => {
     const ce = React.createElement;
     const META_MIN = 90, META_MAX = 95;
-    const col = cumplCur == null ? C.gray : cumplCur >= META_MIN ? C.green : cumplCur >= 70 ? C.amber : C.red;
-    const pctFill = Math.max(0, Math.min(100, cumplCur || 0));
+    const col = cumplShown == null ? C.gray : cumplShown >= META_MIN ? C.green : cumplShown >= 70 ? C.amber : C.red;
+    const pctFill = Math.max(0, Math.min(100, cumplShown || 0));
     return ce("div", { className: "bg-white rounded-2xl border p-4", style: { borderColor: C.line } },
       ce("div", { className: "flex items-baseline justify-between mb-2 flex-wrap gap-1" },
         ce("span", { className: "text-[11px] font-bold uppercase tracking-wide", style: { color: C.gray } },
-          "Cumplimiento de ", ce("span", { style: { color: C.ink } }, fmtMesLargo(mesCurKey))),
-        ce("span", { className: "text-3xl font-black fraunces tabular-nums", style: { color: col } }, cumplCur != null ? cumplCur + "%" : "—")),
+          "Cumplimiento de ", ce("span", { style: { color: C.ink } }, fmtMesLargo(mesShownKey))),
+        ce("span", { className: "text-3xl font-black fraunces tabular-nums", style: { color: col } }, cumplShown != null ? cumplShown + "%" : "—")),
       ce("div", { style: { position: "relative", height: 18, borderRadius: 9, background: "#EEF1F5", overflow: "hidden" } },
         ce("div", { title: "Meta 90–95%", style: { position: "absolute", left: META_MIN + "%", width: (META_MAX - META_MIN) + "%", top: 0, bottom: 0, background: "rgba(14,138,95,0.22)" } }),
         ce("div", { style: { position: "absolute", left: 0, top: 0, bottom: 0, width: pctFill + "%", background: col, borderRadius: 9, transition: "width .3s" } })),
@@ -633,8 +658,8 @@ function Operativa({ yo, activo, syncTick }) {
         ce("span", { style: { position: "absolute", left: META_MIN + "%", transform: "translateX(-50%)", fontSize: 9, color: C.gray } }, "90%"),
         ce("span", { style: { position: "absolute", left: META_MAX + "%", transform: "translateX(-50%)", fontSize: 9, color: C.gray } }, "95%")),
       ce("div", { className: "text-[11px] mt-1", style: { color: C.gray } },
-        cumplCur != null
-          ? bCur.entreg + " de " + bCur.total + " entregados · meta 90–95%" + (despCur != null ? " · despacho P90 " + despCur + "d" : "") + (entCur != null ? " · entrega P90 " + entCur + "d" : "")
+        cumplShown != null
+          ? entregMesShown + " de " + totalMesShown + " entregados · meta 90–95%" + (despShown != null ? " · despacho P90 " + despShown + "d" : "") + (entShown != null ? " · entrega P90 " + entShown + "d" : "")
           : "Cargá archivos para ver el cumplimiento del mes · meta 90–95%"));
   };
   const TabBtn = ({
@@ -900,12 +925,12 @@ function Operativa({ yo, activo, syncTick }) {
   /*#__PURE__*/React.createElement("div", { className: "text-[11px] font-bold uppercase tracking-widest", style: { color: C.blue } }, "Cumplimiento del mes"),
   /*#__PURE__*/React.createElement(ProgresoMes, null),
   /*#__PURE__*/React.createElement("div", { className: "grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2" },
-    /*#__PURE__*/React.createElement(MetricCard, { label: "Total pedidos", value: resultado.length, color: C.blue, tab: "todos" }),
-    /*#__PURE__*/React.createElement(MetricCard, { label: "Entregados", value: entregadosArr.length, color: C.green, sub: tasaCumpl + "% cumplimiento" }),
-    /*#__PURE__*/React.createElement(MetricCard, { label: "Tasa cumplimiento", value: tasaCumpl + "%", color: tasaCumpl >= 90 ? C.green : tasaCumpl >= 70 ? C.amber : C.red, sub: entregadosArr.length + " de " + resultado.length }),
-    /*#__PURE__*/React.createElement(MetricCard, { label: "Tiempo a despacho", value: leadtimeProm != null ? leadtimeProm + "d" : "—", color: C.blue, sub: "Compra → despacho (P90)" }),
-    /*#__PURE__*/React.createElement(MetricCard, { label: "Tiempo de entrega", value: leadtimeEntProm != null ? leadtimeEntProm + "d" : "—", color: C.ink, sub: "Compra → entrega (P90)" }),
-    /*#__PURE__*/React.createElement(MetricCard, { label: "Sin WMS", value: sinWMS.length, color: sinWMS.length ? C.amber : C.gray, tab: sinWMS.length ? "sinwms" : null, sub: "No están en Encuentra" })),
+    /*#__PURE__*/React.createElement(MetricCard, { label: "Total pedidos", value: volTotal, color: C.blue, tab: "todos" }),
+    /*#__PURE__*/React.createElement(MetricCard, { label: "Entregados", value: volEntreg, color: C.green, sub: volTasa + "% cumplimiento" }),
+    /*#__PURE__*/React.createElement(MetricCard, { label: "Tasa cumplimiento", value: volTasa + "%", color: volTasa >= 90 ? C.green : volTasa >= 70 ? C.amber : C.red, sub: volEntreg + " de " + volTotal }),
+    /*#__PURE__*/React.createElement(MetricCard, { label: "Tiempo a despacho", value: volDesp != null ? volDesp + "d" : "—", color: C.blue, sub: "Compra → despacho (P90)" }),
+    /*#__PURE__*/React.createElement(MetricCard, { label: "Tiempo de entrega", value: volEnt != null ? volEnt + "d" : "—", color: C.ink, sub: "Compra → entrega (P90)" }),
+    /*#__PURE__*/React.createElement(MetricCard, { label: "Sin WMS", value: operSnap ? (operSnap.sin_wms || 0) : sinWMS.length, color: (operSnap ? operSnap.sin_wms : sinWMS.length) ? C.amber : C.gray, tab: sinWMS.length ? "sinwms" : null, sub: "No están en Encuentra" })),
   leadtimeEntProm == null && entregaDiag && /*#__PURE__*/React.createElement("div", { className: "rounded-xl px-4 py-3 text-xs", style: { background: C.amberS, color: C.amber } },
     /*#__PURE__*/React.createElement("b", null, "Tiempo de entrega sin datos. "),
     entregaDiag.col ? ("Detecté la columna “" + entregaDiag.col + "” pero ningún pedido tiene una fecha de entrega válida (" + entregaDiag.conEntrega + " de " + entregaDiag.total + "). ") : "No encontré una columna de fecha de entrega en tu Fenicio. ",
@@ -924,7 +949,7 @@ function Operativa({ yo, activo, syncTick }) {
     (filtroEstadoFen || filtroDeposito || filtroDiasMin || buscar) ? /*#__PURE__*/React.createElement("button", { onClick: () => { setFiltroEstadoFen(""); setFiltroDeposito(""); setFiltroDiasMin(""); setBuscar(""); setPage(0); }, className: "text-xs font-bold px-3 py-1.5 rounded-lg", style: { background: "#EEF1F5", color: C.gray } }, "Limpiar") : null), /*#__PURE__*/React.createElement("div", {
     className: "flex gap-2 flex-wrap items-center justify-end"
   }, /*#__PURE__*/React.createElement("span", { className: "text-[10px] mr-1", style: { color: C.gray } }, ultimaSync ? "Última act.: " + ultimaSync.toLocaleTimeString("es-UY", { hour: "2-digit", minute: "2-digit" }) : ""),
-    /*#__PURE__*/React.createElement("button", { onClick: () => cargarSeguimiento({ manual: true }), title: "Traer lo último que cargó el equipo (comentarios y pedidos de otros usuarios)", className: "text-xs font-bold px-3 py-2 rounded-xl", style: { background: C.greenS, color: C.green } }, "↻ Actualizar"),
+    /*#__PURE__*/React.createElement("button", { onClick: () => cargarSeguimiento(), title: "Traer lo último que cargó el equipo (comentarios y pedidos de otros usuarios)", className: "text-xs font-bold px-3 py-2 rounded-xl", style: { background: C.greenS, color: C.green } }, "↻ Actualizar"),
     /*#__PURE__*/React.createElement("button", { onClick: () => exportarOper(vistaRows, "operativa-" + vistaTab), className: "text-xs font-bold px-3 py-2 rounded-xl", style: { background: C.soft, color: C.blue } }, "⬇ Exportar vista"),
     /*#__PURE__*/React.createElement("button", { onClick: () => alertarTienda(vistaRows, vistaTab), className: "text-xs font-bold px-3 py-2 rounded-xl text-white", style: { background: C.amber } }, "✉ Alertar por mail")),
   /*#__PURE__*/React.createElement("div", { className: "flex items-center justify-between flex-wrap gap-2 px-1" },
