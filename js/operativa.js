@@ -187,13 +187,13 @@ function Operativa({ yo, activo, syncTick }) {
     // "Listo para retirar" / "Pedido recibido en tienda": el pedido ya está pronto en el pickup
     // esperando al cliente. No hay nada que accionar → NO es atrasado/crítico/estancado.
     const listoRetiro = /listo.*retir|recibid/i.test(estadoFen) || /listo.*retir/i.test(estadoWMS) || /recibid[oa]?\s*(en\s*)?tienda/i.test(estadoWMS);
-    // En tránsito / despachado = el pedido YA salió del depósito → no es un "atraso" nuestro.
-    const enTransito = /tr[aá]nsito|en\s*camino|en\s*viaje/i.test(estadoFen) || /tr[aá]nsito|en\s*camino/i.test(estadoWMS);
-    // Atrasado/crítico SOLO si el pedido sigue en preparación (no entregado, no cancelado, no listo para
-    // retirar/recibido, no en tránsito, no despachado) y pasó el tiempo. El resto ya se gestionó o salió.
-    const enPreparacion = !entregado && !cancelado && !listoRetiro && !enTransito && !despachadoWMS && !/despach/i.test(estadoFen);
-    const atrasado = enPreparacion && dias != null && dias > filtroDias;
-    const critico = enPreparacion && dias != null && dias > 10;
+    // Atrasado/crítico = el pedido NO se entregó a tiempo. Cuenta cualquier pedido no entregado, no
+    // cancelado y que no esté esperando al cliente (listo para retirar / recibido en tienda), que pasó el
+    // tiempo — INCLUYE los despachados / en tránsito sin entregar (esos son demoras de ENTREGA, también
+    // son atrasos, confirmado por la usuaria). Solo salen los ya entregados, cancelados o en pickup.
+    const activoNoEntreg = !entregado && !cancelado && !listoRetiro;
+    const atrasado = activoNoEntreg && dias != null && dias > filtroDias;
+    const critico = activoNoEntreg && dias != null && dias > 10;
     // "Validar despacho": Monitor dice despachado pero Fenicio no pasó a entregado tras +2 días hábiles
     const posibleNoDespacho = despachadoWMS && !fenEntregado && (diasDesp != null ? diasDesp > 2 : (dias != null && dias > 2));
     const inconsistente = posibleNoDespacho;
