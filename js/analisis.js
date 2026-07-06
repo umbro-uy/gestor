@@ -51,7 +51,7 @@ function ResultadoCruce({
     l: "Facturas duplicadas",
     c: "#7C3AED",
     s: "#F3F0FF",
-    arr: grupos.facturaDup || []
+    arr: factDuplicadas || []
   }, {
     id: "pcnManual",
     l: "PCN (manual)",
@@ -90,7 +90,7 @@ function ResultadoCruce({
     arr: grupos.cancelado
   }];
   const pcnArr = grupos.pcnManual || [];
-  const [tabAct, setTabAct] = useState(grupos.revisar.length > 0 ? "revisar" : (grupos.canceladoConFactura || []).length > 0 ? "canceladoFactura" : (grupos.canceladoCupon || []).length > 0 ? "canceladoCupon" : (grupos.facturaDup || []).length > 0 ? "facturaDup" : pcnArr.length > 0 ? "pcnManual" : "facturado");
+  const [tabAct, setTabAct] = useState(grupos.revisar.length > 0 ? "revisar" : (grupos.canceladoConFactura || []).length > 0 ? "canceladoFactura" : (grupos.canceladoCupon || []).length > 0 ? "canceladoCupon" : (factDuplicadas || []).length > 0 ? "facturaDup" : pcnArr.length > 0 ? "pcnManual" : "facturado");
   const tabActual = TABS.find(t => t.id === tabAct) || TABS[0];
   const POR_PAGINA = 25;
   const [pagina, setPagina] = useState(0);
@@ -115,7 +115,7 @@ function ResultadoCruce({
   /*#__PURE__*/React.createElement("div", { className: "overflow-x-auto" }, /*#__PURE__*/React.createElement("table", {
     className: "w-full", style: { fontSize: 12 }
   }, /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", { style: { background: "#F6F7F9" } },
-    ["Tienda", "Vendido c/IVA", "Facturado c/IVA", "Facturado s/IVA (metas)", "Facturas", "Falta facturar"].map((hh, i) => /*#__PURE__*/React.createElement("th", {
+    ["Tienda", "Vendido c/IVA", "Facturado c/IVA", "Facturado s/IVA (metas)", "Facturas", "Falta facturar", "Sin factura (pend.)"].map((hh, i) => /*#__PURE__*/React.createElement("th", {
       key: hh, className: "px-3 py-2 font-bold uppercase", style: { color: C.gray, fontSize: 10, textAlign: i === 0 ? "left" : "right" }
     }, hh)))),
   /*#__PURE__*/React.createElement("tbody", null, porTienda.map(t => /*#__PURE__*/React.createElement("tr", { key: t.tienda, style: { borderTop: `1px solid ${C.line}` } },
@@ -125,14 +125,16 @@ function ResultadoCruce({
     /*#__PURE__*/React.createElement("td", { className: "px-3 py-2 tabular-nums text-right", style: { color: C.ink } }, fmtI(t.facturadoConIVA)),
     /*#__PURE__*/React.createElement("td", { className: "px-3 py-2 tabular-nums text-right font-bold", style: { color: C.green } }, fmtI(t.facturadoSinIVA)),
     /*#__PURE__*/React.createElement("td", { className: "px-3 py-2 tabular-nums text-right", style: { color: C.gray } }, t.nFac),
-    /*#__PURE__*/React.createElement("td", { className: "px-3 py-2 tabular-nums text-right font-bold", style: { color: Math.abs(t.falta) < 1000 ? C.green : t.falta > 0 ? C.amber : C.gray } }, fmtSigno(t.falta)))),
+    /*#__PURE__*/React.createElement("td", { className: "px-3 py-2 tabular-nums text-right font-bold", style: { color: Math.abs(t.falta) < 1000 ? C.green : t.falta > 0 ? C.amber : C.gray } }, fmtSigno(t.falta)),
+    /*#__PURE__*/React.createElement("td", { className: "px-3 py-2 tabular-nums text-right", style: { color: (t.pendCount || 0) > 0 ? C.red : C.gray } }, (t.pendCount || 0) > 0 ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("span", { className: "font-bold" }, t.pendCount), " · ", fmtI(t.pendMonto)) : "—"))),
   /*#__PURE__*/React.createElement("tr", { style: { borderTop: `2px solid ${C.line}`, background: "#FAFBFC" } },
     /*#__PURE__*/React.createElement("td", { className: "px-3 py-2 font-black", style: { color: C.ink } }, "Total"),
     /*#__PURE__*/React.createElement("td", { className: "px-3 py-2 tabular-nums text-right font-bold", style: { color: C.ink } }, fmtI(porTienda.reduce((a, t) => a + t.vendido, 0))),
     /*#__PURE__*/React.createElement("td", { className: "px-3 py-2 tabular-nums text-right font-bold", style: { color: C.ink } }, fmtI(porTienda.reduce((a, t) => a + t.facturadoConIVA, 0))),
     /*#__PURE__*/React.createElement("td", { className: "px-3 py-2 tabular-nums text-right font-black", style: { color: C.green } }, fmtI(porTienda.reduce((a, t) => a + t.facturadoSinIVA, 0))),
     /*#__PURE__*/React.createElement("td", { className: "px-3 py-2 tabular-nums text-right", style: { color: C.gray } }, porTienda.reduce((a, t) => a + t.nFac, 0)),
-    /*#__PURE__*/React.createElement("td", { className: "px-3 py-2 tabular-nums text-right font-black", style: { color: C.amber } }, fmtSigno(porTienda.reduce((a, t) => a + t.falta, 0))))))),
+    /*#__PURE__*/React.createElement("td", { className: "px-3 py-2 tabular-nums text-right font-black", style: { color: C.amber } }, fmtSigno(porTienda.reduce((a, t) => a + t.falta, 0))),
+    /*#__PURE__*/React.createElement("td", { className: "px-3 py-2 tabular-nums text-right font-black", style: { color: C.red } }, porTienda.reduce((a, t) => a + (t.pendCount || 0), 0) > 0 ? porTienda.reduce((a, t) => a + (t.pendCount || 0), 0) + " · " + fmtI(porTienda.reduce((a, t) => a + (t.pendMonto || 0), 0)) : "—"))))),
   !tieneCuponInfo && (grupos.cancelado.length > 0) && /*#__PURE__*/React.createElement("div", {
     className: "rounded-xl px-4 py-2 text-xs font-semibold",
     style: { background: C.amberS, color: C.amber }
@@ -175,13 +177,13 @@ function ResultadoCruce({
   }, "⚠️ ", grupos.revisar.length, " pedidos despachados/entregados sin factura — requieren acción urgente."), (grupos.canceladoConFactura || []).length > 0 && /*#__PURE__*/React.createElement("div", {
     className: "rounded-xl px-4 py-2.5 text-xs font-bold",
     style: { background: "#FFE4E6", color: "#BE123C" }
-  }, "⚠️ ", grupos.canceladoConFactura.length, " pedido(s) CANCELADOS que tienen factura en el BAS — hay que anular la factura manualmente."), (grupos.facturaDup || []).length > 0 && /*#__PURE__*/React.createElement("div", {
+  }, "⚠️ ", grupos.canceladoConFactura.length, " pedido(s) CANCELADOS que tienen factura en el BAS — hay que anular la factura manualmente."), (factDuplicadas || []).length > 0 && /*#__PURE__*/React.createElement("div", {
     className: "rounded-xl px-4 py-2.5 text-xs font-bold",
     style: {
       background: "#F3F0FF",
       color: "#7C3AED"
     }
-  }, "⚠️ ", grupos.facturaDup.length, " pedidos con facturas duplicadas en el BAS."), (pedDuplicados || []).length > 0 && /*#__PURE__*/React.createElement("div", {
+  }, "⚠️ ", factDuplicadas.length, " pedidos facturados de más SIN nota de crédito (los que ya tienen NC no se cuentan)."), (pedDuplicados || []).length > 0 && /*#__PURE__*/React.createElement("div", {
     className: "rounded-xl px-4 py-2.5 text-xs font-bold",
     style: {
       background: C.amberS,
@@ -241,7 +243,7 @@ function ResultadoCruce({
       color: C.gray,
       fontSize: 10
     }
-  }, h)) : ["Pedido", "Fecha", "Estado Fenicio", "Estado WMS", "Motivo", "Importe"].map(h => /*#__PURE__*/React.createElement("th", {
+  }, h)) : ["Pedido", "Tienda", "Fecha", "Estado Fenicio", "Estado WMS", "Motivo", "Importe"].map(h => /*#__PURE__*/React.createElement("th", {
     key: h,
     className: "px-3 py-2 text-left font-bold uppercase",
     style: {
@@ -288,6 +290,12 @@ function ResultadoCruce({
   }, r.dupNeto > 0 ? "$" + Math.round(r.dupNeto).toLocaleString("es-UY") : "acreditado ✓")) : /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("td", {
     className: "px-3 py-2 font-bold tabular-nums"
   }, r.nro), /*#__PURE__*/React.createElement("td", {
+    className: "px-3 py-2 whitespace-nowrap",
+    style: {
+      fontSize: 11,
+      color: C.gray
+    }
+  }, r.tienda || "—"), /*#__PURE__*/React.createElement("td", {
     className: "px-3 py-2 whitespace-nowrap",
     style: {
       color: C.gray
@@ -1014,17 +1022,19 @@ function Metas({
     ncd.forEach(r => { const nro = extraerNroPedido(r.Observacion); if (!nro) return; const { ba } = docMonto(r); if (!ncsXPed[nro]) ncsXPed[nro] = { n: 0, ba: 0, labels: [] }; ncsXPed[nro].n++; ncsXPed[nro].ba += ba; ncsXPed[nro].labels.push(String(r.Prefijo || "") + "/" + String(r.Numero || "")); });
     const nInvoices = nro => factsXPed[nro] ? factsXPed[nro].invoices.length : 0;
     const netFacturas = nro => nInvoices(nro) - (ncsXPed[nro] ? ncsXPed[nro].n : 0);
-    // Duplicados: mismo pedido facturado en más de una FACTURA (descontando notas de crédito). Se muestra
-    // el importe SIN IVA de cada factura y el "duplicado neto" = lo facturado de más que sigue sin acreditar.
+    // Duplicados: mismo pedido facturado en más de una FACTURA. El "duplicado neto" = lo facturado de más
+    // DESCONTANDO las notas de crédito (prefijos 5004/5104/5102/5204). Si el duplicado ya tiene su NC,
+    // el neto queda en 0 y NO se muestra: ya está resuelto y no requiere acción manual.
     const factDuplicadas = Object.keys(factsXPed)
-      .filter(nro => netFacturas(nro) > 1)
+      .filter(nro => nInvoices(nro) > 1)   // más de una factura para el mismo pedido
       .map(nro => {
         const f = factsXPed[nro];
         const nc = ncsXPed[nro] || { n: 0, ba: 0 };
         const maxBA = f.invoices.reduce((mx, x) => Math.max(mx, x.ba), 0);
-        const dupNeto = Math.max(0, f.sumBA - maxBA - nc.ba);   // exceso facturado aún no acreditado
-        return { nro, facturas: nInvoices(nro), ncs: nc.n, total: f.sumBA, dupNeto, tienda: f.tienda || "—", detalle: f.invoices.map(x => x.label + " $" + Math.round(x.ba).toLocaleString("es-UY")).join("  ·  ") };
+        const dupNeto = f.sumBA - maxBA - nc.ba;   // exceso facturado aún no acreditado por NC
+        return { nro, facturas: nInvoices(nro), ncs: nc.n, ncMonto: nc.ba, total: f.sumBA, dupNeto: Math.max(0, dupNeto), tienda: f.tienda || "—", detalle: f.invoices.map(x => x.label + " $" + Math.round(x.ba).toLocaleString("es-UY")).join("  ·  ") };
       })
+      .filter(d => d.dupNeto > 0.5)   // los ya acreditados con NC se consideran resueltos → fuera
       .sort((a, b) => b.dupNeto - a.dupNeto);
     // Facturado por tienda (BA sin IVA y BB con IVA, netos de nota de crédito)
     const factXTienda = {};
@@ -1102,7 +1112,7 @@ function Metas({
       const tieneF = nInvoices(nro) > 0;
       const esDupF = netFacturas(nro) > 1;
       const esPcn = pcn || personalizada;
-      const base = { nro, fecha, estadoFen, estadoPago, estadoWMS, importe, pcn: esPcn, conCupon, cupon, montoCupon, skusPcn: (skusPcn||[]).join(", ") };
+      const base = { nro, tienda: p.tienda || "—", fecha, estadoFen, estadoPago, estadoWMS, importe, pcn: esPcn, conCupon, cupon, montoCupon, skusPcn: (skusPcn||[]).join(", ") };
       const reversado = /revers/i.test(estadoPago) || /revers/i.test(estadoFen) || /revers/i.test(estadoWMS);
       const cancelado = /cancelad|anulad/i.test(estadoWMS) || /cancelad|anulad/i.test(estadoFen) || /cancelad|anulad/i.test(estadoPago);
       if (cancelado || reversado) {
@@ -1135,7 +1145,7 @@ function Metas({
       if (fenPed[v]) return; // ya procesado arriba
       const tieneF = nInvoices(v) > 0;
       const estadoWMS = info.estadoEnc || info.estadoEco || "—";
-      const base = { nro: v, fecha: info.fecha, estadoFen: "— (sólo en WMS)", estadoPago: "", estadoWMS, importe: info.importe, pcn: true, conCupon: false, cupon: "", montoCupon: 0, skusPcn: info.arts.join(", ") };
+      const base = { nro: v, tienda: "—", fecha: info.fecha, estadoFen: "— (sólo en WMS)", estadoPago: "", estadoWMS, importe: info.importe, pcn: true, conCupon: false, cupon: "", montoCupon: 0, skusPcn: info.arts.join(", ") };
       if (/cancelad|anulad/i.test(estadoWMS) || /cancelad|anulad/i.test(info.estadoEco)) {
         if (tieneF) grupos.canceladoConFactura.push({ ...base, nFact: nInvoices(v), razon: "Cancelado CON factura — anular la factura manualmente ⚠️" });
         else grupos.cancelado.push({ ...base, razon: "Cancelado" });
@@ -1144,6 +1154,16 @@ function Metas({
       if (tieneF) { grupos.facturado.push(base); return; }
       grupos.pcnManual.push({ ...base, razon: `Prenda personalizada (PCN) sin factura — forzar manualmente${info.arts.length ? " · " + info.arts.length + " art." : ""}` });
     });
+
+    // Pendientes sin factura POR TIENDA (para diferenciar la facturación faltante por tienda).
+    // Incluye "revisar" (deberían tener factura y no la tienen) + PCN a facturar a mano.
+    const pendXTienda = {};
+    grupos.revisar.concat(grupos.pcnManual).forEach(r => {
+      const t = r.tienda || "—";
+      const o = pendXTienda[t] = pendXTienda[t] || { count: 0, monto: 0 };
+      o.count++; o.monto += r.importe || 0;
+    });
+    porTienda.forEach(pt => { const o = pendXTienda[pt.tienda] || { count: 0, monto: 0 }; pt.pendCount = o.count; pt.pendMonto = o.monto; });
 
     const totalPedidos = Object.keys(fenPed).length + Object.keys(pcnXVenta).filter(v => !fenPed[v]).length;
     const pend = { grupos, factDuplicadas, pedDuplicados, totalPedidos, porTienda, tieneCuponInfo };
