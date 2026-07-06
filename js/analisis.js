@@ -139,19 +139,21 @@ function ResultadoCruce({
     className: "rounded-xl px-4 py-2 text-xs font-semibold",
     style: { background: C.amberS, color: C.amber }
   }, "ℹ El reporte de Fenicio cargado no trae columna de cupón, así que no se pueden separar los cancelados con cupón web. Exportá el reporte de ventas que incluye \"Cupón\" (el de Nacional/TimeOut) para verlos.")),
-  sinFacturaTotal > 0 && /*#__PURE__*/React.createElement("div", {
-    className: "rounded-2xl p-4",
-    style: {background: sinFacturaUrgente > 0 ? "#FFF1F1" : "#EFF6FF", borderLeft: `4px solid ${sinFacturaUrgente > 0 ? C.red : C.blue}`}
-  }, /*#__PURE__*/React.createElement("div", {className:"font-black text-lg tabular-nums fraunces", style:{color: sinFacturaUrgente > 0 ? C.red : C.blue}},
-    sinFacturaTotal, " pedidos sin factura en BAS",
-    " — ", fmtI(sinFacturaMonto)
-  ), /*#__PURE__*/React.createElement("div", {className:"text-xs mt-1 space-x-1", style:{color:C.gray}},
-    sinFacturaUrgente > 0 && /*#__PURE__*/React.createElement("span", {style:{color:C.red, fontWeight:700}}, sinFacturaUrgente, " urgentes (despachados/entregados sin factura)"),
-    sinFacturaUrgente > 0 && (pcnArr.length > 0 || grupos.pendienteOK.length > 0) && " · ",
-    pcnArr.length > 0 && /*#__PURE__*/React.createElement("span", {style:{color:"#B45309", fontWeight:700}}, pcnArr.length, " PCN (personalizadas, facturar a mano)"),
-    pcnArr.length > 0 && grupos.pendienteOK.length > 0 && " · ",
-    grupos.pendienteOK.length > 0 && /*#__PURE__*/React.createElement("span", null, grupos.pendienteOK.length, " en proceso o recientes (OK por ahora)")
-  )), /*#__PURE__*/React.createElement("div", {
+  (grupos.revisar.length + (grupos.pcnManual || []).length + (grupos.canceladoCupon || []).length) > 0 && /*#__PURE__*/React.createElement("div", { className: "space-y-2" },
+    /*#__PURE__*/React.createElement("div", { className: "text-xs font-black uppercase tracking-wide", style: { color: C.gray } }, "Falta por facturar"),
+    /*#__PURE__*/React.createElement("div", { className: "grid sm:grid-cols-3 gap-3" },
+      [
+        { id: "revisar", l: "Automática", sub: "Ya entregados — emitir factura", arr: grupos.revisar, c: C.red, s: C.redS },
+        { id: "pcnManual", l: "Manual · PCN", sub: "Personalizadas — solicitar al WMS", arr: grupos.pcnManual || [], c: "#B45309", s: "#FEF3C7" },
+        { id: "canceladoCupon", l: "Manual · Cupón", sub: "Cupón web — facturar a mano", arr: grupos.canceladoCupon || [], c: "#C2410C", s: "#FFEDD5" }
+      ].map(k => /*#__PURE__*/React.createElement("button", {
+        key: k.id, onClick: () => irTab(k.id),
+        className: "text-left rounded-2xl p-4 border transition-all", style: { background: k.s, borderColor: k.c + "55" }
+      },
+        /*#__PURE__*/React.createElement("div", { className: "text-2xl font-black fraunces tabular-nums", style: { color: k.c } }, k.arr.length),
+        /*#__PURE__*/React.createElement("div", { className: "text-xs font-bold mt-0.5", style: { color: k.c } }, k.l),
+        /*#__PURE__*/React.createElement("div", { className: "text-[11px] mt-0.5", style: { color: C.gray } }, k.sub, k.arr.length > 0 ? " · " + fmtI(sumImporte(k.arr)) : "")))),
+    grupos.pendienteOK.length > 0 && /*#__PURE__*/React.createElement("div", { className: "text-[11px]", style: { color: C.gray } }, grupos.pendienteOK.length, " pedidos aún en proceso (no se facturan todavía)")), /*#__PURE__*/React.createElement("div", {
     className: "grid grid-cols-3 sm:grid-cols-4 xl:grid-cols-8 gap-2"
   }, TABS.map(t => /*#__PURE__*/React.createElement("button", {
     key: t.id,
@@ -168,28 +170,15 @@ function ResultadoCruce({
     className: "text-[10px] font-bold uppercase tracking-wide mt-0.5 leading-tight opacity-90"
   }, t.l.replace("⚠ ", "")), t.arr[0]?.importe != null && /*#__PURE__*/React.createElement("div", {
     className: "text-[10px] mt-0.5 opacity-75"
-  }, fmtI(sumImporte(t.arr)))))), grupos.revisar.length > 0 && /*#__PURE__*/React.createElement("div", {
-    className: "rounded-xl px-4 py-2.5 text-xs font-bold",
-    style: {
-      background: C.redS,
-      color: C.red
-    }
-  }, "⚠️ ", grupos.revisar.length, " pedidos despachados/entregados sin factura — requieren acción urgente."), (grupos.canceladoConFactura || []).length > 0 && /*#__PURE__*/React.createElement("div", {
-    className: "rounded-xl px-4 py-2.5 text-xs font-bold",
-    style: { background: "#FFE4E6", color: "#BE123C" }
-  }, "⚠️ ", grupos.canceladoConFactura.length, " pedido(s) CANCELADOS que tienen factura en el BAS — hay que anular la factura manualmente."), (factDuplicadas || []).length > 0 && /*#__PURE__*/React.createElement("div", {
-    className: "rounded-xl px-4 py-2.5 text-xs font-bold",
-    style: {
-      background: "#F3F0FF",
-      color: "#7C3AED"
-    }
-  }, "⚠️ ", factDuplicadas.length, " pedidos facturados de más SIN nota de crédito (los que ya tienen NC no se cuentan)."), (pedDuplicados || []).length > 0 && /*#__PURE__*/React.createElement("div", {
-    className: "rounded-xl px-4 py-2.5 text-xs font-bold",
-    style: {
-      background: C.amberS,
-      color: C.amber
-    }
-  }, "⚠️ ", pedDuplicados.length, " números de pedido duplicados en Fenicio."), /*#__PURE__*/React.createElement("div", {
+  }, fmtI(sumImporte(t.arr)))))), ((grupos.canceladoConFactura || []).length + (factDuplicadas || []).length) > 0 && /*#__PURE__*/React.createElement("div", {
+    className: "text-xs px-1 flex flex-wrap items-center gap-x-2 gap-y-1", style: { color: C.gray }
+  }, /*#__PURE__*/React.createElement("span", { className: "font-bold uppercase tracking-wide text-[10px]" }, "A revisar:"),
+    (grupos.canceladoConFactura || []).length > 0 && /*#__PURE__*/React.createElement("button", {
+      onClick: () => irTab("canceladoFactura"), className: "font-bold underline", style: { color: "#BE123C" }
+    }, grupos.canceladoConFactura.length, " cancelados con factura (anular)"),
+    (factDuplicadas || []).length > 0 && /*#__PURE__*/React.createElement("button", {
+      onClick: () => irTab("facturaDup"), className: "font-bold underline", style: { color: "#7C3AED" }
+    }, factDuplicadas.length, " facturados de más sin NC")), /*#__PURE__*/React.createElement("div", {
     className: "bg-white rounded-2xl border overflow-hidden",
     style: {
       borderColor: C.line
@@ -584,6 +573,56 @@ const claveComprobante = r => {
   const num = String(r.Numero || "").trim();
   return num ? String(r.Prefijo || "").trim() + "-" + num : "OBS:" + String(r.Observacion || "").trim();
 };
+
+/* ── Facturación por período: cuánto se facturó y en qué fechas, con filtro Desde/Hasta ── */
+function Facturado({ resumenBAS, fmtUSD, fmtM }) {
+  const h = React.createElement;
+  const meses = resumenBAS.meses || [];
+  const [desde, setDesde] = useState(meses[0] || "");
+  const [hasta, setHasta] = useState(meses[meses.length - 1] || "");
+  // Al recargar un BAS nuevo, reencuadrar el filtro al rango disponible.
+  useEffect(() => {
+    if (meses.length) { setDesde(meses[0]); setHasta(meses[meses.length - 1]); }
+  }, [resumenBAS]);
+  const TIENDAS = ["TimeOut", "Tienda Nacional", "Classico"];
+  const enRango = m => (!desde || m >= desde) && (!hasta || m <= hasta);
+  const mesesSel = meses.filter(enRango);
+  const tot = {}; TIENDAS.forEach(t => tot[t] = { neto: 0, ncd: 0, ped: 0, fac: 0 });
+  let nNcd = 0;
+  mesesSel.forEach(m => {
+    TIENDAS.forEach(t => {
+      tot[t].neto += resumenBAS.porMesNeto?.[m]?.[t] || 0;
+      tot[t].ncd += resumenBAS.ncdPorMesTienda?.[m]?.[t] || 0;
+      tot[t].ped += resumenBAS.cantPedMes?.[m]?.[t] || 0;
+      tot[t].fac += resumenBAS.cantFacMes?.[m]?.[t] || 0;
+    });
+    nNcd += resumenBAS.ncdPorMes?.[m]?.cant || 0;
+  });
+  const totalNeto = TIENDAS.reduce((a, t) => a + tot[t].neto, 0);
+  const totalFac = TIENDAS.reduce((a, t) => a + tot[t].fac, 0);
+  const inpMes = (val, setV) => h("input", {
+    type: "month", value: val, min: meses[0], max: meses[meses.length - 1],
+    onChange: e => setV(e.target.value),
+    className: "text-sm rounded-lg border px-2 py-1 outline-none", style: { borderColor: C.line }
+  });
+  return h("div", { className: "bg-white rounded-2xl border p-5", style: { borderColor: C.line } },
+    h("div", { className: "flex items-start justify-between gap-3 flex-wrap mb-4" },
+      h("div", null,
+        h("div", { className: "text-xs font-black uppercase tracking-wide", style: { color: C.gray } }, "Facturado en el período", h("span", { className: "font-normal normal-case ml-1" }, "(sin IVA, neto de NC)")),
+        h("div", { className: "text-3xl font-black fraunces tabular-nums mt-0.5", style: { color: C.ink } }, fmtUSD(totalNeto)),
+        h("div", { className: "text-xs mt-0.5", style: { color: C.gray } }, totalFac.toLocaleString("es-UY"), " facturas", nNcd > 0 ? " · " + nNcd + " NCD" : "")),
+      h("div", { className: "flex items-end gap-2" },
+        h("div", null, h("div", { className: "text-[10px] font-bold uppercase tracking-wide mb-0.5", style: { color: C.gray } }, "Desde"), inpMes(desde, setDesde)),
+        h("div", null, h("div", { className: "text-[10px] font-bold uppercase tracking-wide mb-0.5", style: { color: C.gray } }, "Hasta"), inpMes(hasta, setHasta)))),
+    h("div", { className: "grid sm:grid-cols-3 gap-3" },
+      TIENDAS.map(t => h("div", { key: t, className: "rounded-xl p-3", style: { background: "#F6F7F9" } },
+        h("div", { className: "text-xs font-bold uppercase tracking-wide mb-1", style: { color: C.gray } }, t),
+        h("div", { className: "text-xl font-black tabular-nums fraunces", style: { color: C.ink } }, fmtUSD(tot[t].neto)),
+        tot[t].ncd > 0 && h("div", { className: "text-xs", style: { color: C.amber } }, "−", fmtUSD(tot[t].ncd), " NCD"),
+        h("div", { className: "text-xs", style: { color: C.gray } }, tot[t].fac.toLocaleString("es-UY"), " facturas · ", tot[t].ped.toLocaleString("es-UY"), " pedidos")))),
+    mesesSel.length === 0 && h("div", { className: "text-xs mt-3", style: { color: C.gray } }, "No hay facturación en el rango elegido."));
+}
+
 function Metas({
   data,
   recargar,
@@ -1338,46 +1377,17 @@ function Metas({
           className: "text-sm font-bold text-white px-6 py-2.5 rounded-xl disabled:opacity-40",
           style: { background: C.blue }
         }, procesando ? "Analizando..." : "Analizar"))),
-    // ── Detalle del BAS por mes (plegable) ──
-    resumenBAS && h(Collapse, {
-      title: "Detalle del BAS por mes",
-      subtitle: resumenBAS.fabTotal + " facturas · " + resumenBAS.ncdTotal + " NCD · " + ((resumenBAS.meses || []).map(fmtM).join(", ") || "—") + " · " + (resumenBAS.tieneBA ? "sin IVA = " + (resumenBAS.colTotGrav || "TotGravado") + " (BA) · con IVA = " + (resumenBAS.colTotal || "Total") + " (BB)" : "facturación = " + (resumenBAS.colImporte || "Importe") + " − " + (resumenBAS.colIva || "IVA")),
-      badge: esAdmin ? h(Chip, { color: C.green, soft: C.greenS }, "✓ Metas") : null
-    }, h("div", { className: "space-y-4" },
-      !resumenBAS.tieneBA && !resumenBAS.colIva && h("div", {
-        className: "rounded-xl px-4 py-2 text-xs font-semibold",
-        style: { background: C.redS, color: C.red }
-      }, "⚠ No encontré ni la columna TotGravado (BA) ni la de IVA en el BAS, así que la facturación quedó CON IVA. Columnas detectadas: ", (resumenBAS.basCols || []).join(", "), ". Decime cómo se llama la columna del total sin IVA y la ajusto."),
-      resumenBAS.sucSinMapa && resumenBAS.sucSinMapa.length > 0 && h("div", {
-        className: "rounded-xl px-4 py-2 text-xs font-semibold",
-        style: { background: C.amberS, color: C.amber }
-      }, "⚠ Sucursales no reconocidas (no se suman a ninguna tienda): ", resumenBAS.sucSinMapa.join(" · "), "."),
-      resumenBAS.fabTotal > 0 && (!resumenBAS.meses || resumenBAS.meses.length === 0) && h("div", {
-        className: "rounded-xl px-4 py-2 text-xs font-semibold",
-        style: { background: "#FFF3CD", color: "#856404" }
-      }, h("div", { className: "font-bold mb-1" }, "⚠ No se pudo imputar facturación — primer FAB del archivo:"),
-        resumenBAS.primeraFAB ? h("table", { style: { borderCollapse: "collapse", width: "100%", fontSize: 11 } },
-          Object.entries(resumenBAS.primeraFAB).map(([k, v]) => h("tr", { key: k },
-            h("td", { style: { padding: "1px 8px 1px 0", fontWeight: 700, whiteSpace: "nowrap", verticalAlign: "top" } }, k),
-            h("td", { style: { padding: "1px 0", wordBreak: "break-all" } }, String(v) || "(vacío)")))) :
-          h("span", null, "Columnas: ", (resumenBAS.basCols || []).join(", "))),
-      (resumenBAS.meses || []).map(m => h("div", { key: m, className: "space-y-2" },
-        h("div", { className: "text-sm font-black fraunces flex items-baseline gap-2 flex-wrap", style: { color: C.ink } }, fmtM(m),
-          h("span", { className: "text-xs font-normal", style: { color: C.gray } },
-            "Neto ", fmtUSD(Object.values(resumenBAS.porMesNeto?.[m] || {}).reduce((a, b) => a + b, 0)),
-            " · Bruto ", fmtUSD(Object.values(resumenBAS.porMes[m]).reduce((a, b) => a + b, 0)),
-            resumenBAS.ncdPorMes[m] ? " · " + resumenBAS.ncdPorMes[m].cant + " NCD (−" + fmtUSD(resumenBAS.ncdPorMes[m].monto) + ")" : "",
-            " · " + Object.values(resumenBAS.cantFacMes?.[m] || {}).reduce((a, b) => a + b, 0) + " facturas únicas")),
-        h("div", { className: "grid sm:grid-cols-3 gap-3" },
-          Object.entries(resumenBAS.porMes[m]).map(([tienda, fabBruto]) => {
-            const neto = resumenBAS.porMesNeto?.[m]?.[tienda] ?? fabBruto;
-            const ncdT = resumenBAS.ncdPorMesTienda?.[m]?.[tienda] || 0;
-            return h("div", { key: tienda, className: "rounded-xl p-3", style: { background: "#F6F7F9" } },
-              h("div", { className: "text-xs font-bold uppercase tracking-wide mb-1", style: { color: C.gray } }, tienda),
-              h("div", { className: "text-xl font-black tabular-nums fraunces", style: { color: C.ink } }, fmtUSD(neto)),
-              ncdT > 0 && h("div", { className: "text-xs", style: { color: C.amber } }, "−", fmtUSD(ncdT), " NCD"),
-              h("div", { className: "text-xs", style: { color: C.gray } }, ((resumenBAS.cantPedMes[m] || {})[tienda] || 0), " pedidos"));
-          }))))) ),
+    // ── Facturación por período (con filtro de fecha) ──
+    resumenBAS && h(Facturado, { resumenBAS, fmtUSD, fmtM }),
+    // Avisos de datos sólo cuando algo no cuadra (no en el flujo normal)
+    resumenBAS && resumenBAS.sucSinMapa && resumenBAS.sucSinMapa.length > 0 && h("div", {
+      className: "rounded-xl px-4 py-2 text-xs font-semibold",
+      style: { background: C.amberS, color: C.amber }
+    }, "⚠ Sucursales no reconocidas (no se suman a ninguna tienda): ", resumenBAS.sucSinMapa.join(" · "), "."),
+    resumenBAS && !resumenBAS.tieneBA && !resumenBAS.colIva && h("div", {
+      className: "rounded-xl px-4 py-2 text-xs font-semibold",
+      style: { background: C.redS, color: C.red }
+    }, "⚠ No encontré la columna TotGravado (BA) ni la de IVA en el BAS: la facturación quedó CON IVA. Columnas: ", (resumenBAS.basCols || []).join(", "), "."),
     // ── Pedidos (siempre visible, paginado) ──
     pendientes && h(ResultadoCruce, { pendientes: pendientes }),
     // ── Modal edición de meta ──
