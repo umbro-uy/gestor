@@ -13,7 +13,9 @@ function ResultadoCruce({
   const {
     grupos,
     factDuplicadas,
-    pedDuplicados
+    pedDuplicados,
+    porTienda,
+    tieneCuponInfo
   } = pendientes;
   const sumImporte = arr => arr.reduce((a, r) => a + (r.importe || 0), 0);
   const exportarXLSX = (rows, nombre) => {
@@ -69,6 +71,12 @@ function ResultadoCruce({
     s: C.greenS,
     arr: grupos.facturado
   }, {
+    id: "canceladoCupon",
+    l: "Cancelado c/cupón (manual)",
+    c: "#C2410C",
+    s: "#FFEDD5",
+    arr: grupos.canceladoCupon || []
+  }, {
     id: "canceladoFactura",
     l: "Cancelado c/factura",
     c: "#BE123C",
@@ -82,7 +90,7 @@ function ResultadoCruce({
     arr: grupos.cancelado
   }];
   const pcnArr = grupos.pcnManual || [];
-  const [tabAct, setTabAct] = useState(grupos.revisar.length > 0 ? "revisar" : (grupos.canceladoConFactura || []).length > 0 ? "canceladoFactura" : (grupos.facturaDup || []).length > 0 ? "facturaDup" : pcnArr.length > 0 ? "pcnManual" : "facturado");
+  const [tabAct, setTabAct] = useState(grupos.revisar.length > 0 ? "revisar" : (grupos.canceladoConFactura || []).length > 0 ? "canceladoFactura" : (grupos.canceladoCupon || []).length > 0 ? "canceladoCupon" : (grupos.facturaDup || []).length > 0 ? "facturaDup" : pcnArr.length > 0 ? "pcnManual" : "facturado");
   const tabActual = TABS.find(t => t.id === tabAct) || TABS[0];
   const POR_PAGINA = 25;
   const [pagina, setPagina] = useState(0);
@@ -93,9 +101,43 @@ function ResultadoCruce({
   const sinFacturaTotal = grupos.revisar.length + grupos.pendienteOK.length + pcnArr.length;
   const sinFacturaUrgente = grupos.revisar.length;
   const sinFacturaMonto = sumImporte(grupos.revisar) + sumImporte(grupos.pendienteOK) + sumImporte(pcnArr);
+  const fmtSigno = n => (n < 0 ? "−" : "") + "$" + Math.abs(Math.round(n || 0)).toLocaleString("es-UY");
   return /*#__PURE__*/React.createElement("div", {
     className: "space-y-4"
-  }, sinFacturaTotal > 0 && /*#__PURE__*/React.createElement("div", {
+  }, (porTienda && porTienda.some(t => t.vendido > 0 || t.facturadoConIVA > 0)) && /*#__PURE__*/React.createElement("div", {
+    className: "bg-white rounded-2xl border overflow-hidden",
+    style: { borderColor: C.line }
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "px-4 py-3 border-b",
+    style: { borderColor: C.line }
+  }, /*#__PURE__*/React.createElement("span", { className: "text-sm font-bold", style: { color: C.ink } }, "Vendido vs. facturado por tienda"),
+    /*#__PURE__*/React.createElement("span", { className: "text-xs ml-2", style: { color: C.gray } }, "Vendido = Fenicio (c/IVA) · Facturado = BAS · Falta = lo que aún no se facturó")),
+  /*#__PURE__*/React.createElement("div", { className: "overflow-x-auto" }, /*#__PURE__*/React.createElement("table", {
+    className: "w-full", style: { fontSize: 12 }
+  }, /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", { style: { background: "#F6F7F9" } },
+    ["Tienda", "Vendido c/IVA", "Facturado c/IVA", "Facturado s/IVA (metas)", "Facturas", "Falta facturar"].map((hh, i) => /*#__PURE__*/React.createElement("th", {
+      key: hh, className: "px-3 py-2 font-bold uppercase", style: { color: C.gray, fontSize: 10, textAlign: i === 0 ? "left" : "right" }
+    }, hh)))),
+  /*#__PURE__*/React.createElement("tbody", null, porTienda.map(t => /*#__PURE__*/React.createElement("tr", { key: t.tienda, style: { borderTop: `1px solid ${C.line}` } },
+    /*#__PURE__*/React.createElement("td", { className: "px-3 py-2 font-bold", style: { color: C.ink } }, t.tienda,
+      t.nCanc > 0 && /*#__PURE__*/React.createElement("span", { className: "text-[10px] font-normal ml-1", style: { color: C.gray } }, "(", t.nCanc, " cancel.)")),
+    /*#__PURE__*/React.createElement("td", { className: "px-3 py-2 tabular-nums text-right", style: { color: C.ink } }, fmtI(t.vendido)),
+    /*#__PURE__*/React.createElement("td", { className: "px-3 py-2 tabular-nums text-right", style: { color: C.ink } }, fmtI(t.facturadoConIVA)),
+    /*#__PURE__*/React.createElement("td", { className: "px-3 py-2 tabular-nums text-right font-bold", style: { color: C.green } }, fmtI(t.facturadoSinIVA)),
+    /*#__PURE__*/React.createElement("td", { className: "px-3 py-2 tabular-nums text-right", style: { color: C.gray } }, t.nFac),
+    /*#__PURE__*/React.createElement("td", { className: "px-3 py-2 tabular-nums text-right font-bold", style: { color: Math.abs(t.falta) < 1000 ? C.green : t.falta > 0 ? C.amber : C.gray } }, fmtSigno(t.falta)))),
+  /*#__PURE__*/React.createElement("tr", { style: { borderTop: `2px solid ${C.line}`, background: "#FAFBFC" } },
+    /*#__PURE__*/React.createElement("td", { className: "px-3 py-2 font-black", style: { color: C.ink } }, "Total"),
+    /*#__PURE__*/React.createElement("td", { className: "px-3 py-2 tabular-nums text-right font-bold", style: { color: C.ink } }, fmtI(porTienda.reduce((a, t) => a + t.vendido, 0))),
+    /*#__PURE__*/React.createElement("td", { className: "px-3 py-2 tabular-nums text-right font-bold", style: { color: C.ink } }, fmtI(porTienda.reduce((a, t) => a + t.facturadoConIVA, 0))),
+    /*#__PURE__*/React.createElement("td", { className: "px-3 py-2 tabular-nums text-right font-black", style: { color: C.green } }, fmtI(porTienda.reduce((a, t) => a + t.facturadoSinIVA, 0))),
+    /*#__PURE__*/React.createElement("td", { className: "px-3 py-2 tabular-nums text-right", style: { color: C.gray } }, porTienda.reduce((a, t) => a + t.nFac, 0)),
+    /*#__PURE__*/React.createElement("td", { className: "px-3 py-2 tabular-nums text-right font-black", style: { color: C.amber } }, fmtSigno(porTienda.reduce((a, t) => a + t.falta, 0))))))),
+  !tieneCuponInfo && (grupos.cancelado.length > 0) && /*#__PURE__*/React.createElement("div", {
+    className: "rounded-xl px-4 py-2 text-xs font-semibold",
+    style: { background: C.amberS, color: C.amber }
+  }, "ℹ El reporte de Fenicio cargado no trae columna de cupón, así que no se pueden separar los cancelados con cupón web. Exportá el reporte de ventas que incluye \"Cupón\" (el de Nacional/TimeOut) para verlos.")),
+  sinFacturaTotal > 0 && /*#__PURE__*/React.createElement("div", {
     className: "rounded-2xl p-4",
     style: {background: sinFacturaUrgente > 0 ? "#FFF1F1" : "#EFF6FF", borderLeft: `4px solid ${sinFacturaUrgente > 0 ? C.red : C.blue}`}
   }, /*#__PURE__*/React.createElement("div", {className:"font-black text-lg tabular-nums fraunces", style:{color: sinFacturaUrgente > 0 ? C.red : C.blue}},
@@ -108,7 +150,7 @@ function ResultadoCruce({
     pcnArr.length > 0 && grupos.pendienteOK.length > 0 && " · ",
     grupos.pendienteOK.length > 0 && /*#__PURE__*/React.createElement("span", null, grupos.pendienteOK.length, " en proceso o recientes (OK por ahora)")
   )), /*#__PURE__*/React.createElement("div", {
-    className: "grid grid-cols-3 sm:grid-cols-4 xl:grid-cols-7 gap-2"
+    className: "grid grid-cols-3 sm:grid-cols-4 xl:grid-cols-8 gap-2"
   }, TABS.map(t => /*#__PURE__*/React.createElement("button", {
     key: t.id,
     onClick: () => irTab(t.id),
@@ -192,7 +234,7 @@ function ResultadoCruce({
       color: C.gray,
       fontSize: 10
     }
-  }, h)) : tabAct === "facturaDup" ? ["Pedido", "FABs en BAS", "Notas de crédito", "Duplicadas netas", "Total"].map(h => /*#__PURE__*/React.createElement("th", {
+  }, h)) : tabAct === "facturaDup" ? ["Pedido", "Tienda", "Facturas (importe s/IVA)", "NC", "Duplicado neto"].map(h => /*#__PURE__*/React.createElement("th", {
     key: h,
     className: "px-3 py-2 text-left font-bold uppercase",
     style: {
@@ -222,23 +264,28 @@ function ResultadoCruce({
   }, r.apariciones, "×")) : tabAct === "facturaDup" ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("td", {
     className: "px-3 py-2 font-bold tabular-nums"
   }, r.nro), /*#__PURE__*/React.createElement("td", {
-    className: "px-3 py-2 font-bold tabular-nums",
+    className: "px-3 py-2",
     style: {
-      color: "#7C3AED"
+      color: C.gray
     }
-  }, r.facturas), /*#__PURE__*/React.createElement("td", {
+  }, r.tienda), /*#__PURE__*/React.createElement("td", {
+    className: "px-3 py-2 tabular-nums",
+    style: {
+      color: C.ink, fontSize: 11
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "font-bold", style: { color: "#7C3AED" }
+  }, r.facturas, " facturas: "), r.detalle), /*#__PURE__*/React.createElement("td", {
     className: "px-3 py-2 tabular-nums",
     style: {
       color: C.gray
     }
-  }, r.ncs), /*#__PURE__*/React.createElement("td", {
+  }, r.ncs || "—"), /*#__PURE__*/React.createElement("td", {
     className: "px-3 py-2 font-bold tabular-nums",
     style: {
-      color: C.red
+      color: r.dupNeto > 0 ? C.red : C.green
     }
-  }, r.facturas - r.ncs, " dup."), /*#__PURE__*/React.createElement("td", {
-    className: "px-3 py-2 font-bold tabular-nums"
-  }, "$", Math.round(r.total || 0).toLocaleString("es-UY"))) : /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("td", {
+  }, r.dupNeto > 0 ? "$" + Math.round(r.dupNeto).toLocaleString("es-UY") : "acreditado ✓")) : /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("td", {
     className: "px-3 py-2 font-bold tabular-nums"
   }, r.nro), /*#__PURE__*/React.createElement("td", {
     className: "px-3 py-2 whitespace-nowrap",
@@ -503,6 +550,32 @@ const mapearTienda = suc => {
   if (sl.includes("clasico") || sl.includes("classico")) return "Classico";
   return null;
 };
+// Clasificación de comprobantes del BAS por PREFIJO (fuente de verdad indicada por operaciones):
+//   Notas de crédito → 5004 / 5104 / 5102 / 5204   ·   Facturas → 5011 / 5111 / 5211 / 5001 / 5101 / 5201
+// Si el archivo no trae Prefijo se cae al "Abreviado" (NCD… / FA…) como respaldo.
+const NCD_PREFIJOS = new Set(["5004", "5104", "5102", "5204"]);
+const FAC_PREFIJOS = new Set(["5011", "5111", "5211", "5001", "5101", "5201"]);
+const esNCDrow = r => {
+  const p = String(r.Prefijo || "").trim();
+  if (NCD_PREFIJOS.has(p)) return true;
+  if (FAC_PREFIJOS.has(p)) return false;
+  const a = String(r.Abreviado || "").trim().toUpperCase();
+  return a.startsWith("NCD") || a.startsWith("NTC") || a === "NC";
+};
+const esFABrow = r => {
+  if (String(r.Anulado || "0").trim() === "1") return false;
+  const p = String(r.Prefijo || "").trim();
+  if (NCD_PREFIJOS.has(p)) return false;
+  if (FAC_PREFIJOS.has(p)) return true;
+  const a = String(r.Abreviado || "").trim().toUpperCase();
+  return a === "FAB" || a === "FA" || a === "FAC" || a.startsWith("FA");
+};
+// Clave única de comprobante (Prefijo+Numero). BA/BB vienen repetidos en cada renglón del mismo
+// comprobante, así que hay que quedarse con UN renglón por comprobante antes de sumar importes.
+const claveComprobante = r => {
+  const num = String(r.Numero || "").trim();
+  return num ? String(r.Prefijo || "").trim() + "-" + num : "OBS:" + String(r.Observacion || "").trim();
+};
 function Metas({
   data,
   recargar,
@@ -635,20 +708,22 @@ function Metas({
         const pick=(name,pats)=>{const e=exact(name);return e>=0?e:fi(pats);};
         const iA=pick("Abreviado",[/abrevi/i]);
         const iN=pick("Anulado",[/anulad/i]);
+        const iPref=pick("Prefijo",[/^prefijo$/i]);                    // 5004/5104/5102/5204 = notas de crédito
         const iNum=pick("Numero",[/^numero$/i,/^nro$/i,/comprob/i]);   // nº de factura/comprobante
         const iItm=pick("Coditm",[/^coditm$/i,/^sku$/i,/^codart/i]);   // SKU del artículo
         const iDesc=pick("Descripcion",[/^descripcion$/i]);
         const iImp=pick("Importe",[/^importe$/i,/^monto$/i]);          // monto por renglón (CON IVA)
         const iIva=pick("IVA",[/^iva$/i,/^i\.?\s*v\.?\s*a\.?$/i,/^imp.*iva$/i]); // IVA por renglón → facturación neta = Importe − IVA
+        const iTG=pick("TotGravado",[/totgravad/i,/gravado/i]);        // BA (col amarilla): total de la venta SIN IVA (por comprobante)
         const iO=pick("Observacion",[/^observacion$/i,/observ/i]);     // contiene nº de pedido Fenicio
-        const iT=pick("Total",[/^total$/i]);                           // total de documento (repetido por renglón)
+        const iT=pick("Total",[/^total$/i]);                           // BB (col verde): total de la factura CON IVA (por comprobante)
         const iS=pick("Sucursal",[/sucursal/i,/local/i]);
         const iF=pick("Fecha",[/^fecha$/i]);
-        console.log("BAS cols:",{iA,iN,iNum,iItm,iImp,iIva,iO,iT,iS,iF});
+        console.log("BAS cols:",{iA,iN,iPref,iNum,iItm,iImp,iIva,iTG,iO,iT,iS,iF});
         if(iA<0){alert("Col Abreviado no encontrada.\nColumnas del archivo: "+hdrsNoVacios.slice(0,25).join(", "));setCargandoBAS(false);return;}
         const cl2=C=>{let s='',n=C;do{s=String.fromCharCode(65+n%26)+s;n=Math.floor(n/26)-1;}while(n>=0);return s;};
         const L=i=>i>=0?cl2(i):null;
-        const lA=L(iA),lN=L(iN),lNum=L(iNum),lItm=L(iItm),lDesc=L(iDesc),lImp=L(iImp),lIva=L(iIva),lO=L(iO),lT=L(iT),lS=L(iS),lF=L(iF);
+        const lA=L(iA),lN=L(iN),lPref=L(iPref),lNum=L(iNum),lItm=L(iItm),lDesc=L(iDesc),lImp=L(iImp),lIva=L(iIva),lTG=L(iTG),lO=L(iO),lT=L(iT),lS=L(iS),lF=L(iF);
         const gv=(l,R)=>{if(!l)return'';const cl=ws[l+R];if(!cl)return'';return String(cl.w!==undefined&&cl.w!==''?cl.w:cl.v!==undefined?cl.v:'')||"";};
         // Para columnas numéricas leer el valor raw de Excel (no el texto formateado)
         const gvn=(l,R)=>{if(!l)return 0;const cl=ws[l+R];if(!cl)return 0;if(typeof cl.v==='number')return cl.v;const s=String(cl.w||cl.v||'0').trim().replace(/\s/g,'');if(!s||s==='-')return 0;if(s.includes('.')&&s.includes(',')){const li=s.lastIndexOf(',');return li>s.lastIndexOf('.')?parseFloat(s.replace(/\./g,'').replace(',','.'))||0:parseFloat(s.replace(/,/g,''))||0;}if(s.includes('.')&&!s.includes(',')){const p=s.split('.');return p.length>2||p[1]?.length===3?parseFloat(s.replace(/\./g,''))||0:parseFloat(s)||0;}if(s.includes(',')&&!s.includes('.')){const p=s.split(',');return p.length>2||p[1]?.length===3?parseFloat(s.replace(/,/g,''))||0:parseFloat(s.replace(',','.'))||0;}return parseFloat(s)||0;};
@@ -660,7 +735,7 @@ function Metas({
         for(let R=rng.s.r+2;R<=rng.e.r+1;R++){
           const ab=lA?gv(lA,R).trim():'';
           if(!ab)continue;
-          const row={Abreviado:ab,Anulado:lN?gv(lN,R):'0',Numero:lNum?gv(lNum,R):'',Sku:lItm?gv(lItm,R):'',Descripcion:lDesc?gv(lDesc,R):'',Importe:lImp?gvn(lImp,R):0,Iva:lIva?gvn(lIva,R):0,Observacion:lO?gv(lO,R):'',Total:lT?gvn(lT,R):0,Sucursal:lS?gv(lS,R):'',Fecha:lF?gvd(lF,R):''};
+          const row={Abreviado:ab,Anulado:lN?gv(lN,R):'0',Prefijo:lPref?gv(lPref,R).trim():'',Numero:lNum?gv(lNum,R):'',Sku:lItm?gv(lItm,R):'',Descripcion:lDesc?gv(lDesc,R):'',Importe:lImp?gvn(lImp,R):0,Iva:lIva?gvn(lIva,R):0,TotGravado:lTG?gvn(lTG,R):0,Observacion:lO?gv(lO,R):'',Total:lT?gvn(lT,R):0,Sucursal:lS?gv(lS,R):'',Fecha:lF?gvd(lF,R):''};
           rows.push(row);
           if(!primeraFAB && (ab==="FAB"||ab==="FA")){
             const raw={};
@@ -671,6 +746,10 @@ function Metas({
         console.log("BAS: "+rows.length+" filas. FAB:"+rows.filter(r=>r.Abreviado==="FAB").length);
         rows._colImporte=iImp>=0?hdrs[iImp]:null;
         rows._colIva=iIva>=0?hdrs[iIva]:null;
+        rows._colTotGrav=iTG>=0?hdrs[iTG]:null;   // BA sin IVA
+        rows._colTotal=iT>=0?hdrs[iT]:null;       // BB con IVA
+        rows._colPref=iPref>=0?hdrs[iPref]:null;
+        rows._tieneBA=iTG>=0;                      // si el BAS trae TotGravado usamos importes por comprobante
         rows._hdrs=hdrsNoVacios.slice(0,25);
         rows._primeraFAB=primeraFAB;
         setRowsBAS(rows);
@@ -787,31 +866,40 @@ function Metas({
   const _coreBAS = async () => {
     console.log('_coreBAS inicio. rowsBAS:',rowsBAS.length);
     if(!rowsBAS.length)return;
-    const fab = rowsBAS.filter(r => {
-      const a = String(r.Abreviado||"").trim().toUpperCase();
-      return (a === "FAB" || a === "FA") && String(r.Anulado||"0").trim() !== "1";
-    });
-    const ncd = rowsBAS.filter(r => {
-      const a = String(r.Abreviado||"").trim().toUpperCase();
-      return (a.startsWith("NCD") || a.startsWith("NTC") || a === "NC") && String(r.Anulado||"0").trim() !== "1";
-    });
+    const tieneBA = !!rowsBAS._tieneBA;   // el BAS trae TotGravado (BA) y Total (BB) por comprobante
+    const fabLineas = rowsBAS.filter(esFABrow);
+    const ncdLineas = rowsBAS.filter(esNCDrow);
+    // BA/BB vienen repetidos en todos los renglones de un mismo comprobante → colapsar a UN renglón por
+    // comprobante (Prefijo+Numero). Si el archivo no trae BA, se cae a sumar (Importe − IVA) por renglón.
+    const porComprobante = lineas => {
+      if (!tieneBA) return null;
+      const m = new Map();
+      lineas.forEach(r => { const k = claveComprobante(r); if (!m.has(k)) m.set(k, r); });
+      return [...m.values()];
+    };
+    const fabDoc = porComprobante(fabLineas);
+    const ncdDoc = porComprobante(ncdLineas);
     const sucSinMapa = new Set();
-    // Facturación NETA = suma por renglón de (Importe − IVA), agrupada por MES y tienda.
-    // El "Importe" del BAS viene CON IVA por renglón; se le resta la columna "IVA" para quedar en
-    // facturación neta (sin impuesto). Se suma por renglón —no por documento— porque el Importe ya es
-    // por línea, así que no se infla por facturas multi-renglón. El archivo puede abarcar varios meses.
-    const porMes = {};        // { "2026-06": { TimeOut: 123, ... } } facturación neta sin IVA
+    // Facturación por MES y tienda. "SIN IVA" (para las metas) = TotGravado/BA por comprobante (o, si no
+    // hay BA, Importe−IVA por renglón). "CON IVA" = Total/BB por comprobante (o Importe por renglón) — se
+    // usa para comparar contra lo VENDIDO en Fenicio (que viene con IVA). El archivo puede abarcar meses.
+    const porMes = {};        // sin IVA (BA)  { "2026-06": { TimeOut: 123, ... } }
+    const porMesConIVA = {};  // con IVA (BB)  { "2026-06": { TimeOut: 150, ... } }
     const pedMesTienda = {};  // { "2026-06": { TimeOut: Set(pedidos) } }
-    const facMesTienda = {};  // { "2026-06": { TimeOut: Set(numeroFactura) } } solo para CONTAR facturas únicas
-    fab.forEach(r => {
+    const facMesTienda = {};  // { "2026-06": { TimeOut: Set(numeroFactura) } } para CONTAR facturas únicas
+    const fabAgg = fabDoc || fabLineas;
+    fabAgg.forEach(r => {
       const suc = String(r.Sucursal || "").trim();
       const tienda = mapearTienda(suc);
       if (!tienda) { if (suc) sucSinMapa.add(suc); return; }
       const m = parseMesBAS(r.Fecha) || mes;
-      const neto = (Number(r.Importe) || 0) - (Number(r.Iva) || 0);  // facturación sin IVA del renglón
+      const sinIVA = tieneBA ? (Number(r.TotGravado) || 0) : ((Number(r.Importe) || 0) - (Number(r.Iva) || 0));
+      const conIVA = tieneBA ? (Number(r.Total) || 0) : (Number(r.Importe) || 0);
       if (!porMes[m]) porMes[m] = {};
-      porMes[m][tienda] = (porMes[m][tienda] || 0) + neto;
-      const numero = (String(r.Numero || "").trim() || ("OBS:" + String(r.Observacion || "").trim())) + "|" + tienda;
+      porMes[m][tienda] = (porMes[m][tienda] || 0) + sinIVA;
+      if (!porMesConIVA[m]) porMesConIVA[m] = {};
+      porMesConIVA[m][tienda] = (porMesConIVA[m][tienda] || 0) + conIVA;
+      const numero = claveComprobante(r) + "|" + tienda;
       if (!facMesTienda[m]) facMesTienda[m] = {};
       if (!facMesTienda[m][tienda]) facMesTienda[m][tienda] = new Set();
       facMesTienda[m][tienda].add(numero);
@@ -828,14 +916,15 @@ function Metas({
       cantFacMes[m] = {};
       Object.entries(tt).forEach(([t, s]) => { cantFacMes[m][t] = s.size; });
     });
-    // NCD por mes (cantidad, monto, y también por tienda para descontar del real)
+    // NCD por mes (cantidad, monto sin IVA, y por tienda para descontar del real)
     const ncdPorMes = {};
     const ncdPorMesTienda = {};  // { "2026-06": { TimeOut: 340063, ... } }
-    ncd.forEach(r => {
+    const ncdAgg = ncdDoc || ncdLineas;
+    ncdAgg.forEach(r => {
       const suc = String(r.Sucursal || "").trim();
       const tienda = mapearTienda(suc);
       const m = parseMesBAS(r.Fecha) || mes;
-      const imp = Math.abs((Number(r.Importe) || 0) - (Number(r.Iva) || 0));  // nota de crédito neta (sin IVA)
+      const imp = Math.abs(tieneBA ? (Number(r.TotGravado) || 0) : ((Number(r.Importe) || 0) - (Number(r.Iva) || 0)));  // nota de crédito neta (sin IVA)
       if (!ncdPorMes[m]) ncdPorMes[m] = {cant:0, monto:0};
       ncdPorMes[m].cant++;
       ncdPorMes[m].monto += imp;
@@ -850,15 +939,17 @@ function Metas({
     Object.entries(pedMesTienda).forEach(([m,tt])=>{ cantPedMes[m]={}; Object.entries(tt).forEach(([t,s])=>cantPedMes[m][t]=s.size); });
     const primeraFAB = rowsBAS._primeraFAB || null;
     const basCols = rowsBAS._hdrs || [];
-    // Real NETO por mes/tienda = FABs - NCDs (para mostrar en Metas y guardar en Supabase)
+    // Real NETO por mes/tienda = FABs - NCDs (sin IVA, para mostrar en Metas y guardar en Supabase)
     const porMesNeto = {};
     Object.entries(porMes).forEach(([m,tt]) => {
       porMesNeto[m] = {};
-      Object.entries(tt).forEach(([t,fab]) => {
-        porMesNeto[m][t] = Math.max(0, fab - (ncdPorMesTienda[m]?.[t] || 0));
+      Object.entries(tt).forEach(([t,fabT]) => {
+        porMesNeto[m][t] = Math.max(0, fabT - (ncdPorMesTienda[m]?.[t] || 0));
       });
     });
-    const resumen = {porMes, porMesNeto, ncdPorMes, ncdPorMesTienda, cantPedMes, cantFacMes, meses, fabTotal:fab.length, ncdTotal:ncd.length, sucSinMapa:Array.from(sucSinMapa), colImporte:rowsBAS._colImporte, colIva:rowsBAS._colIva, basCols, primeraFAB};
+    const fabTotal = fabDoc ? fabDoc.length : fabLineas.length;
+    const ncdTotal = ncdDoc ? ncdDoc.length : ncdLineas.length;
+    const resumen = {porMes, porMesConIVA, porMesNeto, ncdPorMes, ncdPorMesTienda, cantPedMes, cantFacMes, meses, fabTotal, ncdTotal, tieneBA, sucSinMapa:Array.from(sucSinMapa), colImporte:tieneBA?rowsBAS._colTotGrav:rowsBAS._colImporte, colIva:rowsBAS._colIva, colTotGrav:rowsBAS._colTotGrav, colTotal:rowsBAS._colTotal, basCols, primeraFAB};
     setResumenBAS(resumen);
     // Posicionar la vista de metas en el mes más reciente del archivo
     const mesReciente = meses[meses.length-1];
@@ -874,7 +965,7 @@ function Metas({
         }
         const {data:kpisG} = await supa.from('kpis_globales').select('id,nombre');
         const kpiNC = kpisG?.find(k=>k.nombre.toLowerCase().includes('nota')&&k.nombre.toLowerCase().includes('cr'));
-        const ncdReciente = mesReciente && ncdPorMes[mesReciente] ? ncdPorMes[mesReciente].cant : ncd.length;
+        const ncdReciente = mesReciente && ncdPorMes[mesReciente] ? ncdPorMes[mesReciente].cant : ncdTotal;
         if(kpiNC) await supa.from('kpis_globales').update({valor:String(ncdReciente)}).eq('id',kpiNC.id);
         cargarMetas();
       } catch(e) { console.warn('Supabase _coreBAS:',e.message); }
@@ -882,6 +973,7 @@ function Metas({
   };
   const _coreCruce = async () => {
     const findCol = (sample, patterns) => Object.keys(sample).find(k => patterns.some(p => p.test(k))) || "";
+    const num = v => { const n = parseFloat(String(v == null ? "" : v).replace(/[^\d.\-]/g, "")); return isNaN(n) ? 0 : n; };
     const sF = rowsFen[0] || {};
     const colNro = findCol(sF, [/nro\.?\s*ped/i, /ped.*nro/i]) || "Nro. pedido";
     const colFechF = findCol(sF, [/fecha.*pago/i, /fecha.*com/i, /comienzo/i, /^fecha/i]) || "Fecha pago";
@@ -889,28 +981,55 @@ function Metas({
     const colEstPago = findCol(sF, [/^estado$/i]) || "Estado";
     const colImp = findCol(sF, [/importe.*total.*pedido/i, /importe.*pedido/i]) || findCol(sF, [/importe/i]) || "Importe total pedido";
     const colSku = findCol(sF, [/^sku$/i, /sku/i, /c[oó]d.*art/i]) || "SKU";
+    // Cupón / personalizada: sólo vienen en algunos exports de Fenicio (Nacional/TimeOut, no en el "clásico")
+    const colCupon = findCol(sF, [/^cup[oó]n$/i, /c[oó]digo.*cup[oó]n/i]);
+    const colMontoCup = findCol(sF, [/monto.*cup[oó]n/i]);
+    const colPers = findCol(sF, [/personalizada/i]);
+    const tieneCuponInfo = !!(colCupon || colMontoCup);
+    const hayCupon = r => {
+      const c = String(r[colCupon] || "").trim();
+      const mc = num(r[colMontoCup]);
+      return (!!c && c !== "0" && !/^no$/i.test(c)) || mc !== 0;
+    };
 
-    const esFAB = r => { const a=String(r.Abreviado||"").trim().toUpperCase(); return (a==="FAB"||a==="FA") && String(r.Anulado||"0").trim()!=="1"; };
-    const esNCD = r => { const a=String(r.Abreviado||"").trim().toUpperCase(); return (a.startsWith("NCD")||a.startsWith("NTC")||a==="NC") && String(r.Anulado||"0").trim()!=="1"; };
-    const fab = rowsBAS.filter(esFAB);
-    const ncd = rowsBAS.filter(esNCD);
+    // Comprobantes del BAS (BA/BB por documento). Se colapsa a un renglón por comprobante porque BA/BB
+    // se repiten en cada línea. Importes de nota de crédito en valor absoluto (vienen negativos).
+    const tieneBA = !!rowsBAS._tieneBA;
+    const docMonto = r => ({ ba: Math.abs(tieneBA ? (Number(r.TotGravado) || 0) : ((Number(r.Importe) || 0) - (Number(r.Iva) || 0))), bb: Math.abs(tieneBA ? (Number(r.Total) || 0) : (Number(r.Importe) || 0)) });
+    const dedupDocs = lineas => { const m = new Map(); lineas.forEach(r => { const k = claveComprobante(r); if (!m.has(k)) m.set(k, r); }); return [...m.values()]; };
+    const fab = dedupDocs(rowsBAS.filter(esFABrow));   // facturas (un renglón por comprobante)
+    const ncd = dedupDocs(rowsBAS.filter(esNCDrow));   // notas de crédito (prefijos 5004/5104/5102/5204)
 
-    // Facturas por pedido: contar FACTURAS distintas (Numero), no renglones de cada factura
+    // Facturas por pedido: con su importe SIN IVA (BA) por comprobante, para revisar duplicados.
     const factsXPed = {};
     fab.forEach(r => {
       const nro = extraerNroPedido(r.Observacion);
       if (!nro) return;
-      if (!factsXPed[nro]) factsXPed[nro] = { invoices: new Set(), total: 0 };
-      factsXPed[nro].invoices.add(String(r.Numero || r.Observacion || ""));
-      factsXPed[nro].total += Number(r.Importe) || 0;
+      const { ba, bb } = docMonto(r);
+      if (!factsXPed[nro]) factsXPed[nro] = { invoices: [], sumBA: 0, sumBB: 0, tienda: mapearTienda(r.Sucursal) };
+      factsXPed[nro].invoices.push({ label: String(r.Prefijo || "") + "/" + String(r.Numero || ""), ba, bb });
+      factsXPed[nro].sumBA += ba; factsXPed[nro].sumBB += bb;
     });
     const ncsXPed = {};
-    ncd.forEach(r => { const nro = extraerNroPedido(r.Observacion); if (nro) ncsXPed[nro] = (ncsXPed[nro] || 0) + 1; });
-    const nInvoices = nro => factsXPed[nro] ? factsXPed[nro].invoices.size : 0;
-    const netFacturas = nro => nInvoices(nro) - (ncsXPed[nro] || 0);
+    ncd.forEach(r => { const nro = extraerNroPedido(r.Observacion); if (!nro) return; const { ba } = docMonto(r); if (!ncsXPed[nro]) ncsXPed[nro] = { n: 0, ba: 0, labels: [] }; ncsXPed[nro].n++; ncsXPed[nro].ba += ba; ncsXPed[nro].labels.push(String(r.Prefijo || "") + "/" + String(r.Numero || "")); });
+    const nInvoices = nro => factsXPed[nro] ? factsXPed[nro].invoices.length : 0;
+    const netFacturas = nro => nInvoices(nro) - (ncsXPed[nro] ? ncsXPed[nro].n : 0);
+    // Duplicados: mismo pedido facturado en más de una FACTURA (descontando notas de crédito). Se muestra
+    // el importe SIN IVA de cada factura y el "duplicado neto" = lo facturado de más que sigue sin acreditar.
     const factDuplicadas = Object.keys(factsXPed)
       .filter(nro => netFacturas(nro) > 1)
-      .map(nro => ({ nro, facturas: nInvoices(nro), ncs: ncsXPed[nro] || 0, total: factsXPed[nro].total }));
+      .map(nro => {
+        const f = factsXPed[nro];
+        const nc = ncsXPed[nro] || { n: 0, ba: 0 };
+        const maxBA = f.invoices.reduce((mx, x) => Math.max(mx, x.ba), 0);
+        const dupNeto = Math.max(0, f.sumBA - maxBA - nc.ba);   // exceso facturado aún no acreditado
+        return { nro, facturas: nInvoices(nro), ncs: nc.n, total: f.sumBA, dupNeto, tienda: f.tienda || "—", detalle: f.invoices.map(x => x.label + " $" + Math.round(x.ba).toLocaleString("es-UY")).join("  ·  ") };
+      })
+      .sort((a, b) => b.dupNeto - a.dupNeto);
+    // Facturado por tienda (BA sin IVA y BB con IVA, netos de nota de crédito)
+    const factXTienda = {};
+    fab.forEach(r => { const t = mapearTienda(r.Sucursal); if (!t) return; const { ba, bb } = docMonto(r); const o = factXTienda[t] = factXTienda[t] || { facBA: 0, facBB: 0, ncdBA: 0, ncdBB: 0, nFac: 0 }; o.facBA += ba; o.facBB += bb; o.nFac++; });
+    ncd.forEach(r => { const t = mapearTienda(r.Sucursal); if (!t) return; const { ba, bb } = docMonto(r); const o = factXTienda[t] = factXTienda[t] || { facBA: 0, facBB: 0, ncdBA: 0, ncdBB: 0, nFac: 0 }; o.ncdBA += ba; o.ncdBB += bb; });
 
     // ── PCN (prendas personalizadas): sus SKU con prefijo "PCN" SÓLO viven en el Monitor WMS
     //    (columna "Articulo"), NO en los reportes de Fenicio. Se detectan acá, no en Fenicio.
@@ -941,12 +1060,30 @@ function Metas({
     rowsFen.forEach(r => {
       const nro = String(r[colNro] || "").trim();
       if (!nro) return;
-      if (!fenPed[nro]) fenPed[nro] = { nro, fecha: String(r[colFechF]||"").slice(0,10), estadoFen: String(r[colEstF]||""), estadoPago: String(r[colEstPago]||""), importe: Number(r[colImp]||0), lineas: 0, pcn: false, skusPcn: [] };
+      if (!fenPed[nro]) fenPed[nro] = { nro, fecha: String(r[colFechF]||"").slice(0,10), estadoFen: String(r[colEstF]||""), estadoPago: String(r[colEstPago]||""), importe: Number(r[colImp]||0), tienda: r._tiendaFen || "", cupon: colCupon ? String(r[colCupon]||"").trim() : "", montoCupon: colMontoCup ? num(r[colMontoCup]) : 0, conCupon: hayCupon(r), personalizada: colPers ? /^s[ií]$/i.test(String(r[colPers]||"").trim()) : false, lineas: 0, pcn: false, skusPcn: [] };
       fenPed[nro].lineas++;
     });
     // Marcar como PCN los pedidos de Fenicio que el WMS identifica con artículo personalizado
     Object.keys(pcnXVenta).forEach(v => { if (fenPed[v]) { fenPed[v].pcn = true; fenPed[v].skusPcn = pcnXVenta[v].arts.slice(); } });
     const pedDuplicados = []; // en export por línea, un pedido con varias filas es normal; no es duplicado
+
+    // Vendido por tienda (según Fenicio, CON IVA) — para contrastar con lo facturado en el BAS.
+    const ventaXTienda = {};
+    Object.values(fenPed).forEach(p => {
+      const t = p.tienda; if (!t) return;
+      const o = ventaXTienda[t] = ventaXTienda[t] || { vendido: 0, pedidos: 0, cancelado: 0, canc: 0 };
+      const canc = /cancel|anul|revers/i.test(p.estadoPago) || /cancel|anul/i.test(p.estadoFen);
+      if (canc) { o.cancelado += p.importe; o.canc++; } else { o.vendido += p.importe; o.pedidos++; }
+    });
+    // Resumen por tienda: Vendido (Fenicio, c/IVA) vs Facturado (BAS) vs lo que falta facturar.
+    const porTienda = TIENDAS_META.filter(t => t !== "MercadoLibre").map(t => {
+      const v = ventaXTienda[t] || { vendido: 0, pedidos: 0, cancelado: 0, canc: 0 };
+      const f = factXTienda[t] || { facBA: 0, facBB: 0, ncdBA: 0, ncdBB: 0, nFac: 0 };
+      const facturadoConIVA = f.facBB - f.ncdBB;
+      const facturadoSinIVA = f.facBA - f.ncdBA;   // el número que va a las metas
+      const falta = v.vendido - facturadoConIVA;   // vendido (c/IVA) − facturado (c/IVA)
+      return { tienda: t, vendido: v.vendido, pedidosVend: v.pedidos, canceladoVend: v.cancelado, nCanc: v.canc, facturadoConIVA, facturadoSinIVA, nFac: f.nFac, ncdBA: f.ncdBA, falta };
+    });
 
     const hoy = new Date().toISOString().slice(0, 10);
     // Criterio de facturación automática: SOLO se espera factura si el pedido ya fue procesado,
@@ -956,28 +1093,34 @@ function Metas({
     // todavía no se factura y no debe contar como "sin factura".
     const reLiberado = /clasificad|orden\s*liberad|liberad|pronto.*despach|despachad|tr[aá]nsito|camino|recibid[oa]?\s*(en\s*)?tienda|listo.*retir|entregad/i;
     const reDespEntr = /despachad|tr[aá]nsito|camino|recibid[oa]?\s*(en\s*)?tienda|entregad/i;
-    const grupos = { facturado: [], facturaDup: [], pendienteOK: [], pcnManual: [], revisar: [], cancelado: [], canceladoConFactura: [] };
+    const grupos = { facturado: [], facturaDup: [], pendienteOK: [], pcnManual: [], revisar: [], cancelado: [], canceladoConFactura: [], canceladoCupon: [] };
 
     Object.values(fenPed).forEach(p => {
-      const { nro, fecha, estadoFen, estadoPago, importe, pcn, skusPcn } = p;
+      const { nro, fecha, estadoFen, estadoPago, importe, pcn, personalizada, conCupon, cupon, montoCupon, skusPcn } = p;
       const wms = wmsMap[nro];
       const estadoWMS = wms ? (wms["Estado Encuentra"] || wms["Estado ecommerce"] || "—") : "No está en WMS";
       const tieneF = nInvoices(nro) > 0;
       const esDupF = netFacturas(nro) > 1;
-      const base = { nro, fecha, estadoFen, estadoPago, estadoWMS, importe, pcn, skusPcn: (skusPcn||[]).join(", ") };
-      if (/cancelad/i.test(estadoWMS) || /cancelad/i.test(estadoFen) || /cancelad/i.test(estadoPago)) {
-        // Un pedido cancelado NO debería tener factura. Si la tiene, hay que anularla a mano → avisar.
-        if (tieneF) grupos.canceladoConFactura.push({ ...base, nFact: nInvoices(nro), razon: "Cancelado CON factura — anular la factura manualmente ⚠️" });
-        else grupos.cancelado.push(base);
+      const esPcn = pcn || personalizada;
+      const base = { nro, fecha, estadoFen, estadoPago, estadoWMS, importe, pcn: esPcn, conCupon, cupon, montoCupon, skusPcn: (skusPcn||[]).join(", ") };
+      const reversado = /revers/i.test(estadoPago) || /revers/i.test(estadoFen) || /revers/i.test(estadoWMS);
+      const cancelado = /cancelad|anulad/i.test(estadoWMS) || /cancelad|anulad/i.test(estadoFen) || /cancelad|anulad/i.test(estadoPago);
+      if (cancelado || reversado) {
+        const etq = reversado && !cancelado ? "Pago reversado" : "Cancelado";
+        // Un cancelado NO debería tener factura. Si la tiene, hay que anularla a mano → avisar.
+        if (tieneF) grupos.canceladoConFactura.push({ ...base, nFact: nInvoices(nro), razon: etq + " CON factura — anular la factura manualmente ⚠️" });
+        // Con cupón web no se factura solo: hay que facturarlo a mano → categoría aparte.
+        else if (conCupon) grupos.canceladoCupon.push({ ...base, razon: etq + " con cupón web (" + (cupon || "cupón") + ") — facturar manualmente ⚠️" });
+        else grupos.cancelado.push({ ...base, razon: etq });
         return;
       }
       if (tieneF) {
-        if (esDupF) grupos.facturaDup.push({ ...base, nFact: nInvoices(nro), nNCs: ncsXPed[nro] || 0 });
+        if (esDupF) grupos.facturaDup.push({ ...base, nFact: nInvoices(nro), nNCs: ncsXPed[nro] ? ncsXPed[nro].n : 0 });
         else grupos.facturado.push(base);
         return;
       }
       // Sin factura:
-      if (pcn) { grupos.pcnManual.push({ ...base, razon: "Prenda personalizada (PCN) — facturar/forzar manualmente" }); return; }
+      if (esPcn) { grupos.pcnManual.push({ ...base, razon: "Prenda personalizada (PCN) — facturar/forzar manualmente" }); return; }
       // Solo se espera factura si el pedido fue procesado (orden liberada o más). Si no, no se factura todavía.
       const liberado = reLiberado.test(estadoFen) || reLiberado.test(estadoWMS);
       if (!liberado) { grupos.pendienteOK.push({ ...base, razon: "Sin orden liberada — todavía no se procesó (no se factura)" }); return; }
@@ -992,10 +1135,10 @@ function Metas({
       if (fenPed[v]) return; // ya procesado arriba
       const tieneF = nInvoices(v) > 0;
       const estadoWMS = info.estadoEnc || info.estadoEco || "—";
-      const base = { nro: v, fecha: info.fecha, estadoFen: "— (sólo en WMS)", estadoPago: "", estadoWMS, importe: info.importe, pcn: true, skusPcn: info.arts.join(", ") };
-      if (/cancelad/i.test(estadoWMS) || /cancelad/i.test(info.estadoEco)) {
+      const base = { nro: v, fecha: info.fecha, estadoFen: "— (sólo en WMS)", estadoPago: "", estadoWMS, importe: info.importe, pcn: true, conCupon: false, cupon: "", montoCupon: 0, skusPcn: info.arts.join(", ") };
+      if (/cancelad|anulad/i.test(estadoWMS) || /cancelad|anulad/i.test(info.estadoEco)) {
         if (tieneF) grupos.canceladoConFactura.push({ ...base, nFact: nInvoices(v), razon: "Cancelado CON factura — anular la factura manualmente ⚠️" });
-        else grupos.cancelado.push(base);
+        else grupos.cancelado.push({ ...base, razon: "Cancelado" });
         return;
       }
       if (tieneF) { grupos.facturado.push(base); return; }
@@ -1003,7 +1146,7 @@ function Metas({
     });
 
     const totalPedidos = Object.keys(fenPed).length + Object.keys(pcnXVenta).filter(v => !fenPed[v]).length;
-    const pend = { grupos, factDuplicadas, pedDuplicados, totalPedidos };
+    const pend = { grupos, factDuplicadas, pedDuplicados, totalPedidos, porTienda, tieneCuponInfo };
     setPendientes(pend);
     guardarSnapshot({ pendientes: pend });
     if (esAdmin) {
@@ -1178,13 +1321,13 @@ function Metas({
     // ── Detalle del BAS por mes (plegable) ──
     resumenBAS && h(Collapse, {
       title: "Detalle del BAS por mes",
-      subtitle: resumenBAS.fabTotal + " FAB · " + resumenBAS.ncdTotal + " NCD · " + ((resumenBAS.meses || []).map(fmtM).join(", ") || "—") + " · facturación = " + (resumenBAS.colImporte || "Importe") + " − " + (resumenBAS.colIva || "IVA"),
+      subtitle: resumenBAS.fabTotal + " facturas · " + resumenBAS.ncdTotal + " NCD · " + ((resumenBAS.meses || []).map(fmtM).join(", ") || "—") + " · " + (resumenBAS.tieneBA ? "sin IVA = " + (resumenBAS.colTotGrav || "TotGravado") + " (BA) · con IVA = " + (resumenBAS.colTotal || "Total") + " (BB)" : "facturación = " + (resumenBAS.colImporte || "Importe") + " − " + (resumenBAS.colIva || "IVA")),
       badge: esAdmin ? h(Chip, { color: C.green, soft: C.greenS }, "✓ Metas") : null
     }, h("div", { className: "space-y-4" },
-      !resumenBAS.colIva && h("div", {
+      !resumenBAS.tieneBA && !resumenBAS.colIva && h("div", {
         className: "rounded-xl px-4 py-2 text-xs font-semibold",
         style: { background: C.redS, color: C.red }
-      }, "⚠ No encontré la columna de IVA en el BAS, así que la facturación quedó CON IVA (Importe sin restar). Columnas detectadas: ", (resumenBAS.basCols || []).join(", "), ". Decime cómo se llama la columna del IVA y la ajusto."),
+      }, "⚠ No encontré ni la columna TotGravado (BA) ni la de IVA en el BAS, así que la facturación quedó CON IVA. Columnas detectadas: ", (resumenBAS.basCols || []).join(", "), ". Decime cómo se llama la columna del total sin IVA y la ajusto."),
       resumenBAS.sucSinMapa && resumenBAS.sucSinMapa.length > 0 && h("div", {
         className: "rounded-xl px-4 py-2 text-xs font-semibold",
         style: { background: C.amberS, color: C.amber }
