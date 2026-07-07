@@ -111,11 +111,11 @@ function ResultadoCruce({
     className: "px-4 py-3 border-b",
     style: { borderColor: C.line }
   }, /*#__PURE__*/React.createElement("span", { className: "text-sm font-bold", style: { color: C.ink } }, "Vendido vs. facturado por tienda"),
-    /*#__PURE__*/React.createElement("span", { className: "text-xs ml-2", style: { color: C.gray } }, "Vendido = Fenicio (c/IVA) · Facturado = BAS · Falta = lo que aún no se facturó")),
+    /*#__PURE__*/React.createElement("span", { className: "text-xs ml-2", style: { color: C.gray } }, "Vendido = Fenicio (c/IVA) · Facturado = BAS · Dif. = control (vendido − facturado) · Sin factura = pedidos a facturar")),
   /*#__PURE__*/React.createElement("div", { className: "overflow-x-auto" }, /*#__PURE__*/React.createElement("table", {
     className: "w-full", style: { fontSize: 12 }
   }, /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", { style: { background: "#F6F7F9" } },
-    ["Tienda", "Vendido c/IVA", "Facturado c/IVA", "Facturado s/IVA (metas)", "Facturas", "Falta facturar", "Sin factura (pend.)"].map((hh, i) => /*#__PURE__*/React.createElement("th", {
+    ["Tienda", "Vendido c/IVA", "Facturado c/IVA", "Facturado s/IVA (metas)", "Facturas", "Dif. vendido−facturado", "Sin factura (pend.)"].map((hh, i) => /*#__PURE__*/React.createElement("th", {
       key: hh, className: "px-3 py-2 font-bold uppercase", style: { color: C.gray, fontSize: 10, textAlign: i === 0 ? "left" : "right" }
     }, hh)))),
   /*#__PURE__*/React.createElement("tbody", null, porTienda.map(t => /*#__PURE__*/React.createElement("tr", { key: t.tienda, style: { borderTop: `1px solid ${C.line}` } },
@@ -125,7 +125,7 @@ function ResultadoCruce({
     /*#__PURE__*/React.createElement("td", { className: "px-3 py-2 tabular-nums text-right", style: { color: C.ink } }, fmtI(t.facturadoConIVA)),
     /*#__PURE__*/React.createElement("td", { className: "px-3 py-2 tabular-nums text-right font-bold", style: { color: C.green } }, fmtI(t.facturadoSinIVA)),
     /*#__PURE__*/React.createElement("td", { className: "px-3 py-2 tabular-nums text-right", style: { color: C.gray } }, t.nFac),
-    /*#__PURE__*/React.createElement("td", { className: "px-3 py-2 tabular-nums text-right font-bold", style: { color: Math.abs(t.falta) < 1000 ? C.green : t.falta > 0 ? C.amber : C.gray } }, fmtSigno(t.falta)),
+    /*#__PURE__*/React.createElement("td", { className: "px-3 py-2 tabular-nums text-right", style: { color: "#94A3B8" } }, fmtSigno(t.falta)),
     /*#__PURE__*/React.createElement("td", { className: "px-3 py-2 tabular-nums text-right", style: { color: (t.pendCount || 0) > 0 ? C.red : C.gray } }, (t.pendCount || 0) > 0 ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("span", { className: "font-bold" }, t.pendCount), " · ", fmtI(t.pendMonto)) : "—"))),
   /*#__PURE__*/React.createElement("tr", { style: { borderTop: `2px solid ${C.line}`, background: "#FAFBFC" } },
     /*#__PURE__*/React.createElement("td", { className: "px-3 py-2 font-black", style: { color: C.ink } }, "Total"),
@@ -133,7 +133,7 @@ function ResultadoCruce({
     /*#__PURE__*/React.createElement("td", { className: "px-3 py-2 tabular-nums text-right font-bold", style: { color: C.ink } }, fmtI(porTienda.reduce((a, t) => a + t.facturadoConIVA, 0))),
     /*#__PURE__*/React.createElement("td", { className: "px-3 py-2 tabular-nums text-right font-black", style: { color: C.green } }, fmtI(porTienda.reduce((a, t) => a + t.facturadoSinIVA, 0))),
     /*#__PURE__*/React.createElement("td", { className: "px-3 py-2 tabular-nums text-right", style: { color: C.gray } }, porTienda.reduce((a, t) => a + t.nFac, 0)),
-    /*#__PURE__*/React.createElement("td", { className: "px-3 py-2 tabular-nums text-right font-black", style: { color: C.amber } }, fmtSigno(porTienda.reduce((a, t) => a + t.falta, 0))),
+    /*#__PURE__*/React.createElement("td", { className: "px-3 py-2 tabular-nums text-right", style: { color: "#94A3B8" } }, fmtSigno(porTienda.reduce((a, t) => a + t.falta, 0))),
     /*#__PURE__*/React.createElement("td", { className: "px-3 py-2 tabular-nums text-right font-black", style: { color: C.red } }, porTienda.reduce((a, t) => a + (t.pendCount || 0), 0) > 0 ? porTienda.reduce((a, t) => a + (t.pendCount || 0), 0) + " · " + fmtI(porTienda.reduce((a, t) => a + (t.pendMonto || 0), 0)) : "—"))))),
   !tieneCuponInfo && (grupos.cancelado.length > 0) && /*#__PURE__*/React.createElement("div", {
     className: "rounded-xl px-4 py-2 text-xs font-semibold",
