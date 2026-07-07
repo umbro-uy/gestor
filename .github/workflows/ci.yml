@@ -1,0 +1,33 @@
+name: CI
+
+# Corre en cada Pull Request y en pushes a ramas de trabajo (no a main, que ya está publicado).
+on:
+  pull_request:
+  push:
+    branches-ignore:
+      - main
+
+jobs:
+  verificar:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Instalar dependencias
+        run: npm install
+
+      - name: Chequeo de sintaxis (node --check)
+        run: npm run check
+
+      - name: Lint (ESLint)
+        run: npm run lint
+
+      - name: Instalar Chromium para el smoke test
+        run: npx playwright install --with-deps chromium
+
+      - name: Smoke test (la app monta sin errores)
+        run: npm run smoke
