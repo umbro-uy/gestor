@@ -852,7 +852,7 @@ function Metas({
   const extraerNroPedido = obs => {
     const s = String(obs || "").trim();
     // "123456/texto" o "123456 texto"
-    const m1 = s.match(/^(\d{4,10})[\/\s]/);
+    const m1 = s.match(/^(\d{4,10})[/\s]/);
     if (m1) return m1[1];
     // Solo número (4-10 dígitos)
     const m2 = s.match(/^(\d{4,10})$/);
@@ -1020,7 +1020,7 @@ function Metas({
   };
   const _coreCruce = async () => {
     const findCol = (sample, patterns) => Object.keys(sample).find(k => patterns.some(p => p.test(k))) || "";
-    const num = v => { const n = parseFloat(String(v == null ? "" : v).replace(/[^\d.\-]/g, "")); return isNaN(n) ? 0 : n; };
+    const num = v => { const n = parseFloat(String(v == null ? "" : v).replace(/[^\d.-]/g, "")); return isNaN(n) ? 0 : n; };
     const sF = rowsFen[0] || {};
     const colNro = findCol(sF, [/nro\.?\s*ped/i, /ped.*nro/i]) || "Nro. pedido";
     const colFechF = findCol(sF, [/fecha.*pago/i, /fecha.*com/i, /comienzo/i, /^fecha/i]) || "Fecha pago";
