@@ -94,10 +94,15 @@ function ResultadoCruce({
   const tabActual = TABS.find(t => t.id === tabAct) || TABS[0];
   const POR_PAGINA = 25;
   const [pagina, setPagina] = useState(0);
+  // Filtro por tienda: se activa al clickear una fila de "Vendido vs. facturado por tienda".
+  const [filtroTienda, setFiltroTienda] = useState(null);
   const irTab = id => { setTabAct(id); setPagina(0); };
-  const totalPags = Math.max(1, Math.ceil(tabActual.arr.length / POR_PAGINA));
+  const filtrarTienda = t => { setFiltroTienda(f => f === t ? null : t); setTabAct("revisar"); setPagina(0); };
+  // La lista mostrada respeta el filtro de tienda (los conteos de las solapas siguen siendo totales).
+  const arr = filtroTienda ? tabActual.arr.filter(r => (r.tienda || "—") === filtroTienda) : tabActual.arr;
+  const totalPags = Math.max(1, Math.ceil(arr.length / POR_PAGINA));
   const pagActual = Math.min(pagina, totalPags - 1);
-  const filasPagina = tabActual.arr.slice(pagActual * POR_PAGINA, pagActual * POR_PAGINA + POR_PAGINA);
+  const filasPagina = arr.slice(pagActual * POR_PAGINA, pagActual * POR_PAGINA + POR_PAGINA);
   const sinFacturaTotal = grupos.revisar.length + grupos.pendienteOK.length + pcnArr.length;
   const sinFacturaUrgente = grupos.revisar.length;
   const sinFacturaMonto = sumImporte(grupos.revisar) + sumImporte(grupos.pendienteOK) + sumImporte(pcnArr);
@@ -111,14 +116,14 @@ function ResultadoCruce({
     className: "px-4 py-3 border-b",
     style: { borderColor: C.line }
   }, /*#__PURE__*/React.createElement("span", { className: "text-sm font-bold", style: { color: C.ink } }, "Vendido vs. facturado por tienda"),
-    /*#__PURE__*/React.createElement("span", { className: "text-xs ml-2", style: { color: C.gray } }, "Vendido = Fenicio (c/IVA) · Facturado = BAS · Dif. = control (vendido − facturado) · Sin factura = pedidos a facturar")),
+    /*#__PURE__*/React.createElement("span", { className: "text-xs ml-2", style: { color: C.gray } }, "Vendido = Fenicio (c/IVA) · Facturado = BAS · Dif. = control · Sin factura = pedidos a facturar · "), /*#__PURE__*/React.createElement("span", { className: "text-xs font-bold", style: { color: C.blue } }, "clic en una tienda para filtrar los pendientes")),
   /*#__PURE__*/React.createElement("div", { className: "overflow-x-auto" }, /*#__PURE__*/React.createElement("table", {
     className: "w-full", style: { fontSize: 12 }
   }, /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", { style: { background: "#F6F7F9" } },
     ["Tienda", "Vendido c/IVA", "Facturado c/IVA", "Facturado s/IVA (metas)", "Facturas", "Dif. vendido−facturado", "Sin factura (pend.)"].map((hh, i) => /*#__PURE__*/React.createElement("th", {
       key: hh, className: "px-3 py-2 font-bold uppercase", style: { color: C.gray, fontSize: 10, textAlign: i === 0 ? "left" : "right" }
     }, hh)))),
-  /*#__PURE__*/React.createElement("tbody", null, porTienda.map(t => /*#__PURE__*/React.createElement("tr", { key: t.tienda, style: { borderTop: `1px solid ${C.line}` } },
+  /*#__PURE__*/React.createElement("tbody", null, porTienda.map(t => /*#__PURE__*/React.createElement("tr", { key: t.tienda, onClick: () => filtrarTienda(t.tienda), title: "Filtrar pedidos sin factura de " + t.tienda, style: { borderTop: `1px solid ${C.line}`, cursor: "pointer", background: filtroTienda === t.tienda ? C.soft : "transparent" } },
     /*#__PURE__*/React.createElement("td", { className: "px-3 py-2 font-bold", style: { color: C.ink } }, t.tienda,
       t.nCanc > 0 && /*#__PURE__*/React.createElement("span", { className: "text-[10px] font-normal ml-1", style: { color: C.gray } }, "(", t.nCanc, " cancel.)")),
     /*#__PURE__*/React.createElement("td", { className: "px-3 py-2 tabular-nums text-right", style: { color: C.ink } }, fmtI(t.vendido)),
@@ -193,15 +198,17 @@ function ResultadoCruce({
     style: {
       color: tabActual.c
     }
-  }, tabActual.l.replace("⚠ ", ""), " — ", tabActual.arr.length, " pedido", tabActual.arr.length !== 1 ? "s" : ""), /*#__PURE__*/React.createElement("div", {
+  }, tabActual.l.replace("⚠ ", ""), " — ", arr.length, " pedido", arr.length !== 1 ? "s" : "", filtroTienda && /*#__PURE__*/React.createElement("span", { className: "ml-2 text-xs font-bold px-2 py-0.5 rounded-full", style: { background: C.soft, color: C.blue } }, filtroTienda, " ✕")), /*#__PURE__*/React.createElement("div", {
     className: "flex items-center gap-2"
-  }, tabActual.arr[0]?.importe != null && /*#__PURE__*/React.createElement("span", {
+  }, filtroTienda && /*#__PURE__*/React.createElement("button", {
+    onClick: () => setFiltroTienda(null), className: "text-xs font-bold", style: { color: C.blue }
+  }, "Ver todas"), arr[0]?.importe != null && /*#__PURE__*/React.createElement("span", {
     className: "text-xs font-bold",
     style: {
       color: C.gray
     }
-  }, fmtI(sumImporte(tabActual.arr))), tabActual.arr.length > 0 && /*#__PURE__*/React.createElement("button", {
-    onClick: () => exportarXLSX(tabActual.arr, `facturacion-${tabAct}`),
+  }, fmtI(sumImporte(arr))), arr.length > 0 && /*#__PURE__*/React.createElement("button", {
+    onClick: () => exportarXLSX(arr, `facturacion-${tabAct}${filtroTienda ? "-" + filtroTienda : ""}`),
     className: "text-xs font-bold px-2.5 py-1 rounded-lg flex items-center gap-1",
     style: {
       background: C.soft,
@@ -308,7 +315,7 @@ function ResultadoCruce({
     }
   }, r.razon || "—"), /*#__PURE__*/React.createElement("td", {
     className: "px-3 py-2 font-bold tabular-nums"
-  }, "$", (r.importe || 0).toLocaleString("es-UY")))))))), tabActual.arr.length > 0 && /*#__PURE__*/React.createElement("div", {
+  }, "$", (r.importe || 0).toLocaleString("es-UY")))))))), arr.length > 0 && /*#__PURE__*/React.createElement("div", {
     className: "px-4 py-2.5 flex items-center justify-between gap-2 text-xs",
     style: {
       color: C.gray,
@@ -316,7 +323,7 @@ function ResultadoCruce({
     }
   }, /*#__PURE__*/React.createElement("span", {
     className: "tabular-nums"
-  }, "Mostrando ", pagActual * POR_PAGINA + 1, "–", Math.min((pagActual + 1) * POR_PAGINA, tabActual.arr.length), " de ", tabActual.arr.length), totalPags > 1 && /*#__PURE__*/React.createElement("div", {
+  }, "Mostrando ", pagActual * POR_PAGINA + 1, "–", Math.min((pagActual + 1) * POR_PAGINA, arr.length), " de ", arr.length), totalPags > 1 && /*#__PURE__*/React.createElement("div", {
     className: "flex items-center gap-1"
   }, /*#__PURE__*/React.createElement("button", {
     onClick: () => setPagina(p => Math.max(0, p - 1)),
@@ -331,12 +338,12 @@ function ResultadoCruce({
     disabled: pagActual >= totalPags - 1,
     className: "px-2.5 py-1 rounded-lg font-bold disabled:opacity-30",
     style: { background: C.soft, color: C.blue }
-  }, "Siguiente ›"))), tabActual.arr.length === 0 && /*#__PURE__*/React.createElement("div", {
+  }, "Siguiente ›"))), arr.length === 0 && /*#__PURE__*/React.createElement("div", {
     className: "px-4 py-6 text-sm text-center",
     style: {
       color: tabAct === "pcnManual" ? C.gray : C.green
     }
-  }, tabAct === "pcnManual" ? "Los pedidos PCN (prendas personalizadas) se detectan desde el Monitor WMS (columna \"Articulo\", prefijo PCN). Si esto está vacío, cargá el Monitor Ecommerce o no hay PCN sin facturar." : "✓ Sin casos en esta categoría.")));
+  }, filtroTienda ? "Sin pedidos de " + filtroTienda + " en esta categoría." : tabAct === "pcnManual" ? "Los pedidos PCN (prendas personalizadas) se detectan desde el Monitor WMS (columna \"Articulo\", prefijo PCN). Si esto está vacío, cargá el Monitor Ecommerce o no hay PCN sin facturar." : "✓ Sin casos en esta categoría.")));
 }
 
 /* ── MesesAnio: componente separado para poder usar useState ── */
@@ -608,7 +615,7 @@ function Facturado({ resumenBAS, fmtUSD, fmtM }) {
   return h("div", { className: "bg-white rounded-2xl border p-5", style: { borderColor: C.line } },
     h("div", { className: "flex items-start justify-between gap-3 flex-wrap mb-4" },
       h("div", null,
-        h("div", { className: "text-xs font-black uppercase tracking-wide", style: { color: C.gray } }, "Facturado en el período", h("span", { className: "font-normal normal-case ml-1" }, "(sin IVA, neto de NC)")),
+        h("div", { className: "text-xs font-black uppercase tracking-wide", style: { color: C.gray } }, "Facturado en el período", h("span", { className: "font-normal normal-case ml-1" }, "(sin IVA, neto de NC · 3 tiendas del BAS)")),
         h("div", { className: "text-3xl font-black fraunces tabular-nums mt-0.5", style: { color: C.ink } }, fmtUSD(totalNeto)),
         h("div", { className: "text-xs mt-0.5", style: { color: C.gray } }, totalFac.toLocaleString("es-UY"), " facturas", nNcd > 0 ? " · " + nNcd + " NCD" : "")),
       h("div", { className: "flex items-end gap-2" },
@@ -1377,8 +1384,12 @@ function Metas({
           className: "text-sm font-bold text-white px-6 py-2.5 rounded-xl disabled:opacity-40",
           style: { background: C.blue }
         }, procesando ? "Analizando..." : "Analizar"))),
-    // ── Facturación por período (con filtro de fecha) ──
-    resumenBAS && h(Facturado, { resumenBAS, fmtUSD, fmtM }),
+    // ── Facturación por período (con filtro de fecha) — plegable, no es lo del día a día ──
+    resumenBAS && h(Collapse, {
+      title: "Facturado por período (BAS)",
+      subtitle: "Total facturado por tienda y rango de fechas · 3 tiendas del BAS (sin MercadoLibre)",
+      defaultOpen: false
+    }, h(Facturado, { resumenBAS, fmtUSD, fmtM })),
     // Avisos de datos sólo cuando algo no cuadra (no en el flujo normal)
     resumenBAS && resumenBAS.sucSinMapa && resumenBAS.sucSinMapa.length > 0 && h("div", {
       className: "rounded-xl px-4 py-2 text-xs font-semibold",

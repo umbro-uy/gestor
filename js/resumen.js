@@ -31,6 +31,7 @@ function Resumen({
   const [metasM, setMetasM] = useState([]);
   const [seguiR, setSeguiR] = useState([]);
   const [pendSnap, setPendSnap] = useState(null); // pendientes del último cruce (analisis_snapshot)
+  const [resSnap, setResSnap] = useState(null); // resumen del BAS (analisis_snapshot) — misma fuente que Análisis
   const [operSnap, setOperSnap] = useState(null); // resumen de Operativa (operativa_snapshot) — fuente única
   const [operSnapOK, setOperSnapOK] = useState(null); // null=sin chequear, false=falta crear la tabla
   // Se recarga CADA VEZ que se entra a Resumen (activo), no solo al montar: así refleja al instante
@@ -45,7 +46,7 @@ function Resumen({
         for (;;) { const { data: pg, error } = await supa.from("operativa_seguimiento").select("pedido,dias,estado_fen,estado_wms,deposito").range(desde, desde + 999); if (error || !pg || !pg.length) break; all = all.concat(pg); if (pg.length < 1000) break; desde += 1000; }
         if (vivo) setSeguiR(all);
       } catch (_) {}
-      try { const { data: snap } = await supa.from("analisis_snapshot").select("pendientes").eq("id", "ultimo").maybeSingle(); if (vivo && snap && snap.pendientes) setPendSnap(snap.pendientes); } catch (_) {}
+      try { const { data: snap } = await supa.from("analisis_snapshot").select("pendientes,resumen").eq("id", "ultimo").maybeSingle(); if (vivo && snap) { if (snap.pendientes) setPendSnap(snap.pendientes); if (snap.resumen) setResSnap(snap.resumen); } } catch (_) {}
       try {
         const { data: os, error } = await supa.from("operativa_snapshot").select("*").eq("id", "ultimo").maybeSingle();
         if (!vivo) return;
@@ -59,14 +60,27 @@ function Resumen({
   const anioActual = String(new Date().getFullYear());
   const sumReal = arr => arr.reduce((a, m) => a + Number(m.real || 0), 0);
   const sumMeta = arr => arr.reduce((a, m) => a + Number(m.meta || 0), 0);
-  const realMes = sumReal(metasM.filter(m => m.mes === mesActual));
+  // Facturación REAL: para las 3 tiendas del BAS se toma porMesNeto del snapshot de Análisis (misma
+  // fuente y mismo cálculo que la pestaña Análisis, así Resumen y Análisis SIEMPRE coinciden).
+  // MercadoLibre es carga manual → viene de metas_mensuales. Si todavía no hay snapshot, cae a metas.real.
+  const realTienda = (m, t) => {
+    if (t !== "MercadoLibre" && resSnap && resSnap.porMesNeto && resSnap.porMesNeto[m] && resSnap.porMesNeto[m][t] != null) {
+      return Number(resSnap.porMesNeto[m][t]);
+    }
+    const row = metasM.find(x => x.mes === m && x.tienda === t);
+    return Number((row && row.real) || 0);
+  };
+  const TIENDAS_R = ["TimeOut", "Tienda Nacional", "Classico", "MercadoLibre"];
+  const realDeMes = m => TIENDAS_R.reduce((a, t) => a + realTienda(m, t), 0);
+  const mesesAnio = Array.from({ length: 12 }, (_, i) => anioActual + "-" + String(i + 1).padStart(2, "0"));
+  const realMes = realDeMes(mesActual);
   const metaMes = sumMeta(metasM.filter(m => m.mes === mesActual));
   const pctMes = metaMes > 0 ? Math.round(realMes / metaMes * 100) : null;
   const colMes = pctMes == null ? C.gray : pctMes >= 100 ? C.green : pctMes >= 70 ? C.amber : C.red;
   const OBJ_ANUAL = 100000000;
-  const realAnio = sumReal(metasM.filter(m => String(m.mes || "").startsWith(anioActual)));
+  const realAnio = mesesAnio.reduce((a, m) => a + realDeMes(m), 0);
   const pctAnio = Math.round(realAnio / OBJ_ANUAL * 100);
-  const chartData = Array.from({ length: 12 }, (_, i) => { const m = anioActual + "-" + String(i + 1).padStart(2, "0"); return { m, real: sumReal(metasM.filter(x => x.mes === m)), meta: sumMeta(metasM.filter(x => x.mes === m)) }; });
+  const chartData = mesesAnio.map(m => ({ m, real: realDeMes(m), meta: sumMeta(metasM.filter(x => x.mes === m)) }));
   const maxChart = Math.max(1, ...chartData.map(c => Math.max(c.real, c.meta)));
   const esEnt = r => /entregad/i.test(String(r.estado_fen || "") + " " + String(r.estado_wms || ""));
   const esCanc = r => /cancel/i.test(String(r.estado_fen || "") + " " + String(r.estado_wms || ""));
@@ -105,7 +119,7 @@ function Resumen({
     leadtime_desp_op: operSnap ? operSnap.leadtime_despacho : null,
     leadtime_ent_op: operSnap ? operSnap.leadtime_entrega : null,
     pendientes_factura: pendTotR,
-    facturacion_mes: metasM.length ? realMes : null
+    facturacion_mes: (metasM.length || resSnap) ? realMes : null
   };
   const esAuto = id => FUENTES.some(f => f.id === id);
   const fmtAuto = id => {
