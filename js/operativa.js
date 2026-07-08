@@ -194,14 +194,18 @@ function Operativa({ yo, activo, syncTick }) {
     const despachadoWMS = String(estadoWMS).toLowerCase().includes("despach");
     const movidoWMS = despachadoWMS || String(estadoWMS).toLowerCase().includes("recib");
     const listoRetiro = /listo.*retir|recibid/i.test(estadoFen) || /listo.*retir/i.test(estadoWMS) || /recibid[oa]?\s*(en\s*)?tienda/i.test(estadoWMS);
+    // Fenicio "Listo para retirar": el despacho/entrega de nosotros ya se cumplió y ahora depende del
+    // cliente ir a retirarlo → NO es atraso (aunque lleve días en ese estado).
+    const fenListoRetiro = /listo.*retir/i.test(estadoFen);
     // ATRASO (definición de operaciones): más de N días hábiles en el mismo estado de Encuentra, que
-    // NO figure "Pedido entregado" en Fenicio y que NO esté cancelado (ni en WMS ni en Fenicio).
-    // Incluye los casos en que el WMS dio despachado/recibido pero Fenicio aún no marca entregado
-    // (esos requieren seguimiento manual). Sólo salen los entregados en Fenicio y los cancelados.
-    const atrasado = !cancelado && !fenEntregado && dias != null && dias > filtroDias;
-    const critico = !cancelado && !fenEntregado && dias != null && dias > 10;
-    // "Validar despacho": Monitor dice despachado pero Fenicio no pasó a entregado tras +2 días hábiles
-    const posibleNoDespacho = despachadoWMS && !fenEntregado && (diasDesp != null ? diasDesp > 2 : (dias != null && dias > 2));
+    // NO figure "Pedido entregado" ni "Listo para retirar" en Fenicio y que NO esté cancelado (ni en
+    // WMS ni en Fenicio). Incluye los casos en que el WMS dio despachado/recibido pero Fenicio aún no
+    // marca entregado (esos requieren seguimiento manual).
+    const atrasado = !cancelado && !fenEntregado && !fenListoRetiro && dias != null && dias > filtroDias;
+    const critico = !cancelado && !fenEntregado && !fenListoRetiro && dias != null && dias > 10;
+    // "Validar despacho": Monitor dice despachado pero Fenicio no pasó a entregado tras +2 días hábiles.
+    // Si Fenicio está "Listo para retirar", el despacho SÍ se cumplió (pickup) → no hay que validar nada.
+    const posibleNoDespacho = despachadoWMS && !fenEntregado && !fenListoRetiro && (diasDesp != null ? diasDesp > 2 : (dias != null && dias > 2));
     const inconsistente = posibleNoDespacho;
     const estancado = !row.sinWMS && !cancelado && !fenEntregado && !listoRetiro && !movidoWMS && dias != null && dias > 2;
     // Forma de entrega: Click & Collect ≠ Pickup ≠ Envío a domicilio
