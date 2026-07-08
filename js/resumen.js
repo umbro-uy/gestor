@@ -82,7 +82,9 @@ function Resumen({
   const pctAnio = Math.round(realAnio / OBJ_ANUAL * 100);
   const chartData = mesesAnio.map(m => ({ m, real: realDeMes(m), meta: sumMeta(metasM.filter(x => x.mes === m)) }));
   const maxChart = Math.max(1, ...chartData.map(c => Math.max(c.real, c.meta)));
-  const esEnt = r => /entregad/i.test(String(r.estado_fen || "") + " " + String(r.estado_wms || ""));
+  // "Entregado" a efectos de atraso = entregado en FENICIO (mismo criterio que Operativa: un pedido
+  // que el WMS dio por entregado pero Fenicio aún no, sigue contando). Sólo aplica al fallback sin snapshot.
+  const esEnt = r => /entregad/i.test(String(r.estado_fen || ""));
   const esCanc = r => /cancel/i.test(String(r.estado_fen || "") + " " + String(r.estado_wms || ""));
   const activosOp = seguiR.filter(r => !esEnt(r) && !esCanc(r));
   // Cifras de Operativa: SIEMPRE preferimos el snapshot de Operativa (las mismas cifras que se ven

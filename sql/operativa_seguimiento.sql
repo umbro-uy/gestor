@@ -15,6 +15,7 @@ create table if not exists public.operativa_seguimiento (
   estado_eco       text,
   deposito         text,
   fecha_despacho   text,
+  fecha_estado     text,
   forma_entrega    text,
   fecha_entrega    text,
   importe          text,
@@ -33,6 +34,8 @@ alter table public.operativa_seguimiento add column if not exists forma_entrega 
 alter table public.operativa_seguimiento add column if not exists fecha_entrega text;
 alter table public.operativa_seguimiento add column if not exists comentario_fecha timestamptz;
 alter table public.operativa_seguimiento add column if not exists historial jsonb default '[]'::jsonb;
+-- fecha_estado = fecha del último movimiento del WMS (para medir "días hábiles en el estado actual").
+alter table public.operativa_seguimiento add column if not exists fecha_estado text;
 
 -- Mantener "actualizado" al día en cada cambio
 create or replace function public.set_actualizado()

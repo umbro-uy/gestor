@@ -176,28 +176,34 @@ function Operativa({ yo, activo, syncTick }) {
   const calcDeriv = row => {
     const estadoFen = row.estadoFen || "-";
     const estadoWMS = row.estadoWMS || "-";
-    const dias = diasHab(row.fecha);
+    // ATRASO se mide por "días hábiles en el estado ACTUAL de Encuentra" = días desde el último
+    // movimiento del WMS (fechaEstado = la fecha más reciente entre las fechas de cada estado). Si el
+    // pedido no está en el WMS, se cae a la fecha del pedido. Este es el número que define el atraso.
+    const fechaRef = row.fechaEstado && row.fechaEstado !== "-" ? row.fechaEstado : row.fecha;
+    const dias = diasHab(fechaRef);
     const diasDesp = row.fechaDespacho && row.fechaDespacho !== "-" ? diasHab(row.fechaDespacho) : null;
     const fenEntregado = String(estadoFen).toLowerCase().includes("entregado");
     const wmsEntregado = String(estadoWMS).toLowerCase().includes("entregado");
     const entregado = fenEntregado || wmsEntregado;
-    const cancelado = String(estadoFen).toLowerCase().includes("cancel") || String(estadoWMS).toLowerCase().includes("cancel");
+    const canceladoWMS = /cancel|anul/i.test(estadoWMS);
+    const canceladoFen = /cancel|anul/i.test(estadoFen) || /cancel|anul/i.test(String(row.estadoPagoFen || ""));
+    const cancelado = canceladoWMS || canceladoFen;
+    // Un cancelado debería estar cancelado en AMBAS plataformas. Si sólo lo está en una → discrepancia
+    // a revisar (se avisa, pero igual no cuenta como atraso).
+    const cancelDiscrep = canceladoWMS !== canceladoFen;
     const despachadoWMS = String(estadoWMS).toLowerCase().includes("despach");
     const movidoWMS = despachadoWMS || String(estadoWMS).toLowerCase().includes("recib");
-    // "Listo para retirar" / "Pedido recibido en tienda": el pedido ya está pronto en el pickup
-    // esperando al cliente. No hay nada que accionar → NO es atrasado/crítico/estancado.
     const listoRetiro = /listo.*retir|recibid/i.test(estadoFen) || /listo.*retir/i.test(estadoWMS) || /recibid[oa]?\s*(en\s*)?tienda/i.test(estadoWMS);
-    // Atrasado/crítico = el pedido NO se entregó a tiempo. Cuenta cualquier pedido no entregado, no
-    // cancelado y que no esté esperando al cliente (listo para retirar / recibido en tienda), que pasó el
-    // tiempo — INCLUYE los despachados / en tránsito sin entregar (esos son demoras de ENTREGA, también
-    // son atrasos, confirmado por la usuaria). Solo salen los ya entregados, cancelados o en pickup.
-    const activoNoEntreg = !entregado && !cancelado && !listoRetiro;
-    const atrasado = activoNoEntreg && dias != null && dias > filtroDias;
-    const critico = activoNoEntreg && dias != null && dias > 10;
+    // ATRASO (definición de operaciones): más de N días hábiles en el mismo estado de Encuentra, que
+    // NO figure "Pedido entregado" en Fenicio y que NO esté cancelado (ni en WMS ni en Fenicio).
+    // Incluye los casos en que el WMS dio despachado/recibido pero Fenicio aún no marca entregado
+    // (esos requieren seguimiento manual). Sólo salen los entregados en Fenicio y los cancelados.
+    const atrasado = !cancelado && !fenEntregado && dias != null && dias > filtroDias;
+    const critico = !cancelado && !fenEntregado && dias != null && dias > 10;
     // "Validar despacho": Monitor dice despachado pero Fenicio no pasó a entregado tras +2 días hábiles
     const posibleNoDespacho = despachadoWMS && !fenEntregado && (diasDesp != null ? diasDesp > 2 : (dias != null && dias > 2));
     const inconsistente = posibleNoDespacho;
-    const estancado = !row.sinWMS && !entregado && !cancelado && !listoRetiro && !movidoWMS && dias != null && dias > 2;
+    const estancado = !row.sinWMS && !cancelado && !fenEntregado && !listoRetiro && !movidoWMS && dias != null && dias > 2;
     // Forma de entrega: Click & Collect ≠ Pickup ≠ Envío a domicilio
     const fe = String(row.formaEntrega || "").toLowerCase();
     const clickCollect = fe.includes("click") || fe.includes("collect");
@@ -216,7 +222,7 @@ function Operativa({ yo, activo, syncTick }) {
     // Tiempo de entrega: días corridos compra → entrega real (fecha de entrega de Fenicio). Mide la experiencia del cliente.
     let leadtimeEntrega = null;
     if (row.fechaEntrega && String(row.fechaEntrega).trim() && row.fechaEntrega !== "-") { const a = parseFecha(row.fecha), b = parseFecha(row.fechaEntrega); if (a && b && b >= a) leadtimeEntrega = Math.round((b - a) / 86400000); }
-    return { ...row, dias, diasDesp, fenEntregado, wmsEntregado, entregado, cancelado, despachadoWMS, atrasado, critico, inconsistente, posibleNoDespacho, estancado, listoRetiro, clickCollect, pickup, sinStock, ccDepo9, leadtime, leadtimeEntrega };
+    return { ...row, dias, diasDesp, fenEntregado, wmsEntregado, entregado, cancelado, cancelDiscrep, despachadoWMS, atrasado, critico, inconsistente, posibleNoDespacho, estancado, listoRetiro, clickCollect, pickup, sinStock, ccDepo9, leadtime, leadtimeEntrega };
   };
   // Carga el seguimiento ya analizado (con comentarios) al entrar a la pestaña, para que el análisis quede fijo.
   const cargarSeguimiento = useCallback(async () => {
@@ -246,7 +252,7 @@ function Operativa({ yo, activo, syncTick }) {
         pedido: d.pedido, tienda: d.tienda || "-", fecha: d.fecha || "",
         estadoFen: d.estado_fen || "-", estadoWMS: d.estado_wms || "-", estadoEco: d.estado_eco || "-",
         deposito: d.deposito || "-", fechaDespacho: d.fecha_despacho || "-", importe: d.importe || "-",
-        formaEntrega: d.forma_entrega || "", fechaEntrega: d.fecha_entrega || "", sinWMS: !!d.sin_wms,
+        fechaEstado: d.fecha_estado || "", formaEntrega: d.forma_entrega || "", fechaEntrega: d.fecha_entrega || "", sinWMS: !!d.sin_wms,
         historial: histDe(d), accionado: !!d.accionado
       })));
     } catch (_) { setPersistOK(false); }
@@ -294,6 +300,8 @@ function Operativa({ yo, activo, syncTick }) {
     const colNro = findCol(sF, [/nro\.?\s*ped/i, /ped.*nro/i, /n[uú]mero.*ped/i, /^pedido$/i]) || "Nro. pedido";
     const colFechF = findCol(sF, [/fecha.*comien/i, /comienzo/i, /fecha.*pago/i, /^fecha/i]) || "Fecha comienzo";
     const colEstF = findCol(sF, [/estado.*entr/i, /entr.*estado/i]) || "Estado entrega";
+    // "Estado" (de pago) de Fenicio: acá aparece "Cancelada" (el "Estado entrega" nunca dice cancelado).
+    const colEstPagoF = findCol(sF, [/^estado$/i]) || "";
     // Fecha de entrega REAL = la de Fenicio (estado "Pedido entregado"), no la del WMS (expedición manual, poco confiable)
     // Se prueban varios nombres habituales de la columna de fecha de entrega de Fenicio.
     const colFechEntFen = findCol(sF, [/fecha.*entreg/i, /entreg.*fecha/i, /fecha.*recib/i, /recib.*fecha/i, /fecha.*finaliz/i, /finaliz.*fecha/i, /fecha.*complet/i]) || "";
@@ -308,6 +316,25 @@ function Operativa({ yo, activo, syncTick }) {
     // Forma de entrega (Click & Collect / Pickup / Envío a domicilio) y fecha de entrega real (para lead time)
     const colForma = findCol(sW, [/forma.*entr/i, /m[eé]todo.*entr/i, /tipo.*entr/i, /modalidad/i]) || "Forma entrega";
     const colFechEntrega = findCol(sW, [/fecha.*entrega.*real/i, /fecha.*entrega/i]) || "Fecha entrega real";
+    // Fechas de cada estado del WMS. La MÁS RECIENTE = cuándo entró al estado actual → sirve para medir
+    // "días hábiles en el estado actual" (el atraso). Se detectan con patrones específicos para no
+    // confundir "Fecha despacho" con "Fecha pronto para despachar".
+    const colsFechaWMS = [
+      findCol(sW, [/^fecha\s*pedido/i]),
+      findCol(sW, [/^fecha\s*confirmad/i]),
+      findCol(sW, [/^fecha\s*procesad/i]),
+      findCol(sW, [/pronto.*despach/i]),
+      findCol(sW, [/^fecha\s*despach/i]),
+      findCol(sW, [/recibid.*tienda/i]),
+      findCol(sW, [/fecha\s*entrega\s*real/i])
+    ].filter(Boolean);
+    const fechaUltMovWMS = w => {
+      let best = null;
+      colsFechaWMS.forEach(c => { const d = parseFecha(w[c]); if (d && (!best || d > best)) best = d; });
+      if (!best) return "";
+      const p = n => String(n).padStart(2, "0");
+      return best.getFullYear() + "-" + p(best.getMonth() + 1) + "-" + p(best.getDate()) + " " + p(best.getHours()) + ":" + p(best.getMinutes());
+    };
     setCcCol(colForma || "");
     // PCN (prendas personalizadas): se detectan por el artículo del WMS con prefijo "PCN".
     // No se cuentan como Depo 0 (su falta de stock es normal, se hacen a pedido).
@@ -352,10 +379,12 @@ function Operativa({ yo, activo, syncTick }) {
         tienda: r._tiendaFen || "-",
         fecha: String(fecha).slice(0, 16).replace("T", " "),
         estadoFen,
+        estadoPagoFen: colEstPagoF ? String(r[colEstPagoF] || "") : "",
         estadoWMS,
         estadoEco,
         deposito,
         fechaDespacho,
+        fechaEstado: wms ? fechaUltMovWMS(wms) : "",
         formaEntrega,
         fechaEntrega,
         importe,
@@ -394,6 +423,7 @@ function Operativa({ yo, activo, syncTick }) {
           estadoEco: w[colEstEco] || p.estadoEco,
           deposito: String(w[colDep] || p.deposito || "-").replace(/\.0+$/, "").trim(),
           fechaDespacho: w[colFechDesp] || p.fechaDespacho,
+          fechaEstado: fechaUltMovWMS(w),
           sinWMS: false
         } : p;
         return { ...calcDeriv(base), retenido: true };
@@ -413,10 +443,12 @@ function Operativa({ yo, activo, syncTick }) {
           estado_fen: r.estadoFen, estado_wms: r.estadoWMS, estado_eco: r.estadoEco,
           deposito: r.deposito, fecha_despacho: r.fechaDespacho, importe: String(r.importe),
           forma_entrega: r.formaEntrega || "", fecha_entrega: r.fechaEntrega || "",
+          fecha_estado: r.fechaEstado || "",
           dias: r.dias, click_collect: !!r.clickCollect, sin_wms: !!r.sinWMS
         }));
         for (let i = 0; i < payload.length; i += 200) {
-          await supa.from("operativa_seguimiento").upsert(payload.slice(i, i + 200), { onConflict: "pedido" });
+          const { error: eSeg } = await supa.from("operativa_seguimiento").upsert(payload.slice(i, i + 200), { onConflict: "pedido" });
+          if (eSeg) { setSnapError("Seguimiento: " + (eSeg.message || eSeg.details || JSON.stringify(eSeg)) + " — quizá falta correr sql/operativa_seguimiento.sql (columna fecha_estado)."); break; }
         }
         // Limpiar de la tabla COMPARTIDA los pedidos que ya NO van en la planilla, así el seguimiento
         // refleja el ÚLTIMO cruce y no arrastra pedidos viejos (era la causa de que Resumen mostrara
@@ -485,6 +517,8 @@ function Operativa({ yo, activo, syncTick }) {
   const sinWMS = resultado ? resultado.filter(r => r.sinWMS && !esCancEf(r)) : [];
   const sinStockArr = resultado ? resultado.filter(r => r.sinStock && !esCancEf(r)) : [];
   const ccDepo9Arr = resultado ? resultado.filter(r => r.ccDepo9) : [];
+  // Cancelados en una sola plataforma (WMS o Fenicio, pero no ambas) → a revisar / alinear.
+  const cancelDiscreps = resultado ? resultado.filter(r => r.cancelDiscrep) : [];
   const entregadosArr = resultado ? resultado.filter(r => r.entregado) : [];
   const tasaCumpl = resultado && resultado.length ? Math.round(entregadosArr.length / resultado.length * 100) : 0;
   // KPIs operativos por PERCENTIL (no promedio): el P90 refleja la experiencia de la gran mayoría
@@ -557,7 +591,7 @@ function Operativa({ yo, activo, syncTick }) {
       const limpias = rows.map(r => ({
         "Nro. pedido": r.pedido, "Tienda": r.tienda, "Fecha compra": r.fecha,
         "Estado Fenicio": r.estadoFen, "Estado WMS": r.estadoWMS, "Estado Eco": r.estadoEco,
-        "Dias habiles": r.dias, "Deposito": r.deposito, "Fecha despacho": r.fechaDespacho,
+        "Dias en estado": r.dias, "Fecha ult. movimiento": r.fechaEstado || "", "Deposito": r.deposito, "Fecha despacho": r.fechaDespacho,
         "Forma entrega": r.formaEntrega || (r.clickCollect ? "Click & Collect" : r.pickup ? "Pickup" : ""),
         "Tiempo a despacho (dias)": r.leadtime != null ? r.leadtime : "",
         "Tiempo de entrega (dias)": r.leadtimeEntrega != null ? r.leadtimeEntrega : "",
@@ -566,6 +600,7 @@ function Operativa({ yo, activo, syncTick }) {
         "Atrasado": r.atrasado ? "Si" : "", "Critico": r.critico ? "Si" : "",
         "Validar despacho": r.posibleNoDespacho ? "Si" : "", "Estancado": r.estancado ? "Si" : "",
         "Depo 0": r.sinStock ? "Si" : "", "C&C a depo 9": r.ccDepo9 ? "Si" : "", "Entregado": r.entregado ? "Si" : "",
+        "Cancelado (WMS o Fenicio)": r.cancelado ? "Si" : "", "Cancel. en una sola plataforma": r.cancelDiscrep ? "Si" : "",
         "Accionado": r.accionado ? "Si" : "",
         "Comentarios (historial)": (r.historial || []).map(h => (h.f ? new Date(h.f).toLocaleString("es-UY") + ": " : "") + h.t).join(" | ")
       }));
@@ -600,7 +635,7 @@ function Operativa({ yo, activo, syncTick }) {
   // Opciones de filtros (estados de Fenicio y depósitos presentes en el análisis)
   const estadosFenOpts = resultado ? Array.from(new Set(resultado.map(r => r.estadoFen).filter(Boolean))).sort() : [];
   const depositosOpts = resultado ? Array.from(new Set(resultado.map(r => r.deposito).filter(d => d && d !== "-"))).sort() : [];
-  const vistaBase = vistaTab === "criticos" ? criticos : vistaTab === "nodespacho" ? noDespacho : vistaTab === "estancados" ? estancados : vistaTab === "depo0" ? sinStockArr : vistaTab === "sinwms" ? sinWMS : vistaTab === "todos" ? (resultado || []) : atrasados;
+  const vistaBase = vistaTab === "criticos" ? criticos : vistaTab === "nodespacho" ? noDespacho : vistaTab === "estancados" ? estancados : vistaTab === "depo0" ? sinStockArr : vistaTab === "sinwms" ? sinWMS : vistaTab === "canceldiscrep" ? cancelDiscreps : vistaTab === "todos" ? (resultado || []) : atrasados;
   const buscarT = buscar.trim().toLowerCase();
   const diaISO = f => { const d = parseFecha(f); return d ? d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0") : ""; };
   const vistaRows = vistaBase.filter(r =>
@@ -686,7 +721,7 @@ function Operativa({ yo, activo, syncTick }) {
   }, /*#__PURE__*/React.createElement("div", { className: "overflow-auto", style: { maxHeight: "72vh" } }, /*#__PURE__*/React.createElement("table", {
     className: "w-full min-w-[1080px] sheet", style: { fontSize: 12 }
   }, /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", null,
-    ["Pedido", "Acción / comentarios", "Acc.", "Tienda", "Fecha compra", "Estado Fenicio", "Estado WMS", "Dias hab.", "Deposito", "C&C"].map(h => /*#__PURE__*/React.createElement("th", {
+    ["Pedido", "Acción / comentarios", "Acc.", "Tienda", "Fecha compra", "Estado Fenicio", "Estado WMS", "Días en estado", "Deposito", "C&C"].map(h => /*#__PURE__*/React.createElement("th", {
       key: h, className: "px-3 py-2 text-left font-bold uppercase", style: { color: C.gray, fontSize: 10, whiteSpace: "nowrap" }
     }, h)))), /*#__PURE__*/React.createElement("tbody", null, rows.map((r, i) => { const rowBg = r.accionado ? "#F0FDF4" : r.atrasado ? "#FFF5F5" : r.inconsistente ? "#FFFBEB" : "#fff"; return /*#__PURE__*/React.createElement("tr", {
     key: r.pedido || i,
@@ -921,7 +956,8 @@ function Operativa({ yo, activo, syncTick }) {
     /*#__PURE__*/React.createElement(AccionCard, { label: "Críticos +10d", value: criticos.length, color: "#B91C1C", tab: "criticos", sub: "Muy atrasados" }),
     /*#__PURE__*/React.createElement(AccionCard, { label: "Validar despacho", value: noDespacho.length, color: "#B45309", tab: "nodespacho", sub: "Despachado WMS, sin entregar" }),
     /*#__PURE__*/React.createElement(AccionCard, { label: "Estancados", value: estancados.length, color: C.amber, tab: "estancados", sub: "Sin avanzar +2d" }),
-    /*#__PURE__*/React.createElement(AccionCard, { label: "Depo 0", value: sinStockArr.length, color: "#7C3AED", tab: "depo0", sub: "Sin stock — acción manual" })),
+    /*#__PURE__*/React.createElement(AccionCard, { label: "Depo 0", value: sinStockArr.length, color: "#7C3AED", tab: "depo0", sub: "Sin stock — acción manual" }),
+    cancelDiscreps.length > 0 && /*#__PURE__*/React.createElement(AccionCard, { label: "Cancel. a alinear", value: cancelDiscreps.length, color: "#0891B2", tab: "canceldiscrep", sub: "Cancelado en una sola plataforma" })),
   /*#__PURE__*/React.createElement("div", { className: "text-[11px] font-bold uppercase tracking-widest", style: { color: C.blue } }, "Cumplimiento del mes"),
   /*#__PURE__*/React.createElement(ProgresoMes, null),
   /*#__PURE__*/React.createElement("div", { className: "grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2" },
