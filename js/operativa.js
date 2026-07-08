@@ -176,11 +176,10 @@ function Operativa({ yo, activo, syncTick }) {
   const calcDeriv = row => {
     const estadoFen = row.estadoFen || "-";
     const estadoWMS = row.estadoWMS || "-";
-    // ATRASO se mide por "días hábiles en el estado ACTUAL de Encuentra" = días desde el último
-    // movimiento del WMS (fechaEstado = la fecha más reciente entre las fechas de cada estado). Si el
-    // pedido no está en el WMS, se cae a la fecha del pedido. Este es el número que define el atraso.
-    const fechaRef = row.fechaEstado && row.fechaEstado !== "-" ? row.fechaEstado : row.fecha;
-    const dias = diasHab(fechaRef);
+    // "Días hábiles" = desde la COMPRA (Fecha pago) hasta hoy. El atraso se mide por la antigüedad del
+    // pedido (decisión de operaciones), no por el tiempo en el estado actual. fechaEstado (último
+    // movimiento del WMS) se conserva sólo como dato informativo en el export.
+    const dias = diasHab(row.fecha);
     const diasDesp = row.fechaDespacho && row.fechaDespacho !== "-" ? diasHab(row.fechaDespacho) : null;
     const fenEntregado = String(estadoFen).toLowerCase().includes("entregado");
     const wmsEntregado = String(estadoWMS).toLowerCase().includes("entregado");
@@ -599,7 +598,7 @@ function Operativa({ yo, activo, syncTick }) {
       const limpias = rows.map(r => ({
         "Nro. pedido": r.pedido, "Tienda": r.tienda, "Fecha compra": r.fecha,
         "Estado Fenicio": r.estadoFen, "Estado WMS": r.estadoWMS, "Estado Eco": r.estadoEco,
-        "Dias en estado": r.dias, "Fecha ult. movimiento": r.fechaEstado || "", "Deposito": r.deposito, "Fecha despacho": r.fechaDespacho,
+        "Dias habiles (desde compra)": r.dias, "Fecha ult. movimiento WMS": r.fechaEstado || "", "Deposito": r.deposito, "Fecha despacho": r.fechaDespacho,
         "Forma entrega": r.formaEntrega || (r.clickCollect ? "Click & Collect" : r.pickup ? "Pickup" : ""),
         "Tiempo a despacho (dias)": r.leadtime != null ? r.leadtime : "",
         "Tiempo de entrega (dias)": r.leadtimeEntrega != null ? r.leadtimeEntrega : "",
@@ -729,7 +728,7 @@ function Operativa({ yo, activo, syncTick }) {
   }, /*#__PURE__*/React.createElement("div", { className: "overflow-auto", style: { maxHeight: "72vh" } }, /*#__PURE__*/React.createElement("table", {
     className: "w-full min-w-[1080px] sheet", style: { fontSize: 12 }
   }, /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", null,
-    ["Pedido", "Acción / comentarios", "Acc.", "Tienda", "Fecha compra", "Estado Fenicio", "Estado WMS", "Días en estado", "Deposito", "C&C"].map(h => /*#__PURE__*/React.createElement("th", {
+    ["Pedido", "Acción / comentarios", "Acc.", "Tienda", "Fecha compra", "Estado Fenicio", "Estado WMS", "Días hábiles", "Deposito", "C&C"].map(h => /*#__PURE__*/React.createElement("th", {
       key: h, className: "px-3 py-2 text-left font-bold uppercase", style: { color: C.gray, fontSize: 10, whiteSpace: "nowrap" }
     }, h)))), /*#__PURE__*/React.createElement("tbody", null, rows.map((r, i) => { const rowBg = r.accionado ? "#F0FDF4" : r.atrasado ? "#FFF5F5" : r.inconsistente ? "#FFFBEB" : "#fff"; return /*#__PURE__*/React.createElement("tr", {
     key: r.pedido || i,
