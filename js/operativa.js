@@ -257,10 +257,12 @@ function Operativa({ yo, activo, syncTick }) {
       })));
     } catch (_) { setPersistOK(false); }
   }, []);
-  // Al ENTRAR a la pestaña (o al montar) traemos siempre lo último compartido: así ves lo que cargó el
-  // equipo y coincide con Resumen. (Esto resetea "mi cruce local".)
+  // Al ENTRAR a la pestaña (o al montar) traemos lo último compartido: así ves lo que cargó el equipo y
+  // coincide con Resumen. PERO si ya cruzaste archivos en esta sesión, NO recargamos: no hay que pisar
+  // tu cruce al cambiar de pestaña y volver (era la causa de que "se borrara todo" al volver a Operativa).
   useEffect(() => {
     if (activo === false) return;
+    if (cruceEnSesion.current) return;
     cargarSeguimiento();
   }, [activo, cargarSeguimiento]);
   // En VIVO: cuando otro usuario cambia algo (realtime → syncTick) recargamos, salvo que estés en medio
