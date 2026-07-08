@@ -180,6 +180,8 @@ function Operativa({ yo, activo, syncTick }) {
     // pedido (decisión de operaciones), no por el tiempo en el estado actual. fechaEstado (último
     // movimiento del WMS) se conserva sólo como dato informativo en el export.
     const dias = diasHab(row.fecha);
+    // Días hábiles en el ESTADO ACTUAL del WMS = desde el último cambio de estado (último movimiento).
+    const diasEstado = row.fechaEstado && row.fechaEstado !== "-" ? diasHab(row.fechaEstado) : null;
     const diasDesp = row.fechaDespacho && row.fechaDespacho !== "-" ? diasHab(row.fechaDespacho) : null;
     const fenEntregado = String(estadoFen).toLowerCase().includes("entregado");
     const wmsEntregado = String(estadoWMS).toLowerCase().includes("entregado");
@@ -206,7 +208,10 @@ function Operativa({ yo, activo, syncTick }) {
     // Si Fenicio está "Listo para retirar", el despacho SÍ se cumplió (pickup) → no hay que validar nada.
     const posibleNoDespacho = despachadoWMS && !fenEntregado && !fenListoRetiro && (diasDesp != null ? diasDesp > 2 : (dias != null && dias > 2));
     const inconsistente = posibleNoDespacho;
-    const estancado = !row.sinWMS && !cancelado && !fenEntregado && !listoRetiro && !movidoWMS && dias != null && dias > 2;
+    // ESTANCADO: hace +2 días hábiles que NO cambia de estado en el WMS y Fenicio no lo da por entregado
+    // ni "Listo para retirar". Aplica a CUALQUIER estado (ej.: "Despachado" +2d sin pasar a entregado en
+    // Fenicio = falla el despacho). Es independiente del atraso: un pedido puede ser estancado y/o atraso.
+    const estancado = !cancelado && !fenEntregado && !fenListoRetiro && diasEstado != null && diasEstado > 2;
     // Forma de entrega: Click & Collect ≠ Pickup ≠ Envío a domicilio
     const fe = String(row.formaEntrega || "").toLowerCase();
     const clickCollect = fe.includes("click") || fe.includes("collect");
@@ -225,7 +230,7 @@ function Operativa({ yo, activo, syncTick }) {
     // Tiempo de entrega: días corridos compra → entrega real (fecha de entrega de Fenicio). Mide la experiencia del cliente.
     let leadtimeEntrega = null;
     if (row.fechaEntrega && String(row.fechaEntrega).trim() && row.fechaEntrega !== "-") { const a = parseFecha(row.fecha), b = parseFecha(row.fechaEntrega); if (a && b && b >= a) leadtimeEntrega = Math.round((b - a) / 86400000); }
-    return { ...row, dias, diasDesp, fenEntregado, wmsEntregado, entregado, cancelado, cancelDiscrep, despachadoWMS, atrasado, critico, inconsistente, posibleNoDespacho, estancado, listoRetiro, clickCollect, pickup, sinStock, ccDepo9, leadtime, leadtimeEntrega };
+    return { ...row, dias, diasEstado, diasDesp, fenEntregado, wmsEntregado, entregado, cancelado, cancelDiscrep, despachadoWMS, atrasado, critico, inconsistente, posibleNoDespacho, estancado, listoRetiro, clickCollect, pickup, sinStock, ccDepo9, leadtime, leadtimeEntrega };
   };
   // Carga el seguimiento ya analizado (con comentarios) al entrar a la pestaña, para que el análisis quede fijo.
   const cargarSeguimiento = useCallback(async () => {
@@ -493,7 +498,7 @@ function Operativa({ yo, activo, syncTick }) {
           atrasados: finalRows.filter(r => r.atrasado && !esCancEf(r)).length,
           criticos: finalRows.filter(r => r.critico && !esCancEf(r)).length,
           no_despacho: finalRows.filter(r => r.posibleNoDespacho && !esCancEf(r)).length,
-          estancados: finalRows.filter(r => r.estancado && !r.atrasado && !esCancEf(r)).length,
+          estancados: finalRows.filter(r => r.estancado && !esCancEf(r)).length,
           depo0: finalRows.filter(r => r.sinStock && !esCancEf(r)).length,
           sin_wms: finalRows.filter(r => r.sinWMS && !esCancEf(r)).length,
           entregados: finalRows.filter(r => r.entregado).length,
@@ -518,9 +523,8 @@ function Operativa({ yo, activo, syncTick }) {
   const criticos = resultado ? resultado.filter(r => r.critico && !esCancEf(r)) : [];
   const inconsistentes = resultado ? resultado.filter(r => r.inconsistente && !esCancEf(r)) : [];
   const noDespacho = resultado ? resultado.filter(r => r.posibleNoDespacho && !esCancEf(r)) : [];
-  // Estancado = aviso previo (sin avanzar +2d). En cuanto SUPERA los 3 días hábiles ya cuenta como
-  // ATRASADO, así que acá se muestran sólo los que todavía no son atraso (para no contarlos dos veces).
-  const estancados = resultado ? resultado.filter(r => r.estancado && !r.atrasado && !esCancEf(r)) : [];
+  // Estancado y atrasado son métricas independientes: un pedido puede ser estancado, atrasado, o ambos.
+  const estancados = resultado ? resultado.filter(r => r.estancado && !esCancEf(r)) : [];
   const sinWMS = resultado ? resultado.filter(r => r.sinWMS && !esCancEf(r)) : [];
   const sinStockArr = resultado ? resultado.filter(r => r.sinStock && !esCancEf(r)) : [];
   const ccDepo9Arr = resultado ? resultado.filter(r => r.ccDepo9) : [];
@@ -962,7 +966,7 @@ function Operativa({ yo, activo, syncTick }) {
     /*#__PURE__*/React.createElement(AccionCard, { label: "Atrasados +" + filtroDias + "d", value: atrasados.length, color: C.red, tab: "atrasados", sub: "Sin entregar a tiempo" }),
     /*#__PURE__*/React.createElement(AccionCard, { label: "Críticos +10d", value: criticos.length, color: "#B91C1C", tab: "criticos", sub: "Muy atrasados" }),
     /*#__PURE__*/React.createElement(AccionCard, { label: "Validar despacho", value: noDespacho.length, color: "#B45309", tab: "nodespacho", sub: "Despachado WMS, sin entregar" }),
-    /*#__PURE__*/React.createElement(AccionCard, { label: "Estancados", value: estancados.length, color: C.amber, tab: "estancados", sub: "Sin avanzar +2d (aún no atraso)" }),
+    /*#__PURE__*/React.createElement(AccionCard, { label: "Estancados", value: estancados.length, color: C.amber, tab: "estancados", sub: "Mismo estado WMS +2d sin entregar" }),
     /*#__PURE__*/React.createElement(AccionCard, { label: "Depo 0", value: sinStockArr.length, color: "#7C3AED", tab: "depo0", sub: "Sin stock — acción manual" }),
     cancelDiscreps.length > 0 && /*#__PURE__*/React.createElement(AccionCard, { label: "Cancel. a alinear", value: cancelDiscreps.length, color: "#0891B2", tab: "canceldiscrep", sub: "Cancelado en una sola plataforma" })),
   /*#__PURE__*/React.createElement("div", { className: "text-[11px] font-bold uppercase tracking-widest", style: { color: C.blue } }, "Cumplimiento del mes"),
