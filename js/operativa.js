@@ -494,7 +494,7 @@ function Operativa({ yo, activo, syncTick }) {
           atrasados: finalRows.filter(r => r.atrasado && !esCancEf(r)).length,
           criticos: finalRows.filter(r => r.critico && !esCancEf(r)).length,
           no_despacho: finalRows.filter(r => r.posibleNoDespacho && !esCancEf(r)).length,
-          estancados: finalRows.filter(r => r.estancado && !esCancEf(r)).length,
+          estancados: finalRows.filter(r => r.estancado && !r.atrasado && !esCancEf(r)).length,
           depo0: finalRows.filter(r => r.sinStock && !esCancEf(r)).length,
           sin_wms: finalRows.filter(r => r.sinWMS && !esCancEf(r)).length,
           entregados: finalRows.filter(r => r.entregado).length,
@@ -519,7 +519,9 @@ function Operativa({ yo, activo, syncTick }) {
   const criticos = resultado ? resultado.filter(r => r.critico && !esCancEf(r)) : [];
   const inconsistentes = resultado ? resultado.filter(r => r.inconsistente && !esCancEf(r)) : [];
   const noDespacho = resultado ? resultado.filter(r => r.posibleNoDespacho && !esCancEf(r)) : [];
-  const estancados = resultado ? resultado.filter(r => r.estancado && !esCancEf(r)) : [];
+  // Estancado = aviso previo (sin avanzar +2d). En cuanto SUPERA los 3 días hábiles ya cuenta como
+  // ATRASADO, así que acá se muestran sólo los que todavía no son atraso (para no contarlos dos veces).
+  const estancados = resultado ? resultado.filter(r => r.estancado && !r.atrasado && !esCancEf(r)) : [];
   const sinWMS = resultado ? resultado.filter(r => r.sinWMS && !esCancEf(r)) : [];
   const sinStockArr = resultado ? resultado.filter(r => r.sinStock && !esCancEf(r)) : [];
   const ccDepo9Arr = resultado ? resultado.filter(r => r.ccDepo9) : [];
@@ -961,7 +963,7 @@ function Operativa({ yo, activo, syncTick }) {
     /*#__PURE__*/React.createElement(AccionCard, { label: "Atrasados +" + filtroDias + "d", value: atrasados.length, color: C.red, tab: "atrasados", sub: "Sin entregar a tiempo" }),
     /*#__PURE__*/React.createElement(AccionCard, { label: "Críticos +10d", value: criticos.length, color: "#B91C1C", tab: "criticos", sub: "Muy atrasados" }),
     /*#__PURE__*/React.createElement(AccionCard, { label: "Validar despacho", value: noDespacho.length, color: "#B45309", tab: "nodespacho", sub: "Despachado WMS, sin entregar" }),
-    /*#__PURE__*/React.createElement(AccionCard, { label: "Estancados", value: estancados.length, color: C.amber, tab: "estancados", sub: "Sin avanzar +2d" }),
+    /*#__PURE__*/React.createElement(AccionCard, { label: "Estancados", value: estancados.length, color: C.amber, tab: "estancados", sub: "Sin avanzar +2d (aún no atraso)" }),
     /*#__PURE__*/React.createElement(AccionCard, { label: "Depo 0", value: sinStockArr.length, color: "#7C3AED", tab: "depo0", sub: "Sin stock — acción manual" }),
     cancelDiscreps.length > 0 && /*#__PURE__*/React.createElement(AccionCard, { label: "Cancel. a alinear", value: cancelDiscreps.length, color: "#0891B2", tab: "canceldiscrep", sub: "Cancelado en una sola plataforma" })),
   /*#__PURE__*/React.createElement("div", { className: "text-[11px] font-bold uppercase tracking-widest", style: { color: C.blue } }, "Cumplimiento del mes"),
