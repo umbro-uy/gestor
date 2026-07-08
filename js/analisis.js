@@ -98,7 +98,8 @@ function ResultadoCruce({
   const [filtroTienda, setFiltroTienda] = useState(null);
   const irTab = id => { setTabAct(id); setPagina(0); };
   const filtrarTienda = t => { setFiltroTienda(f => f === t ? null : t); setTabAct("revisar"); setPagina(0); };
-  // La lista mostrada respeta el filtro de tienda (los conteos de las solapas siguen siendo totales).
+  // La lista mostrada y los conteos de las solapas respetan el filtro de tienda.
+  const arrDe = t => filtroTienda ? t.arr.filter(r => (r.tienda || "—") === filtroTienda) : t.arr;
   const arr = filtroTienda ? tabActual.arr.filter(r => (r.tienda || "—") === filtroTienda) : tabActual.arr;
   const totalPags = Math.max(1, Math.ceil(arr.length / POR_PAGINA));
   const pagActual = Math.min(pagina, totalPags - 1);
@@ -155,9 +156,9 @@ function ResultadoCruce({
         key: k.id, onClick: () => irTab(k.id),
         className: "text-left rounded-2xl p-4 border transition-all", style: { background: k.s, borderColor: k.c + "55" }
       },
-        /*#__PURE__*/React.createElement("div", { className: "text-2xl font-black fraunces tabular-nums", style: { color: k.c } }, k.arr.length),
+        /*#__PURE__*/React.createElement("div", { className: "text-2xl font-black fraunces tabular-nums", style: { color: k.c } }, arrDe(k).length),
         /*#__PURE__*/React.createElement("div", { className: "text-xs font-bold mt-0.5", style: { color: k.c } }, k.l),
-        /*#__PURE__*/React.createElement("div", { className: "text-[11px] mt-0.5", style: { color: C.gray } }, k.sub, k.arr.length > 0 ? " · " + fmtI(sumImporte(k.arr)) : "")))),
+        /*#__PURE__*/React.createElement("div", { className: "text-[11px] mt-0.5", style: { color: C.gray } }, k.sub, arrDe(k).length > 0 ? " · " + fmtI(sumImporte(arrDe(k))) : "")))),
     grupos.pendienteOK.length > 0 && /*#__PURE__*/React.createElement("div", { className: "text-[11px]", style: { color: C.gray } }, grupos.pendienteOK.length, " pedidos aún en proceso (no se facturan todavía)")), /*#__PURE__*/React.createElement("div", {
     className: "grid grid-cols-3 sm:grid-cols-4 xl:grid-cols-8 gap-2"
   }, TABS.map(t => /*#__PURE__*/React.createElement("button", {
@@ -171,11 +172,11 @@ function ResultadoCruce({
     }
   }, /*#__PURE__*/React.createElement("div", {
     className: "text-xl font-black tabular-nums fraunces"
-  }, t.arr.length), /*#__PURE__*/React.createElement("div", {
+  }, arrDe(t).length), /*#__PURE__*/React.createElement("div", {
     className: "text-[10px] font-bold uppercase tracking-wide mt-0.5 leading-tight opacity-90"
-  }, t.l.replace("⚠ ", "")), t.arr[0]?.importe != null && /*#__PURE__*/React.createElement("div", {
+  }, t.l.replace("⚠ ", "")), arrDe(t)[0]?.importe != null && /*#__PURE__*/React.createElement("div", {
     className: "text-[10px] mt-0.5 opacity-75"
-  }, fmtI(sumImporte(t.arr)))))), ((grupos.canceladoConFactura || []).length + (factDuplicadas || []).length) > 0 && /*#__PURE__*/React.createElement("div", {
+  }, fmtI(sumImporte(arrDe(t))))))), ((grupos.canceladoConFactura || []).length + (factDuplicadas || []).length) > 0 && /*#__PURE__*/React.createElement("div", {
     className: "text-xs px-1 flex flex-wrap items-center gap-x-2 gap-y-1", style: { color: C.gray }
   }, /*#__PURE__*/React.createElement("span", { className: "font-bold uppercase tracking-wide text-[10px]" }, "A revisar:"),
     (grupos.canceladoConFactura || []).length > 0 && /*#__PURE__*/React.createElement("button", {
@@ -1201,10 +1202,11 @@ function Metas({
       grupos.pcnManual.push({ ...base, razon: `Prenda personalizada (PCN) sin factura — forzar manualmente${info.arts.length ? " · " + info.arts.length + " art." : ""}` });
     });
 
-    // Pendientes sin factura POR TIENDA (para diferenciar la facturación faltante por tienda).
-    // Incluye "revisar" (deberían tener factura y no la tienen) + PCN a facturar a mano.
+    // Pendientes sin factura POR TIENDA. Cuenta SOLO "revisar" (automática) para que coincida
+    // exactamente con el listado al que lleva el clic (la solapa Revisar filtrada por tienda).
+    // Los PCN y cupones tienen su propia tarjeta/solapa (el filtro por tienda se mantiene al cambiar).
     const pendXTienda = {};
-    grupos.revisar.concat(grupos.pcnManual).forEach(r => {
+    grupos.revisar.forEach(r => {
       const t = r.tienda || "—";
       const o = pendXTienda[t] = pendXTienda[t] || { count: 0, monto: 0 };
       o.count++; o.monto += r.importe || 0;
