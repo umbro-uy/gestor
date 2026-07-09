@@ -530,6 +530,16 @@ function Operativa({ yo, activo, syncTick }) {
   const ccDepo9Arr = resultado ? resultado.filter(r => r.ccDepo9) : [];
   // Cancelados en una sola plataforma (WMS o Fenicio, pero no ambas) → a revisar / alinear.
   const cancelDiscreps = resultado ? resultado.filter(r => r.cancelDiscrep) : [];
+  // Cifras de las tarjetas: si NO estoy cruzando en vivo, uso el snapshot COMPARTIDO (las MISMAS que ve
+  // Resumen) para que Operativa y Resumen coincidan siempre. Al recargar la pestaña se re-derivan los
+  // pedidos guardados con la fecha de hoy (más días encima) e inflan el conteo; el snapshot es la cifra
+  // oficial del último cruce. Al cruzar archivos (cruceEnSesion) uso el cálculo en vivo.
+  const usarSnap = !cruceEnSesion.current && !!operSnap;
+  const nAtrasados = usarSnap ? (operSnap.atrasados || 0) : atrasados.length;
+  const nCriticos = usarSnap ? (operSnap.criticos || 0) : criticos.length;
+  const nNoDespacho = usarSnap ? (operSnap.no_despacho || 0) : noDespacho.length;
+  const nEstancados = usarSnap ? (operSnap.estancados || 0) : estancados.length;
+  const nDepo0 = usarSnap ? (operSnap.depo0 || 0) : sinStockArr.length;
   const entregadosArr = resultado ? resultado.filter(r => r.entregado) : [];
   const tasaCumpl = resultado && resultado.length ? Math.round(entregadosArr.length / resultado.length * 100) : 0;
   // KPIs operativos por PERCENTIL (no promedio): el P90 refleja la experiencia de la gran mayoría
@@ -963,12 +973,13 @@ function Operativa({ yo, activo, syncTick }) {
     filtroDia && /*#__PURE__*/React.createElement("div", { className: "text-[11px] mt-2 font-semibold", style: { color: C.blue } }, "Mostrando pedidos del " + filtroDia.slice(8, 10) + "/" + filtroDia.slice(5, 7) + "/" + filtroDia.slice(0, 4))),
   /*#__PURE__*/React.createElement("div", { className: "text-[11px] font-bold uppercase tracking-widest", style: { color: C.blue } }, "Acción rápida"),
   /*#__PURE__*/React.createElement("div", { className: "grid grid-cols-2 lg:grid-cols-5 gap-2" },
-    /*#__PURE__*/React.createElement(AccionCard, { label: "Atrasados +" + filtroDias + "d", value: atrasados.length, color: C.red, tab: "atrasados", sub: "Sin entregar a tiempo" }),
-    /*#__PURE__*/React.createElement(AccionCard, { label: "Críticos +10d", value: criticos.length, color: "#B91C1C", tab: "criticos", sub: "Muy atrasados" }),
-    /*#__PURE__*/React.createElement(AccionCard, { label: "Validar despacho", value: noDespacho.length, color: "#B45309", tab: "nodespacho", sub: "Despachado WMS, sin entregar" }),
-    /*#__PURE__*/React.createElement(AccionCard, { label: "Estancados", value: estancados.length, color: C.amber, tab: "estancados", sub: "Mismo estado WMS +2d sin entregar" }),
-    /*#__PURE__*/React.createElement(AccionCard, { label: "Depo 0", value: sinStockArr.length, color: "#7C3AED", tab: "depo0", sub: "Sin stock — acción manual" }),
+    /*#__PURE__*/React.createElement(AccionCard, { label: "Atrasados +" + filtroDias + "d", value: nAtrasados, color: C.red, tab: "atrasados", sub: "Sin entregar a tiempo" }),
+    /*#__PURE__*/React.createElement(AccionCard, { label: "Críticos +10d", value: nCriticos, color: "#B91C1C", tab: "criticos", sub: "Muy atrasados" }),
+    /*#__PURE__*/React.createElement(AccionCard, { label: "Validar despacho", value: nNoDespacho, color: "#B45309", tab: "nodespacho", sub: "Despachado WMS, sin entregar" }),
+    /*#__PURE__*/React.createElement(AccionCard, { label: "Estancados", value: nEstancados, color: C.amber, tab: "estancados", sub: "Mismo estado WMS +2d sin entregar" }),
+    /*#__PURE__*/React.createElement(AccionCard, { label: "Depo 0", value: nDepo0, color: "#7C3AED", tab: "depo0", sub: "Sin stock — acción manual" }),
     cancelDiscreps.length > 0 && /*#__PURE__*/React.createElement(AccionCard, { label: "Cancel. a alinear", value: cancelDiscreps.length, color: "#0891B2", tab: "canceldiscrep", sub: "Cancelado en una sola plataforma" })),
+  usarSnap && atrasados.length !== nAtrasados && /*#__PURE__*/React.createElement("div", { className: "text-[11px] -mt-1", style: { color: C.gray } }, "Cifras del último cruce compartido (coinciden con Resumen). Volvé a subir los archivos y cruzar para actualizar el detalle."),
   /*#__PURE__*/React.createElement("div", { className: "text-[11px] font-bold uppercase tracking-widest", style: { color: C.blue } }, "Cumplimiento del mes"),
   /*#__PURE__*/React.createElement(ProgresoMes, null),
   /*#__PURE__*/React.createElement("div", { className: "grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2" },
