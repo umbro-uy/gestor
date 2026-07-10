@@ -56,6 +56,7 @@ function Operativa({ yo, activo, syncTick }) {
   const [snapError, setSnapError] = useState(null); // mensaje si falló guardar el resumen compartido (operativa_snapshot)
   const [operSnap, setOperSnap] = useState(null); // resumen COMPARTIDO (operativa_snapshot): números que ven todos, = Resumen
   const cruceEnSesion = useRef(false); // true si crucé archivos en esta sesión (no interrumpir mi cruce con el realtime)
+  const supresRealtime = useRef(0); // timestamp del último cambio LOCAL (comentario/accionado): evita que el eco de realtime recargue la lista y te mande al principio
   const [filtroEstadoFen, setFiltroEstadoFen] = useState("");
   const [filtroDeposito, setFiltroDeposito] = useState("");
   const [filtroDiasMin, setFiltroDiasMin] = useState("");
@@ -278,18 +279,26 @@ function Operativa({ yo, activo, syncTick }) {
   useEffect(() => {
     if (activo === false) return;
     if (cruceEnSesion.current) return;
+    // Si el cambio lo hiciste vos (comentario/accionado) hace un instante, el propio upsert dispara el
+    // realtime → syncTick. Como ya actualizamos la fila en pantalla, NO recargamos: recargar reconstruiría
+    // toda la lista y te mandaría al principio (perdés la posición). El cambio de otros usuarios llega
+    // sin ese upsert local reciente, así que sí se recarga.
+    if (Date.now() - supresRealtime.current < 5000) return;
     cargarSeguimiento();
   }, [syncTick, cargarSeguimiento]);
   // Marca accionado (no toca el historial de comentarios).
   const guardarSeguimiento = async (pedido, campos) => {
+    supresRealtime.current = Date.now();
     setResultado(prev => (prev || []).map(r => r.pedido === pedido ? { ...r, ...campos } : r));
     setComentarios(prev => ({ ...prev, [pedido]: { ...(prev[pedido] || {}), ...campos } }));
     try { await supa.from("operativa_seguimiento").upsert({ pedido, ...campos }, { onConflict: "pedido" }); } catch (_) {}
+    supresRealtime.current = Date.now();
   };
   // Agrega una nota al historial del pedido (bitácora con fecha; no se pisan las anteriores).
   const agregarComentario = async (pedido, texto) => {
     const t = String(texto || "").trim();
     if (!t) return;
+    supresRealtime.current = Date.now();
     const entry = { t, f: new Date().toISOString(), a: (yo && yo.nombre) || "" };
     // nuevo se calcula de forma síncrona (no dentro del updater de setState) para que el upsert
     // persista el historial completo y no un array vacío por el batching de React.
@@ -297,6 +306,7 @@ function Operativa({ yo, activo, syncTick }) {
     setComentarios(prev => ({ ...prev, [pedido]: { ...(prev[pedido] || {}), historial: [...((prev[pedido] && prev[pedido].historial) || []), entry] } }));
     setResultado(prev => (prev || []).map(r => r.pedido === pedido ? { ...r, historial: [...(r.historial || []), entry] } : r));
     try { await supa.from("operativa_seguimiento").upsert({ pedido, historial: nuevo, comentario: t, comentario_fecha: entry.f }, { onConflict: "pedido" }); } catch (_) {}
+    supresRealtime.current = Date.now();
   };
   const cruzar = () => {
     if (!rowsA.length || !rowsB.length) {
