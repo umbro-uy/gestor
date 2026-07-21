@@ -502,6 +502,10 @@ function Operativa({ yo, activo, syncTick }) {
         const mk = bk[mkNow] ? mkNow : Object.keys(bk).sort().pop();
         const bC = mk ? bk[mk] : null;
         const serie = bC ? { mesKey: mk, total: bC.total, entregados: bC.entreg, cumpl: bC.total ? Math.round(bC.entreg / bC.total * 100) : null, despachoP90: percentil(bC.lt, PCTL), entregaP90: percentil(bC.ltE, PCTL) } : null;
+        // Calendario por día de compra (total/entregados): en seguimiento solo se persisten los
+        // accionables, así que sin esto otro usuario vería el calendario todo en 0%.
+        const calM = {};
+        finalRows.forEach(r => { const d = parseFecha(r.fecha); if (!d) return; const dia = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); const b = calM[dia] || (calM[dia] = { dia, total: 0, entregados: 0 }); b.total++; if (r.entregado) b.entregados++; });
         const snap = {
           id: "ultimo",
           total: finalRows.length,
@@ -516,10 +520,17 @@ function Operativa({ yo, activo, syncTick }) {
           leadtime_despacho: percentil(lt, PCTL),
           leadtime_entrega: percentil(ltE, PCTL),
           serie: serie,
+          calendario: Object.values(calM).sort((a, b) => a.dia.localeCompare(b.dia)),
           actualizado: new Date().toISOString()
         };
         setOperSnap(snap); // que las tarjetas de volumen/cumplimiento muestren mi cruce al instante
-        const { error } = await supa.from("operativa_snapshot").upsert(snap, { onConflict: "id" });
+        let { error } = await supa.from("operativa_snapshot").upsert(snap, { onConflict: "id" });
+        // Si la tabla todavía no tiene la columna "calendario" (falta correr la migración), guardar
+        // el resto del snapshot igual: mejor números compartidos sin calendario que nada.
+        if (error && /calendario/i.test(error.message || "")) {
+          const { calendario: _cal, ...sinCal } = snap;
+          ({ error } = await supa.from("operativa_snapshot").upsert(sinCal, { onConflict: "id" }));
+        }
         // Si falla (tabla/columna/permiso), lo mostramos en vez de tragarlo en silencio.
         setSnapError(error ? (error.message || error.details || JSON.stringify(error)) : null);
       } catch (e) { setSnapError(e.message || String(e)); }
@@ -600,6 +611,11 @@ function Operativa({ yo, activo, syncTick }) {
   const fmtMesLargo = m => ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"][(+m.split("-")[1]) - 1] + " " + m.slice(0, 4);
   // % de cumplimiento de entrega por día de compra (para el calendario)
   const calData = useMemo(() => {
+    // Sin cruce en esta sesión: usar el calendario COMPARTIDO del snapshot. Los pedidos guardados en
+    // seguimiento son solo los accionables (sin entregados), y calcular de ahí daría todo 0%.
+    if (!cruceEnSesion.current && operSnap && Array.isArray(operSnap.calendario) && operSnap.calendario.length) {
+      return operSnap.calendario.map(x => ({ ...x, pct: x.total ? Math.round(x.entregados / x.total * 100) : 0 })).sort((a, b) => a.dia.localeCompare(b.dia));
+    }
     if (!resultado) return [];
     const m = {};
     resultado.forEach(r => {
@@ -610,7 +626,7 @@ function Operativa({ yo, activo, syncTick }) {
       m[dia].total++; if (r.entregado) m[dia].entregados++;
     });
     return Object.values(m).map(x => ({ ...x, pct: x.total ? Math.round(x.entregados / x.total * 100) : 0 })).sort((a, b) => a.dia.localeCompare(b.dia));
-  }, [resultado]);
+  }, [resultado, operSnap]);
   const mesesCal = Array.from(new Set(calData.map(d => d.dia.slice(0, 7)))).sort();
   const calSelMes = mesesCal.includes(calMes) ? calMes : (mesesCal[mesesCal.length - 1] || "");
   const calDias = calData.filter(d => d.dia.slice(0, 7) === calSelMes);

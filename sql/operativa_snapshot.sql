@@ -19,8 +19,12 @@ create table if not exists public.operativa_snapshot (
   leadtime_despacho int,                   -- tiempo a despacho (P90, días)
   leadtime_entrega  int,                   -- tiempo de entrega (P90, días)
   serie             jsonb,                 -- reservado para tendencia mensual (opcional)
+  calendario        jsonb,                 -- [{dia, total, entregados}] por día de compra (para el calendario compartido)
   actualizado       timestamptz default now()
 );
+
+-- Si la tabla ya existía de antes, agregá las columnas nuevas:
+alter table public.operativa_snapshot add column if not exists calendario jsonb;
 
 alter table public.operativa_snapshot enable row level security;
 
