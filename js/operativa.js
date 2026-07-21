@@ -506,6 +506,7 @@ function Operativa({ yo, activo, syncTick }) {
         // accionables, así que sin esto otro usuario vería el calendario todo en 0%.
         const calM = {};
         finalRows.forEach(r => { const d = parseFecha(r.fecha); if (!d) return; const dia = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); const b = calM[dia] || (calM[dia] = { dia, total: 0, entregados: 0 }); b.total++; if (r.entregado) b.entregados++; });
+        const calArr = Object.values(calM).sort((a, b) => a.dia.localeCompare(b.dia));
         const snap = {
           id: "ultimo",
           total: finalRows.length,
@@ -519,8 +520,10 @@ function Operativa({ yo, activo, syncTick }) {
           tasa_cumpl: finalRows.length ? Math.round(finalRows.filter(r => r.entregado).length / finalRows.length * 100) : 0,
           leadtime_despacho: percentil(lt, PCTL),
           leadtime_entrega: percentil(ltE, PCTL),
-          serie: serie,
-          calendario: Object.values(calM).sort((a, b) => a.dia.localeCompare(b.dia)),
+          // El calendario va TAMBIÉN adentro de "serie" (columna jsonb que ya existe en la tabla):
+          // así se comparte aunque no se haya corrido la migración que agrega la columna "calendario".
+          serie: { ...(serie || {}), calendario: calArr },
+          calendario: calArr,
           actualizado: new Date().toISOString()
         };
         setOperSnap(snap); // que las tarjetas de volumen/cumplimiento muestren mi cruce al instante
@@ -601,7 +604,8 @@ function Operativa({ yo, activo, syncTick }) {
   const volTasa = operSnap ? (operSnap.tasa_cumpl || 0) : tasaCumpl;
   const volDesp = operSnap ? operSnap.leadtime_despacho : leadtimeProm;
   const volEnt = operSnap ? operSnap.leadtime_entrega : leadtimeEntProm;
-  const serieSnap = operSnap && operSnap.serie ? operSnap.serie : null;
+  // "serie" ahora también transporta el calendario; solo cuenta como serie mensual si trae mesKey.
+  const serieSnap = operSnap && operSnap.serie && operSnap.serie.mesKey ? operSnap.serie : null;
   const cumplShown = serieSnap ? serieSnap.cumpl : cumplCur;
   const despShown = serieSnap ? serieSnap.despachoP90 : despCur;
   const entShown = serieSnap ? serieSnap.entregaP90 : entCur;
@@ -610,11 +614,15 @@ function Operativa({ yo, activo, syncTick }) {
   const totalMesShown = serieSnap ? serieSnap.total : (bCur ? bCur.total : null);
   const fmtMesLargo = m => ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"][(+m.split("-")[1]) - 1] + " " + m.slice(0, 4);
   // % de cumplimiento de entrega por día de compra (para el calendario)
+  // Calendario COMPARTIDO del último cruce: puede venir en la columna "calendario" o adentro de
+  // "serie" (si la tabla no tiene la columna nueva). null = el último cruce no lo guardó.
+  const calComp = operSnap ? (Array.isArray(operSnap.calendario) && operSnap.calendario.length ? operSnap.calendario
+    : (operSnap.serie && Array.isArray(operSnap.serie.calendario) && operSnap.serie.calendario.length ? operSnap.serie.calendario : null)) : null;
   const calData = useMemo(() => {
     // Sin cruce en esta sesión: usar el calendario COMPARTIDO del snapshot. Los pedidos guardados en
     // seguimiento son solo los accionables (sin entregados), y calcular de ahí daría todo 0%.
-    if (!cruceEnSesion.current && operSnap && Array.isArray(operSnap.calendario) && operSnap.calendario.length) {
-      return operSnap.calendario.map(x => ({ ...x, pct: x.total ? Math.round(x.entregados / x.total * 100) : 0 })).sort((a, b) => a.dia.localeCompare(b.dia));
+    if (!cruceEnSesion.current && calComp) {
+      return calComp.map(x => ({ ...x, pct: x.total ? Math.round(x.entregados / x.total * 100) : 0 })).sort((a, b) => a.dia.localeCompare(b.dia));
     }
     if (!resultado) return [];
     const m = {};
@@ -626,7 +634,7 @@ function Operativa({ yo, activo, syncTick }) {
       m[dia].total++; if (r.entregado) m[dia].entregados++;
     });
     return Object.values(m).map(x => ({ ...x, pct: x.total ? Math.round(x.entregados / x.total * 100) : 0 })).sort((a, b) => a.dia.localeCompare(b.dia));
-  }, [resultado, operSnap]);
+  }, [resultado, calComp]);
   const mesesCal = Array.from(new Set(calData.map(d => d.dia.slice(0, 7)))).sort();
   const calSelMes = mesesCal.includes(calMes) ? calMes : (mesesCal[mesesCal.length - 1] || "");
   const calDias = calData.filter(d => d.dia.slice(0, 7) === calSelMes);
@@ -984,7 +992,8 @@ function Operativa({ yo, activo, syncTick }) {
     /*#__PURE__*/React.createElement("div", { className: "flex items-center justify-between flex-wrap gap-2 mb-2" },
       /*#__PURE__*/React.createElement("div", null,
         /*#__PURE__*/React.createElement("span", { className: "text-sm font-bold" }, "Filtrar por fecha"),
-        /*#__PURE__*/React.createElement("span", { className: "text-[11px] ml-2", style: { color: C.gray } }, "Tocá un día para ver sus pedidos · color = % entregado")),
+        /*#__PURE__*/React.createElement("span", { className: "text-[11px] ml-2", style: { color: C.gray } }, "Tocá un día para ver sus pedidos · color = % entregado"),
+        !cruceEnSesion.current && !calComp && /*#__PURE__*/React.createElement("div", { className: "text-[11px] font-semibold mt-1", style: { color: C.amber } }, "⚠ El último cruce se hizo con una versión anterior de la app y no guardó el calendario compartido: estos % solo cuentan los pedidos accionables. Se corrige recargando la app (Ctrl+Shift+R) y volviendo a cruzar los archivos.")),
       /*#__PURE__*/React.createElement("div", { className: "flex items-center gap-2" },
         filtroDia && /*#__PURE__*/React.createElement("button", { onClick: () => { setFiltroDia(""); setPage(0); }, className: "text-xs font-bold px-3 py-1.5 rounded-lg", style: { background: C.soft, color: C.blue } }, "✕ Ver todos los días"),
         /*#__PURE__*/React.createElement("select", { value: calSelMes, onChange: e => setCalMes(e.target.value), className: "px-2 py-1.5 rounded-lg border text-xs font-bold bg-white", style: { borderColor: C.line, color: C.ink } }, mesesCal.map(m => /*#__PURE__*/React.createElement("option", { key: m, value: m }, fmtMesYM(m)))))),
