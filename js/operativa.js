@@ -846,13 +846,19 @@ function Operativa({ yo, activo, syncTick }) {
   const ProgresoMes = () => {
     const ce = React.createElement;
     const META_MIN = 90, META_MAX = 95;
-    const col = cumplShown == null ? C.gray : cumplShown >= META_MIN ? C.green : cumplShown >= 70 ? C.amber : C.red;
-    const pctFill = Math.max(0, Math.min(100, cumplShown || 0));
+    // El % PROTAGONISTA es el EXIGIBLE: pedidos del mes con la promesa de 7 días hábiles ya vencida.
+    // El % bruto del mes mezcla compras recientes que aún están en plazo (no son incumplimiento) y
+    // contra una meta de 90–95% siempre se vería artificialmente bajo.
+    const exig = madurosSnap;
+    const pctHead = exig ? exig.pct : cumplShown;
+    const col = pctHead == null ? C.gray : pctHead >= META_MIN ? C.green : pctHead >= 70 ? C.amber : C.red;
+    const pctFill = Math.max(0, Math.min(100, pctHead || 0));
     return ce("div", { className: "bg-white rounded-2xl border p-4", style: { borderColor: C.line } },
       ce("div", { className: "flex items-baseline justify-between mb-2 flex-wrap gap-1" },
         ce("span", { className: "text-[11px] font-bold uppercase tracking-wide", style: { color: C.gray } },
-          "Cumplimiento de ", ce("span", { style: { color: C.ink } }, fmtMesLargo(mesShownKey))),
-        ce("span", { className: "text-3xl font-black fraunces tabular-nums", style: { color: col } }, cumplShown != null ? cumplShown + "%" : "—")),
+          "Cumplimiento de ", ce("span", { style: { color: C.ink } }, fmtMesLargo(mesShownKey)),
+          exig ? " — pedidos con promesa (7 dh) vencida" : ""),
+        ce("span", { className: "text-3xl font-black fraunces tabular-nums", style: { color: col } }, pctHead != null ? pctHead + "%" : "—")),
       ce("div", { style: { position: "relative", height: 18, borderRadius: 9, background: "#EEF1F5", overflow: "hidden" } },
         ce("div", { title: "Meta 90–95%", style: { position: "absolute", left: META_MIN + "%", width: (META_MAX - META_MIN) + "%", top: 0, bottom: 0, background: "rgba(14,138,95,0.22)" } }),
         ce("div", { style: { position: "absolute", left: 0, top: 0, bottom: 0, width: pctFill + "%", background: col, borderRadius: 9, transition: "width .3s" } })),
@@ -860,14 +866,16 @@ function Operativa({ yo, activo, syncTick }) {
         ce("span", { style: { position: "absolute", left: META_MIN + "%", transform: "translateX(-50%)", fontSize: 9, color: C.gray } }, "90%"),
         ce("span", { style: { position: "absolute", left: META_MAX + "%", transform: "translateX(-50%)", fontSize: 9, color: C.gray } }, "95%")),
       ce("div", { className: "text-[11px] mt-1", style: { color: C.gray } },
-        cumplShown != null
-          ? entregMesShown + " de " + totalMesShown + " entregados · meta 90–95%" + (despShown != null ? " · despacho P90 " + despShown + "d" : "") + (entShown != null ? " · entrega P90 " + entShown + "d" : "")
-          : "Cargá archivos para ver el cumplimiento del mes · meta 90–95%"),
-      // El % bruto del mes incluye compras recientes que AÚN están en plazo → se ve deprimido.
-      // El % exigible (pedidos con la promesa de 7 días hábiles ya vencida) es el comparable con la meta.
-      madurosSnap && ce("div", { className: "text-[11px] mt-0.5 font-semibold", style: { color: madurosSnap.pct >= 90 ? C.green : madurosSnap.pct >= 70 ? C.amber : C.red } },
-        "Exigible (promesa de 7 dh vencida): " + madurosSnap.pct + "% — " + madurosSnap.entregados + " de " + madurosSnap.total,
-        ce("span", { style: { color: C.gray, fontWeight: 400 } }, " · el % de arriba incluye compras recientes todavía en plazo")));
+        exig
+          ? exig.entregados + " de " + exig.total + " pedidos con promesa vencida entregados · meta 90–95%" + (despShown != null ? " · despacho P90 " + despShown + "d" : "") + (entShown != null ? " · entrega P90 " + entShown + "d" : "")
+          : cumplShown != null
+            ? entregMesShown + " de " + totalMesShown + " entregados · meta 90–95%" + (despShown != null ? " · despacho P90 " + despShown + "d" : "") + (entShown != null ? " · entrega P90 " + entShown + "d" : "")
+            : "Cargá archivos para ver el cumplimiento del mes · meta 90–95%"),
+      // Referencia secundaria: el mes completo (incluye compras recientes que aún están en plazo).
+      exig && cumplShown != null && ce("div", { className: "text-[11px] mt-0.5", style: { color: C.gray } },
+        "Mes completo (incluye compras aún en plazo, no son incumplimiento): " + cumplShown + "% — " + entregMesShown + " de " + totalMesShown),
+      !exig && cumplShown != null && ce("div", { className: "text-[11px] mt-0.5 font-semibold", style: { color: C.amber } },
+        "⚠ Este % mezcla compras recientes aún en plazo. Volvé a cruzar los archivos con la app actualizada para ver el % exigible (promesa de 7 dh vencida)."));
   };
   const TabBtn = ({
     id,
