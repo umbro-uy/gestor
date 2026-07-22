@@ -105,8 +105,8 @@ function Resumen({
     { id: "depo0_op", l: "Pedidos en Depo 0 (sin stock)", tipo: "num" },
     { id: "sinwms_op", l: "Pedidos sin WMS", tipo: "num" },
     { id: "tasa_cumpl_op", l: "Tasa de cumplimiento", tipo: "pct" },
-    { id: "leadtime_desp_op", l: "Tiempo a despacho (P90)", tipo: "dias" },
-    { id: "leadtime_ent_op", l: "Tiempo de entrega (P90)", tipo: "dias" },
+    { id: "leadtime_desp_op", l: "Tiempo a despacho (9 de cada 10)", tipo: "dias" },
+    { id: "leadtime_ent_op", l: "Tiempo de entrega (9 de cada 10)", tipo: "dias" },
     { id: "pendientes_factura", l: "Pendientes sin factura", tipo: "num" },
     { id: "facturacion_mes", l: "Facturación neta del mes", tipo: "money" }
   ];
@@ -130,7 +130,7 @@ function Resumen({
     if (v == null) return "—";
     if (f && f.tipo === "money") return fmtUSD(v);
     if (f && f.tipo === "pct") return Number(v).toLocaleString("es-UY") + "%";
-    if (f && f.tipo === "dias") return Number(v).toLocaleString("es-UY") + " d";
+    if (f && f.tipo === "dias") return Number(v).toLocaleString("es-UY") + " días";
     return Number(v).toLocaleString("es-UY");
   };
   const haceCuanto = iso => {
