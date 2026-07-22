@@ -827,19 +827,19 @@ function Operativa({ yo, activo, syncTick }) {
     if (tipo === "entrega") {
       const filas = (desgSnap.cumplPorTienda || []).slice().sort((a, b) => (b.entregaP90 || 0) - (a.entregaP90 || 0)).map(t => ce("tr", { key: t.tienda, style: { borderTop: "1px solid " + C.line } },
         td(t.tienda, { className: "px-3 py-1.5 font-semibold" }),
-        td(t.despachoP90 != null ? t.despachoP90 + "d" : "—"),
-        td(t.entregaP90 != null ? t.entregaP90 + "d" : "—", { className: "px-3 py-1.5 font-black", style: { color: (t.entregaP90 || 0) > 7 ? C.red : C.ink } }),
+        td(t.despachoP90 != null ? t.despachoP90 + " días" : "—"),
+        td(t.entregaP90 != null ? t.entregaP90 + " días" : "—", { className: "px-3 py-1.5 font-black", style: { color: (t.entregaP90 || 0) > 7 ? C.red : C.ink } }),
         td(t.total)));
-      return caja("Tiempos por tienda (P90, días corridos)", "Despacho = compra → despacho WMS · Entrega = compra → entrega al cliente. En rojo: por encima de la promesa de 7 días.", ["Tienda", "Despacho P90", "Entrega P90", "Pedidos"], filas);
+      return caja("Tiempos por tienda (días corridos)", "Tiempo en el que entra 9 de cada 10 pedidos. Despacho = compra → despacho WMS · Entrega = compra → entrega al cliente. En rojo: por encima de la promesa de 7 días.", ["Tienda", "Despacho", "Entrega", "Pedidos"], filas);
     }
     const filas = (desgSnap.stockTiendas || []).map(t => ce("tr", { key: t.depo, style: { borderTop: "1px solid " + C.line } },
       td(t.nombre + " (" + t.depo + ")", { className: "px-3 py-1.5 font-semibold" }), td(t.conf),
       td(t.mas2 + " (" + t.pctMas2 + "%)", { className: "px-3 py-1.5 font-black", style: { color: t.pctMas2 >= 25 ? C.red : t.pctMas2 >= 10 ? C.amber : C.green } }),
-      td(t.p90 != null ? t.p90 + " dh" : "—"),
+      td(t.p90 != null ? t.p90 + " días háb." : "—"),
       td(t.pendAtr ? t.pendAtr + " ⚠" : t.pend, { className: "px-3 py-1.5 " + (t.pendAtr ? "font-black" : ""), style: t.pendAtr ? { color: C.red } : undefined })));
     return caja("Solicitud de stock a tiendas — confirmado → procesado en depósito central",
-      "Cuando el pedido sale de una tienda (no del depo central), se mide cuánto tarda esa mercadería confirmada en procesarse en el central. +2 días hábiles sin procesar = no la enviaron o se extravió. Ordenado de peor a mejor.",
-      ["Tienda origen", "Artículos solicitados", "Demorados +2 dh", "P90", "Sin procesar (vencidos ⚠)"], filas);
+      "Cuando el pedido sale de una tienda (no del depo central), se mide cuánto tarda esa mercadería confirmada en procesarse en el central. Más de 2 días hábiles sin procesar = no la enviaron o se extravió. \"9 de cada 10\" = tiempo en el que entra el 90% de las solicitudes. Ordenado de peor a mejor.",
+      ["Tienda origen", "Artículos solicitados", "Demorados (+2 días háb.)", "9 de cada 10 en", "Sin procesar (vencidos ⚠)"], filas);
   };
   // Mini gráfico de evolución mensual para un KPI (barras por mes; resalta el último mes con dato)
   // Barra de progreso del CUMPLIMIENTO del mes corriente, con la meta 90–95% marcada.
@@ -867,9 +867,9 @@ function Operativa({ yo, activo, syncTick }) {
         ce("span", { style: { position: "absolute", left: META_MAX + "%", transform: "translateX(-50%)", fontSize: 9, color: C.gray } }, "95%")),
       ce("div", { className: "text-[11px] mt-1", style: { color: C.gray } },
         exig
-          ? exig.entregados + " de " + exig.total + " pedidos con promesa vencida entregados · meta 90–95%" + (despShown != null ? " · despacho P90 " + despShown + "d" : "") + (entShown != null ? " · entrega P90 " + entShown + "d" : "")
+          ? exig.entregados + " de " + exig.total + " pedidos con promesa vencida entregados · meta 90–95%"
           : cumplShown != null
-            ? entregMesShown + " de " + totalMesShown + " entregados · meta 90–95%" + (despShown != null ? " · despacho P90 " + despShown + "d" : "") + (entShown != null ? " · entrega P90 " + entShown + "d" : "")
+            ? entregMesShown + " de " + totalMesShown + " entregados · meta 90–95%"
             : "Cargá archivos para ver el cumplimiento del mes · meta 90–95%"),
       // Referencia secundaria: el mes completo (incluye compras recientes que aún están en plazo).
       exig && cumplShown != null && ce("div", { className: "text-[11px] mt-0.5", style: { color: C.gray } },
@@ -1144,11 +1144,12 @@ function Operativa({ yo, activo, syncTick }) {
   /*#__PURE__*/React.createElement(ProgresoMes, null),
   /*#__PURE__*/React.createElement("div", { className: "grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2" },
     /*#__PURE__*/React.createElement(MetricCard, { label: "Total pedidos", value: volTotal, color: C.blue, tab: "todos" }),
-    /*#__PURE__*/React.createElement(MetricCard, { label: "Entregados", value: volEntreg, color: C.green, sub: volTasa + "% cumplimiento" }),
-    /*#__PURE__*/React.createElement(MetricCard, { label: "Tasa cumplimiento", value: volTasa + "%", color: volTasa >= 90 ? C.green : volTasa >= 70 ? C.amber : C.red, sub: volEntreg + " de " + volTotal + " (histórico) · tocá: por tienda", onClick: () => setKpiPanel(kpiPanel === "cumpl" ? "" : "cumpl"), activoCard: kpiPanel === "cumpl" }),
-    /*#__PURE__*/React.createElement(MetricCard, { label: "Tiempo a despacho", value: volDesp != null ? volDesp + "d" : "—", color: C.blue, sub: "Compra → despacho (P90) · tocá: por depósito", onClick: () => setKpiPanel(kpiPanel === "stock" ? "" : "stock"), activoCard: kpiPanel === "stock" }),
-    /*#__PURE__*/React.createElement(MetricCard, { label: "Tiempo de entrega", value: volEnt != null ? volEnt + "d" : "—", color: C.ink, sub: "Compra → entrega (P90) · tocá: por tienda", onClick: () => setKpiPanel(kpiPanel === "entrega" ? "" : "entrega"), activoCard: kpiPanel === "entrega" }),
-    /*#__PURE__*/React.createElement(MetricCard, { label: "Sin WMS", value: operSnap ? (operSnap.sin_wms || 0) : sinWMS.length, color: (operSnap ? operSnap.sin_wms : sinWMS.length) ? C.amber : C.gray, tab: sinWMS.length ? "sinwms" : null, sub: "No están en Encuentra" })),
+    /*#__PURE__*/React.createElement(MetricCard, { label: "Entregados", value: volEntreg, color: C.green }),
+    /*#__PURE__*/React.createElement(MetricCard, { label: "Tasa cumplimiento", value: volTasa + "%", color: volTasa >= 90 ? C.green : volTasa >= 70 ? C.amber : C.red, sub: "ver por tienda ▾", onClick: () => setKpiPanel(kpiPanel === "cumpl" ? "" : "cumpl"), activoCard: kpiPanel === "cumpl" }),
+    /*#__PURE__*/React.createElement(MetricCard, { label: "Tiempo a despacho", value: volDesp != null ? volDesp + " días" : "—", color: C.blue, sub: "ver por depósito ▾", onClick: () => setKpiPanel(kpiPanel === "stock" ? "" : "stock"), activoCard: kpiPanel === "stock" }),
+    /*#__PURE__*/React.createElement(MetricCard, { label: "Tiempo de entrega", value: volEnt != null ? volEnt + " días" : "—", color: C.ink, sub: "ver por tienda ▾", onClick: () => setKpiPanel(kpiPanel === "entrega" ? "" : "entrega"), activoCard: kpiPanel === "entrega" }),
+    /*#__PURE__*/React.createElement(MetricCard, { label: "Sin WMS", value: operSnap ? (operSnap.sin_wms || 0) : sinWMS.length, color: (operSnap ? operSnap.sin_wms : sinWMS.length) ? C.amber : C.gray, tab: sinWMS.length ? "sinwms" : null })),
+  /*#__PURE__*/React.createElement("div", { className: "text-[11px] -mt-1", style: { color: C.gray } }, "Los tiempos son en los que entra ", /*#__PURE__*/React.createElement("b", null, "9 de cada 10 pedidos"), " (compra → despacho / compra → entrega); el 10% más lento queda afuera."),
   kpiPanel && DesglosePanel({ tipo: kpiPanel }),
   leadtimeEntProm == null && entregaDiag && /*#__PURE__*/React.createElement("div", { className: "rounded-xl px-4 py-3 text-xs", style: { background: C.amberS, color: C.amber } },
     /*#__PURE__*/React.createElement("b", null, "Tiempo de entrega sin datos. "),
