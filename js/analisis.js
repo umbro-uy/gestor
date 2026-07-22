@@ -1062,26 +1062,34 @@ function Metas({
       if (!nro) return;
       const { ba, bb } = docMonto(r);
       if (!factsXPed[nro]) factsXPed[nro] = { invoices: [], sumBA: 0, sumBB: 0, tienda: mapearTienda(r.Sucursal) };
-      factsXPed[nro].invoices.push({ label: String(r.Prefijo || "") + "/" + String(r.Numero || ""), ba, bb });
+      factsXPed[nro].invoices.push({ label: String(r.Prefijo || "") + "/" + String(r.Numero || ""), prefijo: String(r.Prefijo || "").trim(), ba, bb });
       factsXPed[nro].sumBA += ba; factsXPed[nro].sumBB += bb;
     });
     const ncsXPed = {};
     ncd.forEach(r => { const nro = extraerNroPedido(r.Observacion); if (!nro) return; const { ba } = docMonto(r); if (!ncsXPed[nro]) ncsXPed[nro] = { n: 0, ba: 0, labels: [] }; ncsXPed[nro].n++; ncsXPed[nro].ba += ba; ncsXPed[nro].labels.push(String(r.Prefijo || "") + "/" + String(r.Numero || "")); });
     const nInvoices = nro => factsXPed[nro] ? factsXPed[nro].invoices.length : 0;
-    const netFacturas = nro => nInvoices(nro) - (ncsXPed[nro] ? ncsXPed[nro].n : 0);
-    // Duplicados: mismo pedido facturado en más de una FACTURA. El "duplicado neto" = lo facturado de más
-    // DESCONTANDO las notas de crédito (prefijos 5004/5104/5102/5204). Si el duplicado ya tiene su NC,
-    // el neto queda en 0 y NO se muestra: ya está resuelto y no requiere acción manual.
+    // Un pedido puede tener varias facturas legítimas (distinto prefijo/serie o distinto importe: envíos
+    // o ítems facturados por separado). Una factura DUPLICADA de verdad es la MISMA repetida: mismo
+    // pedido + mismo PREFIJO + mismo IMPORTE. Solo esas copias repetidas cuentan como exceso.
+    const dupInfoXPed = nro => {
+      const f = factsXPed[nro];
+      if (!f) return { copiasDup: 0, exceso: 0, dupNeto: 0 };
+      const g = {};
+      f.invoices.forEach(x => { const k = x.prefijo + "|" + Math.round(x.ba); (g[k] = g[k] || { ba: x.ba, count: 0 }).count++; });
+      let exceso = 0, copiasDup = 0;
+      Object.values(g).forEach(v => { if (v.count > 1) { exceso += (v.count - 1) * v.ba; copiasDup += v.count - 1; } });
+      const nc = ncsXPed[nro] || { ba: 0 };
+      // Si el duplicado ya tiene su NC (prefijos 5004/5104/5102/5204), el neto queda en 0 → resuelto.
+      return { copiasDup, exceso, dupNeto: Math.max(0, exceso - nc.ba) };
+    };
     const factDuplicadas = Object.keys(factsXPed)
-      .filter(nro => nInvoices(nro) > 1)   // más de una factura para el mismo pedido
       .map(nro => {
         const f = factsXPed[nro];
         const nc = ncsXPed[nro] || { n: 0, ba: 0 };
-        const maxBA = f.invoices.reduce((mx, x) => Math.max(mx, x.ba), 0);
-        const dupNeto = f.sumBA - maxBA - nc.ba;   // exceso facturado aún no acreditado por NC
-        return { nro, facturas: nInvoices(nro), ncs: nc.n, ncMonto: nc.ba, total: f.sumBA, dupNeto: Math.max(0, dupNeto), tienda: f.tienda || "—", detalle: f.invoices.map(x => x.label + " $" + Math.round(x.ba).toLocaleString("es-UY")).join("  ·  ") };
+        const di = dupInfoXPed(nro);
+        return { nro, facturas: nInvoices(nro), copiasDup: di.copiasDup, ncs: nc.n, ncMonto: nc.ba, total: f.sumBA, dupNeto: di.dupNeto, tienda: f.tienda || "—", detalle: f.invoices.map(x => x.label + " $" + Math.round(x.ba).toLocaleString("es-UY")).join("  ·  ") };
       })
-      .filter(d => d.dupNeto > 0.5)   // los ya acreditados con NC se consideran resueltos → fuera
+      .filter(d => d.copiasDup > 0 && d.dupNeto > 0.5)   // solo copias repetidas reales, aún sin NC
       .sort((a, b) => b.dupNeto - a.dupNeto);
     // Facturado por tienda (BA sin IVA y BB con IVA, netos de nota de crédito)
     const factXTienda = {};
@@ -1157,7 +1165,7 @@ function Metas({
       const wms = wmsMap[nro];
       const estadoWMS = wms ? (wms["Estado Encuentra"] || wms["Estado ecommerce"] || "—") : "No está en WMS";
       const tieneF = nInvoices(nro) > 0;
-      const esDupF = netFacturas(nro) > 1;
+      const esDupF = dupInfoXPed(nro).dupNeto > 0.5;   // duplicado real (mismo prefijo+importe) sin NC
       const esPcn = pcn || personalizada;
       const base = { nro, tienda: p.tienda || "—", fecha, estadoFen, estadoPago, estadoWMS, importe, pcn: esPcn, conCupon, cupon, montoCupon, skusPcn: (skusPcn||[]).join(", ") };
       const reversado = /revers/i.test(estadoPago) || /revers/i.test(estadoFen) || /revers/i.test(estadoWMS);
