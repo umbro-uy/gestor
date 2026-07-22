@@ -56,12 +56,14 @@ function Operativa({ yo, activo, syncTick }) {
   const [snapError, setSnapError] = useState(null); // mensaje si falló guardar el resumen compartido (operativa_snapshot)
   const [operSnap, setOperSnap] = useState(null); // resumen COMPARTIDO (operativa_snapshot): números que ven todos, = Resumen
   const cruceEnSesion = useRef(false); // true si crucé archivos en esta sesión (no interrumpir mi cruce con el realtime)
+  const cruceTs = useRef(0); // cuándo crucé (ms): si lo COMPARTIDO es más nuevo que mi cruce, gana lo compartido
   const supresRealtime = useRef(0); // timestamp del último cambio LOCAL (comentario/accionado): evita que el eco de realtime recargue la lista y te mande al principio
   const [filtroEstadoFen, setFiltroEstadoFen] = useState("");
   const [filtroDeposito, setFiltroDeposito] = useState("");
   const [filtroDiasMin, setFiltroDiasMin] = useState("");
   const [buscar, setBuscar] = useState("");
   const [calMes, setCalMes] = useState("");
+  const [kpiPanel, setKpiPanel] = useState(""); // "" | "cumpl" | "stock" | "entrega": desglose abierto bajo los KPI
   const [filtroDia, setFiltroDia] = useState(""); // día (YYYY-MM-DD) elegido en el calendario para filtrar la tabla
   const POR_HOJA = 50;
   const leerFenicio = tienda => e => {
@@ -171,6 +173,25 @@ function Operativa({ yo, activo, syncTick }) {
       return null;
     }
   };
+  // Días hábiles ENTRE dos fechas (para medir confirmado → procesado en las solicitudes de stock)
+  const diasHabEntre = (desde, hasta) => {
+    try {
+      const a = parseFecha(desde), b = parseFecha(hasta);
+      if (!a || !b) return null;
+      let cur = new Date(a.getFullYear(), a.getMonth(), a.getDate());
+      const fin = new Date(b.getFullYear(), b.getMonth(), b.getDate());
+      if (cur >= fin) return 0;
+      let c = 0;
+      while (cur < fin) {
+        cur.setDate(cur.getDate() + 1);
+        const g = cur.getDay();
+        if (g !== 0 && g !== 6) c++;
+      }
+      return c;
+    } catch {
+      return null;
+    }
+  };
   const ENTREGADOS = ["Pedido entregado", "Pedido entregado  a cliente"];
   // Deriva días hábiles y banderas (atrasado/critico/etc.) a partir del snapshot de un pedido.
   // Se usa tanto al cruzar como al recargar el seguimiento persistido, así el conteo de días se mantiene al día.
@@ -234,10 +255,21 @@ function Operativa({ yo, activo, syncTick }) {
     return { ...row, dias, diasEstado, diasDesp, fenEntregado, wmsEntregado, entregado, cancelado, cancelDiscrep, despachadoWMS, atrasado, critico, inconsistente, posibleNoDespacho, estancado, listoRetiro, clickCollect, pickup, sinStock, ccDepo9, leadtime, leadtimeEntrega };
   };
   // Carga el seguimiento ya analizado (con comentarios) al entrar a la pestaña, para que el análisis quede fijo.
-  const cargarSeguimiento = useCallback(async () => {
+  // opts.soloSiMasNuevo: usado cuando YA crucé archivos en esta sesión — solo pisa mi cruce si otro
+  // usuario cruzó DESPUÉS que yo (su snapshot es más nuevo). Antes, tras cruzar una vez, la pestaña
+  // quedaba "sorda" a los cruces del resto del equipo hasta recargar la página entera.
+  const cargarSeguimiento = useCallback(async (opts) => {
+    const soloSiMasNuevo = !!(opts && opts.soloSiMasNuevo);
     try {
       // Snapshot COMPARTIDO (números que ve todo el equipo, iguales a Resumen)
-      try { const { data: os } = await supa.from("operativa_snapshot").select("*").eq("id", "ultimo").maybeSingle(); if (os) setOperSnap(os); } catch (_) {}
+      let os = null;
+      try { const r = await supa.from("operativa_snapshot").select("*").eq("id", "ultimo").maybeSingle(); os = r.data || null; } catch (_) {}
+      if (soloSiMasNuevo) {
+        const remoto = os && os.actualizado ? new Date(os.actualizado).getTime() : 0;
+        // +10s de margen para no reaccionar al eco de MI PROPIO upsert del snapshot
+        if (!(remoto > (cruceTs.current || 0) + 10000)) return;
+      }
+      if (os) setOperSnap(os);
       // Supabase devuelve hasta 1000 filas por request → paginar para traer TODO el seguimiento
       const PAG = 1000;
       let data = [], desde = 0;
@@ -271,20 +303,18 @@ function Operativa({ yo, activo, syncTick }) {
   // tu cruce al cambiar de pestaña y volver (era la causa de que "se borrara todo" al volver a Operativa).
   useEffect(() => {
     if (activo === false) return;
-    if (cruceEnSesion.current) return;
-    cargarSeguimiento();
+    cargarSeguimiento(cruceEnSesion.current ? { soloSiMasNuevo: true } : undefined);
   }, [activo, cargarSeguimiento]);
-  // En VIVO: cuando otro usuario cambia algo (realtime → syncTick) recargamos, salvo que estés en medio
-  // de tu propio cruce (para no interrumpírtelo). Cuando cambies de pestaña y vuelvas, verás lo último.
+  // En VIVO: cuando otro usuario cambia algo (realtime → syncTick) recargamos. Si crucé en esta sesión,
+  // solo se pisa mi cruce cuando el snapshot remoto es MÁS NUEVO (otro usuario cruzó después que yo).
   useEffect(() => {
     if (activo === false) return;
-    if (cruceEnSesion.current) return;
     // Si el cambio lo hiciste vos (comentario/accionado) hace un instante, el propio upsert dispara el
     // realtime → syncTick. Como ya actualizamos la fila en pantalla, NO recargamos: recargar reconstruiría
     // toda la lista y te mandaría al principio (perdés la posición). El cambio de otros usuarios llega
     // sin ese upsert local reciente, así que sí se recarga.
     if (Date.now() - supresRealtime.current < 5000) return;
-    cargarSeguimiento();
+    cargarSeguimiento(cruceEnSesion.current ? { soloSiMasNuevo: true } : undefined);
   }, [syncTick, cargarSeguimiento]);
   // Marca accionado (no toca el historial de comentarios).
   const guardarSeguimiento = async (pedido, campos) => {
@@ -451,6 +481,7 @@ function Operativa({ yo, activo, syncTick }) {
     const finalRows = merged.concat(retenidos).sort((a, b) => (b.dias || 0) - (a.dias || 0));
     setResultado(finalRows);
     cruceEnSesion.current = true;
+    cruceTs.current = Date.now();
     setUltimaSync(new Date());
     setVistaTab("atrasados");
     setPage(0);
@@ -507,6 +538,46 @@ function Operativa({ yo, activo, syncTick }) {
         const calM = {};
         finalRows.forEach(r => { const d = parseFecha(r.fecha); if (!d) return; const dia = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); const b = calM[dia] || (calM[dia] = { dia, total: 0, entregados: 0 }); b.total++; if (r.entregado) b.entregados++; });
         const calArr = Object.values(calM).sort((a, b) => a.dia.localeCompare(b.dia));
+        // ── Desgloses por tienda/depósito (para los KPI clickeables) ──
+        // Cumplimiento y tiempos por tienda (canal de venta)
+        const porTienda = {};
+        finalRows.forEach(r => { const t = r.tienda || "-"; const b = porTienda[t] || (porTienda[t] = { tienda: t, total: 0, entregados: 0, lt: [], ltE: [] }); b.total++; if (r.entregado) b.entregados++; if (r.leadtime != null) b.lt.push(r.leadtime); if (r.leadtimeEntrega != null) b.ltE.push(r.leadtimeEntrega); });
+        const cumplPorTienda = Object.values(porTienda).map(b => ({ tienda: b.tienda, total: b.total, entregados: b.entregados, pct: b.total ? Math.round(b.entregados / b.total * 100) : 0, despachoP90: percentil(b.lt, PCTL), entregaP90: percentil(b.ltE, PCTL) })).sort((a, b) => a.pct - b.pct);
+        // Solicitud de stock a TIENDAS (Deposito pedido ≠ 9/0): tiempo confirmado → procesado en central.
+        // +2 días hábiles sin procesar = la tienda no envió la mercadería o se extravió.
+        const colFConf = findCol(sW, [/^fecha\s*confirmad/i]);
+        const colFProc = findCol(sW, [/^fecha\s*procesad/i]);
+        const colDestino = findCol(sW, [/^destino$/i]);
+        let stockTiendas = [];
+        if (colFConf && colFProc) {
+          // nombre de cada depósito-tienda: viene embebido en "Destino" ("Gral. Flores - 301")
+          const nomDepo = {};
+          rowsB.forEach(r => { const m = String(r[colDestino] || "").trim().match(/^(.*?)[\s.-]*[-–]\s*(\d{3,4})\s*$/); if (m && !nomDepo[m[2]]) nomDepo[m[2]] = m[1].replace(/\s+/g, " ").trim(); });
+          const porDepo = {};
+          rowsB.forEach(r => {
+            const depo = String(r[colDep] || "").trim();
+            if (!depo || depo === "9" || depo === "0") return; // solo stock pedido a una TIENDA
+            const fc = parseFecha(r[colFConf]); if (!fc) return;
+            const fp = parseFecha(r[colFProc]);
+            const b = porDepo[depo] || (porDepo[depo] = { depo, nombre: nomDepo[depo] || ("Depo " + depo), conf: 0, dias: [], pend: 0, pendAtr: 0 });
+            b.conf++;
+            if (fp) { const dh = diasHabEntre(fc, fp); if (dh != null) b.dias.push(dh); }
+            else { b.pend++; if ((diasHab(r[colFConf]) || 0) > 2) b.pendAtr++; }
+          });
+          stockTiendas = Object.values(porDepo).map(b => {
+            const mas2 = b.dias.filter(x => x > 2).length;
+            return { depo: b.depo, nombre: b.nombre, conf: b.conf, mas2, pctMas2: b.dias.length ? Math.round(mas2 / b.dias.length * 100) : 0, p90: percentil(b.dias, PCTL), pend: b.pend, pendAtr: b.pendAtr };
+          }).sort((a, b) => b.pctMas2 - a.pctMas2 || b.conf - a.conf);
+        }
+        // Cumplimiento "exigible" del mes: pedidos del mes con la promesa de entrega ya vencida (+6 días
+        // hábiles desde la compra). Es el % comparable con la meta: los pedidos recién comprados todavía
+        // están en plazo y deprimen el % bruto del mes.
+        let maduros = null;
+        if (mk) {
+          const delMes = finalRows.filter(r => { const d = parseFecha(r.fecha); return d && (d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0")) === mk; });
+          const mad = delMes.filter(r => (r.dias != null ? r.dias : 99) > 6);
+          if (mad.length) maduros = { total: mad.length, entregados: mad.filter(r => r.entregado).length, pct: Math.round(mad.filter(r => r.entregado).length / mad.length * 100) };
+        }
         const snap = {
           id: "ultimo",
           total: finalRows.length,
@@ -520,9 +591,9 @@ function Operativa({ yo, activo, syncTick }) {
           tasa_cumpl: finalRows.length ? Math.round(finalRows.filter(r => r.entregado).length / finalRows.length * 100) : 0,
           leadtime_despacho: percentil(lt, PCTL),
           leadtime_entrega: percentil(ltE, PCTL),
-          // El calendario va TAMBIÉN adentro de "serie" (columna jsonb que ya existe en la tabla):
-          // así se comparte aunque no se haya corrido la migración que agrega la columna "calendario".
-          serie: { ...(serie || {}), calendario: calArr },
+          // El calendario y los desgloses van TAMBIÉN adentro de "serie" (columna jsonb que ya existe
+          // en la tabla): así se comparten sin necesidad de correr ninguna migración.
+          serie: { ...(serie || {}), calendario: calArr, maduros, desgloses: { cumplPorTienda, stockTiendas } },
           calendario: calArr,
           actualizado: new Date().toISOString()
         };
@@ -606,6 +677,9 @@ function Operativa({ yo, activo, syncTick }) {
   const volEnt = operSnap ? operSnap.leadtime_entrega : leadtimeEntProm;
   // "serie" ahora también transporta el calendario; solo cuenta como serie mensual si trae mesKey.
   const serieSnap = operSnap && operSnap.serie && operSnap.serie.mesKey ? operSnap.serie : null;
+  // Desgloses por tienda/depósito del último cruce (viajan dentro de serie, compartidos con el equipo)
+  const desgSnap = operSnap && operSnap.serie && operSnap.serie.desgloses ? operSnap.serie.desgloses : null;
+  const madurosSnap = operSnap && operSnap.serie && operSnap.serie.maduros ? operSnap.serie.maduros : null;
   const cumplShown = serieSnap ? serieSnap.cumpl : cumplCur;
   const despShown = serieSnap ? serieSnap.despachoP90 : despCur;
   const entShown = serieSnap ? serieSnap.entregaP90 : entCur;
@@ -721,14 +795,52 @@ function Operativa({ yo, activo, syncTick }) {
   }, /*#__PURE__*/React.createElement("div", { className: "text-3xl sm:text-4xl font-black fraunces tabular-nums", style: { color: vistaTab === tab ? "#fff" : color, lineHeight: 1 } }, value),
      /*#__PURE__*/React.createElement("div", { className: "text-[11px] font-bold uppercase mt-1", style: { color: vistaTab === tab ? "rgba(255,255,255,0.92)" : C.ink, lineHeight: 1.15 } }, label),
      sub && /*#__PURE__*/React.createElement("div", { className: "text-[10px] mt-0.5", style: { color: vistaTab === tab ? "rgba(255,255,255,0.8)" : C.gray, lineHeight: 1.15 } }, sub));
-  // Métrica compacta (informativa). Clickable solo si tiene tab.
-  const MetricCard = ({ label, value, color, tab, sub }) => /*#__PURE__*/React.createElement(tab ? "button" : "div", {
-    onClick: tab ? () => { setVistaTab(tab); setPage(0); } : undefined,
-    className: "bg-white rounded-xl border px-3 py-2 text-left " + (tab ? "cursor-pointer hover:shadow-md transition-shadow" : ""),
-    style: { borderColor: tab && vistaTab === tab ? color : C.line, borderWidth: tab && vistaTab === tab ? 2 : 1 }
+  // Métrica compacta (informativa). Clickable si tiene tab (filtra la tabla) u onClick (abre desglose).
+  const MetricCard = ({ label, value, color, tab, sub, onClick, activoCard }) => /*#__PURE__*/React.createElement(tab || onClick ? "button" : "div", {
+    onClick: onClick || (tab ? () => { setVistaTab(tab); setPage(0); } : undefined),
+    className: "bg-white rounded-xl border px-3 py-2 text-left " + (tab || onClick ? "cursor-pointer hover:shadow-md transition-shadow" : ""),
+    style: { borderColor: (tab && vistaTab === tab) || activoCard ? color : C.line, borderWidth: (tab && vistaTab === tab) || activoCard ? 2 : 1 }
   }, /*#__PURE__*/React.createElement("div", { className: "text-[10px] font-bold uppercase", style: { color: C.gray, lineHeight: 1.2 } }, label),
      /*#__PURE__*/React.createElement("div", { className: "text-xl font-black fraunces tabular-nums", style: { color, lineHeight: 1.1 } }, value),
      sub && /*#__PURE__*/React.createElement("div", { className: "text-[10px]", style: { color: C.gray, lineHeight: 1.1 } }, sub));
+  // Panel de DESGLOSE de un KPI (se abre al tocar la tarjeta): muestra qué tiendas/depósitos
+  // están afectando el indicador. Los datos vienen del último cruce (compartidos vía snapshot).
+  const DesglosePanel = ({ tipo }) => {
+    const ce = React.createElement;
+    const th = t => ce("th", { key: t, className: "px-3 py-2 text-left font-bold uppercase", style: { color: C.gray, fontSize: 10, whiteSpace: "nowrap" } }, t);
+    const td = (v, extra) => ce("td", Object.assign({ className: "px-3 py-1.5", style: { fontSize: 12 } }, extra || {}), v);
+    const caja = (titulo, nota, headers, filas) => ce("div", { className: "bg-white rounded-2xl border p-3", style: { borderColor: C.line } },
+      ce("div", { className: "flex items-center justify-between flex-wrap gap-2 mb-1" },
+        ce("span", { className: "text-sm font-bold" }, titulo),
+        ce("button", { onClick: () => setKpiPanel(""), className: "text-xs font-bold px-3 py-1 rounded-lg", style: { background: "#EEF1F5", color: C.gray } }, "✕ Cerrar")),
+      nota && ce("div", { className: "text-[11px] mb-2", style: { color: C.gray } }, nota),
+      ce("div", { className: "overflow-auto" }, ce("table", { className: "w-full", style: { fontSize: 12 } },
+        ce("thead", null, ce("tr", null, headers.map(th))), ce("tbody", null, filas))));
+    if (!desgSnap) return caja("Desglose no disponible", "El último cruce se hizo con una versión anterior de la app y no guardó el desglose por tienda. Recargá la app (Ctrl+Shift+R) y volvé a cruzar los archivos.", [], []);
+    const colPct = p => p >= 90 ? C.green : p >= 70 ? C.amber : C.red;
+    if (tipo === "cumpl") {
+      const filas = (desgSnap.cumplPorTienda || []).map(t => ce("tr", { key: t.tienda, style: { borderTop: "1px solid " + C.line } },
+        td(t.tienda, { className: "px-3 py-1.5 font-semibold" }), td(t.total), td(t.entregados),
+        td(t.pct + "%", { className: "px-3 py-1.5 font-black", style: { color: colPct(t.pct) } })));
+      return caja("Tasa de cumplimiento por tienda", "Ordenado de peor a mejor: la primera fila es la que más afecta el indicador.", ["Tienda", "Pedidos", "Entregados", "% entregado"], filas);
+    }
+    if (tipo === "entrega") {
+      const filas = (desgSnap.cumplPorTienda || []).slice().sort((a, b) => (b.entregaP90 || 0) - (a.entregaP90 || 0)).map(t => ce("tr", { key: t.tienda, style: { borderTop: "1px solid " + C.line } },
+        td(t.tienda, { className: "px-3 py-1.5 font-semibold" }),
+        td(t.despachoP90 != null ? t.despachoP90 + "d" : "—"),
+        td(t.entregaP90 != null ? t.entregaP90 + "d" : "—", { className: "px-3 py-1.5 font-black", style: { color: (t.entregaP90 || 0) > 7 ? C.red : C.ink } }),
+        td(t.total)));
+      return caja("Tiempos por tienda (P90, días corridos)", "Despacho = compra → despacho WMS · Entrega = compra → entrega al cliente. En rojo: por encima de la promesa de 7 días.", ["Tienda", "Despacho P90", "Entrega P90", "Pedidos"], filas);
+    }
+    const filas = (desgSnap.stockTiendas || []).map(t => ce("tr", { key: t.depo, style: { borderTop: "1px solid " + C.line } },
+      td(t.nombre + " (" + t.depo + ")", { className: "px-3 py-1.5 font-semibold" }), td(t.conf),
+      td(t.mas2 + " (" + t.pctMas2 + "%)", { className: "px-3 py-1.5 font-black", style: { color: t.pctMas2 >= 25 ? C.red : t.pctMas2 >= 10 ? C.amber : C.green } }),
+      td(t.p90 != null ? t.p90 + " dh" : "—"),
+      td(t.pendAtr ? t.pendAtr + " ⚠" : t.pend, { className: "px-3 py-1.5 " + (t.pendAtr ? "font-black" : ""), style: t.pendAtr ? { color: C.red } : undefined })));
+    return caja("Solicitud de stock a tiendas — confirmado → procesado en depósito central",
+      "Cuando el pedido sale de una tienda (no del depo central), se mide cuánto tarda esa mercadería confirmada en procesarse en el central. +2 días hábiles sin procesar = no la enviaron o se extravió. Ordenado de peor a mejor.",
+      ["Tienda origen", "Artículos solicitados", "Demorados +2 dh", "P90", "Sin procesar (vencidos ⚠)"], filas);
+  };
   // Mini gráfico de evolución mensual para un KPI (barras por mes; resalta el último mes con dato)
   // Barra de progreso del CUMPLIMIENTO del mes corriente, con la meta 90–95% marcada.
   const ProgresoMes = () => {
@@ -750,7 +862,12 @@ function Operativa({ yo, activo, syncTick }) {
       ce("div", { className: "text-[11px] mt-1", style: { color: C.gray } },
         cumplShown != null
           ? entregMesShown + " de " + totalMesShown + " entregados · meta 90–95%" + (despShown != null ? " · despacho P90 " + despShown + "d" : "") + (entShown != null ? " · entrega P90 " + entShown + "d" : "")
-          : "Cargá archivos para ver el cumplimiento del mes · meta 90–95%"));
+          : "Cargá archivos para ver el cumplimiento del mes · meta 90–95%"),
+      // El % bruto del mes incluye compras recientes que AÚN están en plazo → se ve deprimido.
+      // El % exigible (pedidos con la promesa de 7 días hábiles ya vencida) es el comparable con la meta.
+      madurosSnap && ce("div", { className: "text-[11px] mt-0.5 font-semibold", style: { color: madurosSnap.pct >= 90 ? C.green : madurosSnap.pct >= 70 ? C.amber : C.red } },
+        "Exigible (promesa de 7 dh vencida): " + madurosSnap.pct + "% — " + madurosSnap.entregados + " de " + madurosSnap.total,
+        ce("span", { style: { color: C.gray, fontWeight: 400 } }, " · el % de arriba incluye compras recientes todavía en plazo")));
   };
   const TabBtn = ({
     id,
@@ -1020,10 +1137,11 @@ function Operativa({ yo, activo, syncTick }) {
   /*#__PURE__*/React.createElement("div", { className: "grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2" },
     /*#__PURE__*/React.createElement(MetricCard, { label: "Total pedidos", value: volTotal, color: C.blue, tab: "todos" }),
     /*#__PURE__*/React.createElement(MetricCard, { label: "Entregados", value: volEntreg, color: C.green, sub: volTasa + "% cumplimiento" }),
-    /*#__PURE__*/React.createElement(MetricCard, { label: "Tasa cumplimiento", value: volTasa + "%", color: volTasa >= 90 ? C.green : volTasa >= 70 ? C.amber : C.red, sub: volEntreg + " de " + volTotal }),
-    /*#__PURE__*/React.createElement(MetricCard, { label: "Tiempo a despacho", value: volDesp != null ? volDesp + "d" : "—", color: C.blue, sub: "Compra → despacho (P90)" }),
-    /*#__PURE__*/React.createElement(MetricCard, { label: "Tiempo de entrega", value: volEnt != null ? volEnt + "d" : "—", color: C.ink, sub: "Compra → entrega (P90)" }),
+    /*#__PURE__*/React.createElement(MetricCard, { label: "Tasa cumplimiento", value: volTasa + "%", color: volTasa >= 90 ? C.green : volTasa >= 70 ? C.amber : C.red, sub: volEntreg + " de " + volTotal + " (histórico) · tocá: por tienda", onClick: () => setKpiPanel(kpiPanel === "cumpl" ? "" : "cumpl"), activoCard: kpiPanel === "cumpl" }),
+    /*#__PURE__*/React.createElement(MetricCard, { label: "Tiempo a despacho", value: volDesp != null ? volDesp + "d" : "—", color: C.blue, sub: "Compra → despacho (P90) · tocá: por depósito", onClick: () => setKpiPanel(kpiPanel === "stock" ? "" : "stock"), activoCard: kpiPanel === "stock" }),
+    /*#__PURE__*/React.createElement(MetricCard, { label: "Tiempo de entrega", value: volEnt != null ? volEnt + "d" : "—", color: C.ink, sub: "Compra → entrega (P90) · tocá: por tienda", onClick: () => setKpiPanel(kpiPanel === "entrega" ? "" : "entrega"), activoCard: kpiPanel === "entrega" }),
     /*#__PURE__*/React.createElement(MetricCard, { label: "Sin WMS", value: operSnap ? (operSnap.sin_wms || 0) : sinWMS.length, color: (operSnap ? operSnap.sin_wms : sinWMS.length) ? C.amber : C.gray, tab: sinWMS.length ? "sinwms" : null, sub: "No están en Encuentra" })),
+  kpiPanel && DesglosePanel({ tipo: kpiPanel }),
   leadtimeEntProm == null && entregaDiag && /*#__PURE__*/React.createElement("div", { className: "rounded-xl px-4 py-3 text-xs", style: { background: C.amberS, color: C.amber } },
     /*#__PURE__*/React.createElement("b", null, "Tiempo de entrega sin datos. "),
     entregaDiag.col ? ("Detecté la columna “" + entregaDiag.col + "” pero ningún pedido tiene una fecha de entrega válida (" + entregaDiag.conEntrega + " de " + entregaDiag.total + "). ") : "No encontré una columna de fecha de entrega en tu Fenicio. ",
