@@ -576,14 +576,27 @@ function Operativa({ yo, activo, syncTick }) {
             return { depo: b.depo, nombre: b.nombre, conf: b.conf, mas2, pctMas2: b.dias.length ? Math.round(mas2 / b.dias.length * 100) : 0, p90: percentil(b.dias, PCTL), p90Desp: percentil(b.diasDesp, PCTL), pend: b.pend, pendAtr: b.pendAtr };
           }).sort((a, b) => (a.depo === "9" ? -1 : b.depo === "9" ? 1 : 0) || b.pctMas2 - a.pctMas2 || b.conf - a.conf);
         }
-        // Cumplimiento "exigible" del mes: pedidos del mes con la promesa de entrega ya vencida (+6 días
-        // hábiles desde la compra). Es el % comparable con la meta: los pedidos recién comprados todavía
-        // están en plazo y deprimen el % bruto del mes.
+        // Cumplimiento DE LA PROMESA del mes: % de pedidos entregados DENTRO de los 7 días hábiles.
+        // Universo evaluable = entregados con fecha de entrega + no entregados con la promesa ya vencida.
+        // Un pedido entregado TARDE cuenta como incumplimiento (antes contaba como éxito si ya estaba
+        // entregado). Los recién comprados sin entregar todavía no se pueden juzgar → quedan afuera.
+        // Cancelados afuera (no son incumplimiento de entrega).
+        const PROMESA_DH = 7;
         let maduros = null;
         if (mk) {
           const delMes = finalRows.filter(r => { const d = parseFecha(r.fecha); return d && (d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0")) === mk; });
-          const mad = delMes.filter(r => (r.dias != null ? r.dias : 99) > 6);
-          if (mad.length) maduros = { total: mad.length, entregados: mad.filter(r => r.entregado).length, pct: Math.round(mad.filter(r => r.entregado).length / mad.length * 100) };
+          let evalTotal = 0, enPlazo = 0;
+          delMes.forEach(r => {
+            if (esCancEf(r)) return;
+            if (r.entregado) {
+              const dhE = r.fechaEntrega && String(r.fechaEntrega).trim() && r.fechaEntrega !== "-" ? diasHabEntre(r.fecha, r.fechaEntrega) : null;
+              if (dhE == null) return; // entregado sin fecha de entrega: no se puede juzgar
+              evalTotal++; if (dhE <= PROMESA_DH) enPlazo++;
+            } else if ((r.dias != null ? r.dias : 0) > PROMESA_DH) {
+              evalTotal++; // promesa vencida sin entregar = incumplida
+            }
+          });
+          if (evalTotal) maduros = { total: evalTotal, entregados: enPlazo, pct: Math.round(enPlazo / evalTotal * 100) };
         }
         const snap = {
           id: "ultimo",
@@ -865,7 +878,7 @@ function Operativa({ yo, activo, syncTick }) {
       ce("div", { className: "flex items-baseline justify-between mb-2 flex-wrap gap-1" },
         ce("span", { className: "text-[11px] font-bold uppercase tracking-wide", style: { color: C.gray } },
           "Cumplimiento de ", ce("span", { style: { color: C.ink } }, fmtMesLargo(mesShownKey)),
-          exig ? " — pedidos con promesa (7 dh) vencida" : ""),
+          exig ? " — entregados dentro de la promesa (7 días háb.)" : ""),
         ce("span", { className: "text-3xl font-black fraunces tabular-nums", style: { color: col } }, pctHead != null ? pctHead + "%" : "—")),
       ce("div", { style: { position: "relative", height: 18, borderRadius: 9, background: "#EEF1F5", overflow: "hidden" } },
         ce("div", { title: "Meta 90–95%", style: { position: "absolute", left: META_MIN + "%", width: (META_MAX - META_MIN) + "%", top: 0, bottom: 0, background: "rgba(14,138,95,0.22)" } }),
@@ -875,7 +888,7 @@ function Operativa({ yo, activo, syncTick }) {
         ce("span", { style: { position: "absolute", left: META_MAX + "%", transform: "translateX(-50%)", fontSize: 9, color: C.gray } }, "95%")),
       ce("div", { className: "text-[11px] mt-1", style: { color: C.gray } },
         exig
-          ? exig.entregados + " de " + exig.total + " pedidos con promesa vencida entregados · meta 90–95%"
+          ? exig.entregados + " de " + exig.total + " cumplieron la promesa (entregado en ≤7 días háb.; el entregado tarde cuenta como incumplido) · meta 90–95%"
           : cumplShown != null
             ? entregMesShown + " de " + totalMesShown + " entregados · meta 90–95%"
             : "Cargá archivos para ver el cumplimiento del mes · meta 90–95%"),
