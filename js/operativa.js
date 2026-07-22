@@ -362,7 +362,8 @@ function Operativa({ yo, activo, syncTick }) {
     const colEstEco = findCol(sW, [/estado.*ecom/i]) || "Estado ecommerce";
     const colCanal = findCol(sW, [/canal/i, /tienda/i]) || "Canal";
     const colDep = findCol(sW, [/dep[oó]sito/i]) || "Deposito pedido";
-    const colFechDesp = findCol(sW, [/fecha.*despach/i, /despach/i]) || "Fecha despacho";
+    // Anclado: /fecha.*despach/ a secas matchea antes "Fecha PRONTO PARA despachar" (columna previa en el Monitor)
+    const colFechDesp = findCol(sW, [/^fecha\s*despacho$/i, /^fecha\s*despach/i, /fecha.*despach/i, /despach/i]) || "Fecha despacho";
     // Forma de entrega (Click & Collect / Pickup / Envío a domicilio) y fecha de entrega real (para lead time)
     const colForma = findCol(sW, [/forma.*entr/i, /m[eé]todo.*entr/i, /tipo.*entr/i, /modalidad/i]) || "Forma entrega";
     const colFechEntrega = findCol(sW, [/fecha.*entrega.*real/i, /fecha.*entrega/i]) || "Fecha entrega real";
@@ -550,24 +551,30 @@ function Operativa({ yo, activo, syncTick }) {
         const colDestino = findCol(sW, [/^destino$/i]);
         let stockTiendas = [];
         if (colFConf && colFProc) {
-          // nombre de cada depósito-tienda: viene embebido en "Destino" ("Gral. Flores - 301")
+          // nombre de cada depósito-tienda: viene embebido en "Destino" ("Gral. Flores - 301").
+          // Algunos códigos nunca aparecen ahí → nombres conocidos a mano.
+          const NOM_FIJO = { "9": "Depósito central", "1601": "Tres Cruces", "1701": "Nuevo Centro" };
           const nomDepo = {};
           rowsB.forEach(r => { const m = String(r[colDestino] || "").trim().match(/^(.*?)[\s.-]*[-–]\s*(\d{3,4})\s*$/); if (m && !nomDepo[m[2]]) nomDepo[m[2]] = m[1].replace(/\s+/g, " ").trim(); });
           const porDepo = {};
           rowsB.forEach(r => {
             const depo = String(r[colDep] || "").trim();
-            if (!depo || depo === "9" || depo === "0") return; // solo stock pedido a una TIENDA
+            if (!depo || depo === "0") return; // incluye al central (9); el 0 es "sin stock", no un origen
             const fc = parseFecha(r[colFConf]); if (!fc) return;
             const fp = parseFecha(r[colFProc]);
-            const b = porDepo[depo] || (porDepo[depo] = { depo, nombre: nomDepo[depo] || ("Depo " + depo), conf: 0, dias: [], pend: 0, pendAtr: 0 });
+            const b = porDepo[depo] || (porDepo[depo] = { depo, nombre: NOM_FIJO[depo] || nomDepo[depo] || ("Depo " + depo), conf: 0, dias: [], diasDesp: [], pend: 0, pendAtr: 0 });
             b.conf++;
             if (fp) { const dh = diasHabEntre(fc, fp); if (dh != null) b.dias.push(dh); }
             else { b.pend++; if ((diasHab(r[colFConf]) || 0) > 2) b.pendAtr++; }
+            // Tramo completo hasta que el CENTRAL despacha (confirmado → despachado): incluye el tiempo
+            // del depo central, que también hay que medir.
+            const fd = parseFecha(r[colFechDesp]);
+            if (fd) { const dhT = diasHabEntre(fc, fd); if (dhT != null) b.diasDesp.push(dhT); }
           });
           stockTiendas = Object.values(porDepo).map(b => {
             const mas2 = b.dias.filter(x => x > 2).length;
-            return { depo: b.depo, nombre: b.nombre, conf: b.conf, mas2, pctMas2: b.dias.length ? Math.round(mas2 / b.dias.length * 100) : 0, p90: percentil(b.dias, PCTL), pend: b.pend, pendAtr: b.pendAtr };
-          }).sort((a, b) => b.pctMas2 - a.pctMas2 || b.conf - a.conf);
+            return { depo: b.depo, nombre: b.nombre, conf: b.conf, mas2, pctMas2: b.dias.length ? Math.round(mas2 / b.dias.length * 100) : 0, p90: percentil(b.dias, PCTL), p90Desp: percentil(b.diasDesp, PCTL), pend: b.pend, pendAtr: b.pendAtr };
+          }).sort((a, b) => (a.depo === "9" ? -1 : b.depo === "9" ? 1 : 0) || b.pctMas2 - a.pctMas2 || b.conf - a.conf);
         }
         // Cumplimiento "exigible" del mes: pedidos del mes con la promesa de entrega ya vencida (+6 días
         // hábiles desde la compra). Es el % comparable con la meta: los pedidos recién comprados todavía
@@ -832,14 +839,15 @@ function Operativa({ yo, activo, syncTick }) {
         td(t.total)));
       return caja("Tiempos por tienda (días corridos)", "Tiempo en el que entra 9 de cada 10 pedidos. Despacho = compra → despacho WMS · Entrega = compra → entrega al cliente. En rojo: por encima de la promesa de 7 días.", ["Tienda", "Despacho", "Entrega", "Pedidos"], filas);
     }
-    const filas = (desgSnap.stockTiendas || []).map(t => ce("tr", { key: t.depo, style: { borderTop: "1px solid " + C.line } },
+    const filas = (desgSnap.stockTiendas || []).map(t => ce("tr", { key: t.depo, style: { borderTop: "1px solid " + C.line, background: t.depo === "9" ? "#F6F8FB" : undefined } },
       td(t.nombre + " (" + t.depo + ")", { className: "px-3 py-1.5 font-semibold" }), td(t.conf),
       td(t.mas2 + " (" + t.pctMas2 + "%)", { className: "px-3 py-1.5 font-black", style: { color: t.pctMas2 >= 25 ? C.red : t.pctMas2 >= 10 ? C.amber : C.green } }),
       td(t.p90 != null ? t.p90 + " días háb." : "—"),
+      td(t.p90Desp != null ? t.p90Desp + " días háb." : "—"),
       td(t.pendAtr ? t.pendAtr + " ⚠" : t.pend, { className: "px-3 py-1.5 " + (t.pendAtr ? "font-black" : ""), style: t.pendAtr ? { color: C.red } : undefined })));
-    return caja("Solicitud de stock a tiendas — confirmado → procesado en depósito central",
-      "Cuando el pedido sale de una tienda (no del depo central), se mide cuánto tarda esa mercadería confirmada en procesarse en el central. Más de 2 días hábiles sin procesar = no la enviaron o se extravió. \"9 de cada 10\" = tiempo en el que entra el 90% de las solicitudes. Ordenado de peor a mejor.",
-      ["Tienda origen", "Artículos solicitados", "Demorados (+2 días háb.)", "9 de cada 10 en", "Sin procesar (vencidos ⚠)"], filas);
+    return caja("Despacho por depósito de origen — confirmado → procesado → despachado",
+      "\"Procesado en\" mide cuánto tarda la mercadería confirmada en llegar a procesarse en el central (+2 días háb. sin procesar = no la enviaron o se extravió). \"Despachado en\" incluye además el tiempo del propio depósito central hasta despachar el pedido. Primero el central, después las tiendas de peor a mejor.",
+      ["Origen", "Artículos", "Demorados (+2 días háb.)", "Procesado en", "Despachado en", "Sin procesar (vencidos ⚠)"], filas);
   };
   // Mini gráfico de evolución mensual para un KPI (barras por mes; resalta el último mes con dato)
   // Barra de progreso del CUMPLIMIENTO del mes corriente, con la meta 90–95% marcada.
@@ -1149,7 +1157,6 @@ function Operativa({ yo, activo, syncTick }) {
     /*#__PURE__*/React.createElement(MetricCard, { label: "Tiempo a despacho", value: volDesp != null ? volDesp + " días" : "—", color: C.blue, sub: "ver por depósito ▾", onClick: () => setKpiPanel(kpiPanel === "stock" ? "" : "stock"), activoCard: kpiPanel === "stock" }),
     /*#__PURE__*/React.createElement(MetricCard, { label: "Tiempo de entrega", value: volEnt != null ? volEnt + " días" : "—", color: C.ink, sub: "ver por tienda ▾", onClick: () => setKpiPanel(kpiPanel === "entrega" ? "" : "entrega"), activoCard: kpiPanel === "entrega" }),
     /*#__PURE__*/React.createElement(MetricCard, { label: "Sin WMS", value: operSnap ? (operSnap.sin_wms || 0) : sinWMS.length, color: (operSnap ? operSnap.sin_wms : sinWMS.length) ? C.amber : C.gray, tab: sinWMS.length ? "sinwms" : null })),
-  /*#__PURE__*/React.createElement("div", { className: "text-[11px] -mt-1", style: { color: C.gray } }, "Los tiempos son en los que entra ", /*#__PURE__*/React.createElement("b", null, "9 de cada 10 pedidos"), " (compra → despacho / compra → entrega); el 10% más lento queda afuera."),
   kpiPanel && DesglosePanel({ tipo: kpiPanel }),
   leadtimeEntProm == null && entregaDiag && /*#__PURE__*/React.createElement("div", { className: "rounded-xl px-4 py-3 text-xs", style: { background: C.amberS, color: C.amber } },
     /*#__PURE__*/React.createElement("b", null, "Tiempo de entrega sin datos. "),
