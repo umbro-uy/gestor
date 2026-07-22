@@ -385,8 +385,10 @@ function MesesAnio({
       borderColor: C2.line
     }
   }, visibles.map((d, i) => {
-    const pct = d.mMeta > 0 ? Math.round(d.mReal / d.mMeta * 100) : d.mReal > 0 ? 100 : null;
-    const col = colMeta(pct);
+    // Sin meta cargada no se puede calcular cumplimiento: no inventamos un 100%.
+    const sinMeta = !(d.mMeta > 0);
+    const pct = sinMeta ? null : Math.round(d.mReal / d.mMeta * 100);
+    const col = sinMeta ? C2.gray : colMeta(pct);
     const esMesActual = d.m === mesActual;
     return /*#__PURE__*/React.createElement("div", {
       key: d.m,
@@ -410,7 +412,7 @@ function MesesAnio({
       }
     }, "HOY")), /*#__PURE__*/React.createElement("div", {
       className: "flex-1"
-    }, d.tieneDatos ? /*#__PURE__*/React.createElement(Bar, {
+    }, d.tieneDatos && !sinMeta ? /*#__PURE__*/React.createElement(Bar, {
       pct: Math.min(pct || 0, 100),
       color: col,
       h: 6
@@ -426,12 +428,12 @@ function MesesAnio({
       style: {
         color: col
       }
-    }, pct != null ? `${pct}%` : "—"), /*#__PURE__*/React.createElement("div", {
+    }, sinMeta ? "Sin meta" : `${pct}%`), /*#__PURE__*/React.createElement("div", {
       className: "text-[10px] tabular-nums",
       style: {
         color: C2.gray
       }
-    }, fmtUSD(d.mReal), "/", fmtUSD(d.mMeta))) : /*#__PURE__*/React.createElement("div", {
+    }, sinMeta ? "facturado " + fmtUSD(d.mReal) : fmtUSD(d.mReal) + "/" + fmtUSD(d.mMeta))) : /*#__PURE__*/React.createElement("div", {
       className: "text-[10px]",
       style: {
         color: "#C5CBD6"
@@ -443,6 +445,7 @@ function MesesAnio({
 /* ── ProgresoAnual: componente separado ── */
 function ProgresoAnual({
   metas,
+  porMesNeto,
   fmtUSD,
   colMeta,
   fmtM
@@ -456,13 +459,17 @@ function ProgresoAnual({
   let totalRealAnio = 0,
     totalMetaAnio = 0;
   const dataMeses = MESES_ANIO.map(m => {
-    const tiendas = TIENDAS_META2.map(t => metas.find(x => x.mes === m && x.tienda === t) || {
-      tienda: t,
-      meta: 0,
-      real: 0
+    // Real = facturación neta del BAS (fuente de verdad) para cada tienda; si el BAS cargado no
+    // trae ese mes/tienda, cae al real guardado en la fila de metas (p.ej. MercadoLibre, que es
+    // manual). Antes solo se contaba el real de las tiendas que tenían fila de meta → el total
+    // anual quedaba corto. Ahora se suman las 4 tiendas siempre.
+    let mReal = 0, mMeta = 0;
+    TIENDAS_META2.forEach(t => {
+      const row = metas.find(x => x.mes === m && x.tienda === t);
+      const realBAS = porMesNeto && porMesNeto[m] ? porMesNeto[m][t] : undefined;
+      mReal += realBAS != null ? Number(realBAS) : Number((row && row.real) || 0);
+      mMeta += Number((row && row.meta) || 0);
     });
-    const mReal = tiendas.reduce((a, t) => a + Number(t.real || 0), 0);
-    const mMeta = tiendas.reduce((a, t) => a + Number(t.meta || 0), 0);
     totalRealAnio += mReal;
     totalMetaAnio += mMeta;
     return {
@@ -1337,7 +1344,8 @@ function Metas({
       title: "Progreso anual y mes a mes",
       subtitle: "Objetivo " + new Date().getFullYear() + " · $100.000.000"
     }, h(ProgresoAnual, {
-      metas: resumenBAS ? metas.map(m => { const r = resumenBAS.porMesNeto?.[m.mes]?.[m.tienda]; return r != null ? { ...m, real: r } : m; }) : metas,
+      metas: metas,
+      porMesNeto: resumenBAS ? resumenBAS.porMesNeto : null,
       fmtUSD: fmtUSD,
       colMeta: colMeta,
       fmtM: fmtM
