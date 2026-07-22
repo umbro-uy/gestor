@@ -525,24 +525,27 @@ function Operativa({ yo, activo, syncTick }) {
     // Resumen y los KPIs automáticos muestren exactamente lo mismo, sin recalcular distinto.
     (async () => {
       try {
-        const lt = finalRows.filter(r => r.leadtime != null).map(r => r.leadtime);
-        const ltE = finalRows.filter(r => r.leadtimeEntrega != null).map(r => r.leadtimeEntrega);
+        // Los CANCELADOS quedan afuera de todos los cálculos de cumplimiento (serie del mes,
+        // calendario, desgloses por tienda): un pedido cancelado no es un incumplimiento de entrega.
+        const efectivos = finalRows.filter(r => !esCancEf(r));
+        const lt = efectivos.filter(r => r.leadtime != null).map(r => r.leadtime);
+        const ltE = efectivos.filter(r => r.leadtimeEntrega != null).map(r => r.leadtimeEntrega);
         // Resumen del mes corriente (para la barra de cumplimiento), calculado del cruce COMPLETO
         const mkNow = new Date().toISOString().slice(0, 7);
         const bk = {};
-        finalRows.forEach(r => { const d = parseFecha(r.fecha); if (!d) return; const m = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0"); const b = bk[m] || (bk[m] = { total: 0, entreg: 0, lt: [], ltE: [] }); b.total++; if (r.entregado) b.entreg++; if (r.leadtime != null) b.lt.push(r.leadtime); if (r.leadtimeEntrega != null) b.ltE.push(r.leadtimeEntrega); });
+        efectivos.forEach(r => { const d = parseFecha(r.fecha); if (!d) return; const m = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0"); const b = bk[m] || (bk[m] = { total: 0, entreg: 0, lt: [], ltE: [] }); b.total++; if (r.entregado) b.entreg++; if (r.leadtime != null) b.lt.push(r.leadtime); if (r.leadtimeEntrega != null) b.ltE.push(r.leadtimeEntrega); });
         const mk = bk[mkNow] ? mkNow : Object.keys(bk).sort().pop();
         const bC = mk ? bk[mk] : null;
         const serie = bC ? { mesKey: mk, total: bC.total, entregados: bC.entreg, cumpl: bC.total ? Math.round(bC.entreg / bC.total * 100) : null, despachoP90: percentil(bC.lt, PCTL), entregaP90: percentil(bC.ltE, PCTL) } : null;
         // Calendario por día de compra (total/entregados): en seguimiento solo se persisten los
         // accionables, así que sin esto otro usuario vería el calendario todo en 0%.
         const calM = {};
-        finalRows.forEach(r => { const d = parseFecha(r.fecha); if (!d) return; const dia = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); const b = calM[dia] || (calM[dia] = { dia, total: 0, entregados: 0 }); b.total++; if (r.entregado) b.entregados++; });
+        efectivos.forEach(r => { const d = parseFecha(r.fecha); if (!d) return; const dia = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); const b = calM[dia] || (calM[dia] = { dia, total: 0, entregados: 0 }); b.total++; if (r.entregado) b.entregados++; });
         const calArr = Object.values(calM).sort((a, b) => a.dia.localeCompare(b.dia));
         // ── Desgloses por tienda/depósito (para los KPI clickeables) ──
         // Cumplimiento y tiempos por tienda (canal de venta)
         const porTienda = {};
-        finalRows.forEach(r => { const t = r.tienda || "-"; const b = porTienda[t] || (porTienda[t] = { tienda: t, total: 0, entregados: 0, lt: [], ltE: [] }); b.total++; if (r.entregado) b.entregados++; if (r.leadtime != null) b.lt.push(r.leadtime); if (r.leadtimeEntrega != null) b.ltE.push(r.leadtimeEntrega); });
+        efectivos.forEach(r => { const t = r.tienda || "-"; const b = porTienda[t] || (porTienda[t] = { tienda: t, total: 0, entregados: 0, lt: [], ltE: [] }); b.total++; if (r.entregado) b.entregados++; if (r.leadtime != null) b.lt.push(r.leadtime); if (r.leadtimeEntrega != null) b.ltE.push(r.leadtimeEntrega); });
         const cumplPorTienda = Object.values(porTienda).map(b => ({ tienda: b.tienda, total: b.total, entregados: b.entregados, pct: b.total ? Math.round(b.entregados / b.total * 100) : 0, despachoP90: percentil(b.lt, PCTL), entregaP90: percentil(b.ltE, PCTL) })).sort((a, b) => a.pct - b.pct);
         // Solicitud de stock a TIENDAS (Deposito pedido ≠ 9/0): tiempo confirmado → procesado en central.
         // +2 días hábiles sin procesar = la tienda no envió la mercadería o se extravió.
@@ -584,10 +587,9 @@ function Operativa({ yo, activo, syncTick }) {
         const PROMESA_DH = 7;
         let maduros = null;
         if (mk) {
-          const delMes = finalRows.filter(r => { const d = parseFecha(r.fecha); return d && (d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0")) === mk; });
+          const delMes = efectivos.filter(r => { const d = parseFecha(r.fecha); return d && (d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0")) === mk; });
           let evalTotal = 0, enPlazo = 0;
           delMes.forEach(r => {
-            if (esCancEf(r)) return;
             if (r.entregado) {
               const dhE = r.fechaEntrega && String(r.fechaEntrega).trim() && r.fechaEntrega !== "-" ? diasHabEntre(r.fecha, r.fechaEntrega) : null;
               if (dhE == null) return; // entregado sin fecha de entrega: no se puede juzgar
@@ -607,8 +609,9 @@ function Operativa({ yo, activo, syncTick }) {
           estancados: finalRows.filter(r => r.estancado && !esCancEf(r)).length,
           depo0: finalRows.filter(r => r.sinStock && !esCancEf(r)).length,
           sin_wms: finalRows.filter(r => r.sinWMS && !esCancEf(r)).length,
-          entregados: finalRows.filter(r => r.entregado).length,
-          tasa_cumpl: finalRows.length ? Math.round(finalRows.filter(r => r.entregado).length / finalRows.length * 100) : 0,
+          entregados: efectivos.filter(r => r.entregado).length,
+          // Tasa histórica sobre pedidos EFECTIVOS (sin cancelados): un cancelado no incumple la entrega
+          tasa_cumpl: efectivos.length ? Math.round(efectivos.filter(r => r.entregado).length / efectivos.length * 100) : 0,
           leadtime_despacho: percentil(lt, PCTL),
           leadtime_entrega: percentil(ltE, PCTL),
           // El calendario y los desgloses van TAMBIÉN adentro de "serie" (columna jsonb que ya existe
@@ -892,9 +895,6 @@ function Operativa({ yo, activo, syncTick }) {
           : cumplShown != null
             ? entregMesShown + " de " + totalMesShown + " entregados · meta 90–95%"
             : "Cargá archivos para ver el cumplimiento del mes · meta 90–95%"),
-      // Referencia secundaria: el mes completo (incluye compras recientes que aún están en plazo).
-      exig && cumplShown != null && ce("div", { className: "text-[11px] mt-0.5", style: { color: C.gray } },
-        "Mes completo (incluye compras aún en plazo, no son incumplimiento): " + cumplShown + "% — " + entregMesShown + " de " + totalMesShown),
       !exig && cumplShown != null && ce("div", { className: "text-[11px] mt-0.5 font-semibold", style: { color: C.amber } },
         "⚠ Este % mezcla compras recientes aún en plazo. Volvé a cruzar los archivos con la app actualizada para ver el % exigible (promesa de 7 dh vencida)."));
   };
