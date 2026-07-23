@@ -639,7 +639,10 @@ function Operativa({ yo, activo, syncTick }) {
   // Cancelado "efectivo": Fenicio/WMS no siempre marcan la cancelación (el pedido queda en "Listo para
   // enviar"), pero el equipo la anota en el comentario ("Cancelado…"). Si el comentario dice cancelado/
   // anulado, el pedido está resuelto → NO cuenta como atrasado/crítico/estancado/etc.
-  const esCancEf = r => r.cancelado || (Array.isArray(r.historial) && r.historial.some(h => /cancel|anul/i.test(String(h && h.t || ""))));
+  // "Fraude" cuenta como cancelado: Fenicio cancela el pedido por fraude y el equipo lo anota así
+  // (el pedido detallado muestra "Cancelada" + nota de fraude), pero puede quedar retenido con el
+  // estado viejo si ya no viene en el reporte de Fenicio. La palabra en el comentario lo resuelve.
+  const esCancEf = r => r.cancelado || (Array.isArray(r.historial) && r.historial.some(h => /cancel|anul|fraude/i.test(String(h && h.t || ""))));
   const atrasados = resultado ? resultado.filter(r => r.atrasado && !esCancEf(r)) : [];
   const criticos = resultado ? resultado.filter(r => r.critico && !esCancEf(r)) : [];
   const inconsistentes = resultado ? resultado.filter(r => r.inconsistente && !esCancEf(r)) : [];
@@ -927,7 +930,7 @@ function Operativa({ yo, activo, syncTick }) {
   }, /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", null,
     ["Pedido", "Acción / comentarios", "Acc.", "Tienda", "Fecha compra", "Estado Fenicio", "Estado WMS", "Días hábiles", "Deposito", "C&C"].map(h => /*#__PURE__*/React.createElement("th", {
       key: h, className: "px-3 py-2 text-left font-bold uppercase", style: { color: C.gray, fontSize: 10, whiteSpace: "nowrap" }
-    }, h)))), /*#__PURE__*/React.createElement("tbody", null, rows.map((r, i) => { const rowBg = r.accionado ? "#F0FDF4" : r.atrasado ? "#FFF5F5" : r.inconsistente ? "#FFFBEB" : "#fff"; return /*#__PURE__*/React.createElement("tr", {
+    }, h)))), /*#__PURE__*/React.createElement("tbody", null, rows.map((r, i) => { const atrasadoVis = r.atrasado && !esCancEf(r); const rowBg = r.accionado ? "#F0FDF4" : atrasadoVis ? "#FFF5F5" : r.inconsistente ? "#FFFBEB" : "#fff"; return /*#__PURE__*/React.createElement("tr", {
     key: r.pedido || i,
     style: { background: rowBg }
   }, /*#__PURE__*/React.createElement("td", { className: "font-bold tabular-nums", style: { background: rowBg, whiteSpace: "nowrap" } }, /*#__PURE__*/React.createElement("span", { style: { userSelect: "all", cursor: "text" }, title: "Tocá para seleccionar y copiar" }, r.pedido), /*#__PURE__*/React.createElement("button", { onClick: e => { try { navigator.clipboard && navigator.clipboard.writeText(String(r.pedido)); } catch (_) {} const b = e.currentTarget, o = b.textContent; b.textContent = "✓"; setTimeout(() => { b.textContent = o; }, 900); }, title: "Copiar Nº de pedido", className: "ml-1 align-middle text-[11px] leading-none px-1 py-0.5 rounded", style: { background: "#EEF1F5", color: C.gray, cursor: "pointer", border: "none" } }, "⧉"), r.retenido && /*#__PURE__*/React.createElement("span", { className: "ml-1.5 align-middle text-[9px] font-bold px-1.5 py-px rounded-full", style: { background: "#EEF1F5", color: C.gray }, title: "Seguimiento de una carga anterior — no vino en los archivos actuales" }, "previo")),
@@ -937,7 +940,7 @@ function Operativa({ yo, activo, syncTick }) {
     /*#__PURE__*/React.createElement("td", { className: "px-3 py-2", style: { color: C.gray, whiteSpace: "nowrap" } }, r.fecha),
     /*#__PURE__*/React.createElement("td", { className: "px-3 py-2" }, /*#__PURE__*/React.createElement("span", { style: { background: r.entregado ? C.greenS : C.soft, color: r.entregado ? C.green : C.blue, padding: "2px 6px", borderRadius: 6, fontSize: 10, fontWeight: 600, whiteSpace: "nowrap" } }, r.estadoFen)),
     /*#__PURE__*/React.createElement("td", { className: "px-3 py-2" }, /*#__PURE__*/React.createElement("span", { style: { background: r.sinWMS ? C.amberS : r.inconsistente ? C.amberS : "#F1F4F8", color: r.sinWMS ? C.amber : r.inconsistente ? C.amber : C.gray, padding: "2px 6px", borderRadius: 6, fontSize: 10, fontWeight: 600, whiteSpace: "nowrap" } }, r.estadoWMS)),
-    /*#__PURE__*/React.createElement("td", { className: "px-3 py-2" }, /*#__PURE__*/React.createElement("span", { style: { fontWeight: 700, color: r.atrasado ? C.red : r.dias > 1 ? C.amber : C.gray } }, r.dias != null ? r.dias : "—"), r.atrasado && /*#__PURE__*/React.createElement("span", { style: { color: C.red } }, " ⚠")),
+    /*#__PURE__*/React.createElement("td", { className: "px-3 py-2" }, /*#__PURE__*/React.createElement("span", { style: { fontWeight: 700, color: atrasadoVis ? C.red : r.dias > 1 ? C.amber : C.gray } }, r.dias != null ? r.dias : "—"), atrasadoVis && /*#__PURE__*/React.createElement("span", { style: { color: C.red } }, " ⚠")),
     /*#__PURE__*/React.createElement("td", { className: "px-3 py-2", style: { color: C.gray, fontSize: 11, maxWidth: 150, whiteSpace: "normal", wordBreak: "break-word" } }, r.deposito),
     /*#__PURE__*/React.createElement("td", { className: "px-3 py-2" }, r.clickCollect ? /*#__PURE__*/React.createElement("span", { style: { background: "#EDE9FE", color: "#6D28D9", padding: "2px 6px", borderRadius: 6, fontSize: 10, fontWeight: 700, whiteSpace: "nowrap" } }, "C&C") : r.pickup ? /*#__PURE__*/React.createElement("span", { style: { background: "#DBEAFE", color: "#1D4ED8", padding: "2px 6px", borderRadius: 6, fontSize: 10, fontWeight: 700, whiteSpace: "nowrap" } }, "Pickup") : "")); })))));
   return /*#__PURE__*/React.createElement("div", {
