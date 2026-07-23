@@ -540,7 +540,10 @@ function Operativa({ yo, activo, syncTick }) {
         // Calendario por día de compra (total/entregados): en seguimiento solo se persisten los
         // accionables, así que sin esto otro usuario vería el calendario todo en 0%.
         const calM = {};
-        efectivos.forEach(r => { const d = parseFecha(r.fecha); if (!d) return; const dia = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); const b = calM[dia] || (calM[dia] = { dia, total: 0, entregados: 0 }); b.total++; if (r.entregado) b.entregados++; });
+        // "Cumplido" = entregado O listo para retirar: en Listo para retirar ya hicimos nuestra parte
+        // (falta que el cliente lo retire), igual que en la definición de atrasos. Así un día sin
+        // pedidos pendientes/atrasados llega a 100% (antes quedaba por debajo por los listos para retirar).
+        efectivos.forEach(r => { const d = parseFecha(r.fecha); if (!d) return; const dia = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); const b = calM[dia] || (calM[dia] = { dia, total: 0, entregados: 0 }); b.total++; if (r.entregado || r.listoRetiro) b.entregados++; });
         const calArr = Object.values(calM).sort((a, b) => a.dia.localeCompare(b.dia));
         // ── Desgloses por tienda/depósito (para los KPI clickeables) ──
         // Cumplimiento y tiempos por tienda (canal de venta)
@@ -728,7 +731,7 @@ function Operativa({ yo, activo, syncTick }) {
       if (!d) return;
       const dia = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
       if (!m[dia]) m[dia] = { dia, total: 0, entregados: 0 };
-      m[dia].total++; if (r.entregado) m[dia].entregados++;
+      m[dia].total++; if (r.entregado || r.listoRetiro) m[dia].entregados++;
     });
     return Object.values(m).map(x => ({ ...x, pct: x.total ? Math.round(x.entregados / x.total * 100) : 0 })).sort((a, b) => a.dia.localeCompare(b.dia));
   }, [resultado, calComp]);
@@ -1138,7 +1141,7 @@ function Operativa({ yo, activo, syncTick }) {
     /*#__PURE__*/React.createElement("div", { className: "flex items-center justify-between flex-wrap gap-2 mb-2" },
       /*#__PURE__*/React.createElement("div", null,
         /*#__PURE__*/React.createElement("span", { className: "text-sm font-bold" }, "Filtrar por fecha"),
-        /*#__PURE__*/React.createElement("span", { className: "text-[11px] ml-2", style: { color: C.gray } }, "Tocá un día para ver sus pedidos · color = % entregado"),
+        /*#__PURE__*/React.createElement("span", { className: "text-[11px] ml-2", style: { color: C.gray } }, "Tocá un día para ver sus pedidos · color = % entregado o listo para retirar"),
         !cruceEnSesion.current && !calComp && /*#__PURE__*/React.createElement("div", { className: "text-[11px] font-semibold mt-1", style: { color: C.amber } }, "⚠ El último cruce se hizo con una versión anterior de la app y no guardó el calendario compartido: estos % solo cuentan los pedidos accionables. Se corrige recargando la app (Ctrl+Shift+R) y volviendo a cruzar los archivos.")),
       /*#__PURE__*/React.createElement("div", { className: "flex items-center gap-2" },
         filtroDia && /*#__PURE__*/React.createElement("button", { onClick: () => { setFiltroDia(""); setPage(0); }, className: "text-xs font-bold px-3 py-1.5 rounded-lg", style: { background: C.soft, color: C.blue } }, "✕ Ver todos los días"),
@@ -1147,7 +1150,7 @@ function Operativa({ yo, activo, syncTick }) {
       const col = d.pct >= 90 ? C.green : d.pct >= 70 ? C.amber : C.red;
       const bg = d.pct >= 90 ? C.greenS : d.pct >= 70 ? C.amberS : C.redS;
       const sel = filtroDia === d.dia;
-      return /*#__PURE__*/React.createElement("button", { key: d.dia, onClick: () => { setFiltroDia(sel ? "" : d.dia); setPage(0); }, title: d.dia + " — " + d.entregados + "/" + d.total + " entregados", className: "rounded-lg px-2 py-1 text-center transition-all", style: { background: sel ? col : bg, minWidth: 50, border: sel ? "2px solid " + col : "2px solid transparent" } },
+      return /*#__PURE__*/React.createElement("button", { key: d.dia, onClick: () => { setFiltroDia(sel ? "" : d.dia); setPage(0); }, title: d.dia + " — " + d.entregados + "/" + d.total + " entregados o listos para retirar", className: "rounded-lg px-2 py-1 text-center transition-all", style: { background: sel ? col : bg, minWidth: 50, border: sel ? "2px solid " + col : "2px solid transparent" } },
         /*#__PURE__*/React.createElement("div", { className: "text-[10px] font-bold", style: { color: sel ? "#fff" : C.gray } }, d.dia.slice(8, 10) + "/" + d.dia.slice(5, 7)),
         /*#__PURE__*/React.createElement("div", { className: "text-sm font-black fraunces", style: { color: sel ? "#fff" : col } }, d.pct + "%"));
     })),
