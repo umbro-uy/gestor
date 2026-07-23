@@ -385,8 +385,10 @@ function MesesAnio({
       borderColor: C2.line
     }
   }, visibles.map((d, i) => {
-    const pct = d.mMeta > 0 ? Math.round(d.mReal / d.mMeta * 100) : d.mReal > 0 ? 100 : null;
-    const col = colMeta(pct);
+    // Sin meta cargada no se puede calcular cumplimiento: no inventamos un 100%.
+    const sinMeta = !(d.mMeta > 0);
+    const pct = sinMeta ? null : Math.round(d.mReal / d.mMeta * 100);
+    const col = sinMeta ? C2.gray : colMeta(pct);
     const esMesActual = d.m === mesActual;
     return /*#__PURE__*/React.createElement("div", {
       key: d.m,
@@ -410,7 +412,7 @@ function MesesAnio({
       }
     }, "HOY")), /*#__PURE__*/React.createElement("div", {
       className: "flex-1"
-    }, d.tieneDatos ? /*#__PURE__*/React.createElement(Bar, {
+    }, d.tieneDatos && !sinMeta ? /*#__PURE__*/React.createElement(Bar, {
       pct: Math.min(pct || 0, 100),
       color: col,
       h: 6
@@ -426,12 +428,12 @@ function MesesAnio({
       style: {
         color: col
       }
-    }, pct != null ? `${pct}%` : "—"), /*#__PURE__*/React.createElement("div", {
+    }, sinMeta ? "Sin meta" : `${pct}%`), /*#__PURE__*/React.createElement("div", {
       className: "text-[10px] tabular-nums",
       style: {
         color: C2.gray
       }
-    }, fmtUSD(d.mReal), "/", fmtUSD(d.mMeta))) : /*#__PURE__*/React.createElement("div", {
+    }, sinMeta ? "facturado " + fmtUSD(d.mReal) : fmtUSD(d.mReal) + "/" + fmtUSD(d.mMeta))) : /*#__PURE__*/React.createElement("div", {
       className: "text-[10px]",
       style: {
         color: "#C5CBD6"
@@ -443,6 +445,7 @@ function MesesAnio({
 /* ── ProgresoAnual: componente separado ── */
 function ProgresoAnual({
   metas,
+  porMesNeto,
   fmtUSD,
   colMeta,
   fmtM
@@ -456,13 +459,17 @@ function ProgresoAnual({
   let totalRealAnio = 0,
     totalMetaAnio = 0;
   const dataMeses = MESES_ANIO.map(m => {
-    const tiendas = TIENDAS_META2.map(t => metas.find(x => x.mes === m && x.tienda === t) || {
-      tienda: t,
-      meta: 0,
-      real: 0
+    // Real = facturación neta del BAS (fuente de verdad) para cada tienda; si el BAS cargado no
+    // trae ese mes/tienda, cae al real guardado en la fila de metas (p.ej. MercadoLibre, que es
+    // manual). Antes solo se contaba el real de las tiendas que tenían fila de meta → el total
+    // anual quedaba corto. Ahora se suman las 4 tiendas siempre.
+    let mReal = 0, mMeta = 0;
+    TIENDAS_META2.forEach(t => {
+      const row = metas.find(x => x.mes === m && x.tienda === t);
+      const realBAS = porMesNeto && porMesNeto[m] ? porMesNeto[m][t] : undefined;
+      mReal += realBAS != null ? Number(realBAS) : Number((row && row.real) || 0);
+      mMeta += Number((row && row.meta) || 0);
     });
-    const mReal = tiendas.reduce((a, t) => a + Number(t.real || 0), 0);
-    const mMeta = tiendas.reduce((a, t) => a + Number(t.meta || 0), 0);
     totalRealAnio += mReal;
     totalMetaAnio += mMeta;
     return {
@@ -1062,26 +1069,34 @@ function Metas({
       if (!nro) return;
       const { ba, bb } = docMonto(r);
       if (!factsXPed[nro]) factsXPed[nro] = { invoices: [], sumBA: 0, sumBB: 0, tienda: mapearTienda(r.Sucursal) };
-      factsXPed[nro].invoices.push({ label: String(r.Prefijo || "") + "/" + String(r.Numero || ""), ba, bb });
+      factsXPed[nro].invoices.push({ label: String(r.Prefijo || "") + "/" + String(r.Numero || ""), prefijo: String(r.Prefijo || "").trim(), ba, bb });
       factsXPed[nro].sumBA += ba; factsXPed[nro].sumBB += bb;
     });
     const ncsXPed = {};
     ncd.forEach(r => { const nro = extraerNroPedido(r.Observacion); if (!nro) return; const { ba } = docMonto(r); if (!ncsXPed[nro]) ncsXPed[nro] = { n: 0, ba: 0, labels: [] }; ncsXPed[nro].n++; ncsXPed[nro].ba += ba; ncsXPed[nro].labels.push(String(r.Prefijo || "") + "/" + String(r.Numero || "")); });
     const nInvoices = nro => factsXPed[nro] ? factsXPed[nro].invoices.length : 0;
-    const netFacturas = nro => nInvoices(nro) - (ncsXPed[nro] ? ncsXPed[nro].n : 0);
-    // Duplicados: mismo pedido facturado en más de una FACTURA. El "duplicado neto" = lo facturado de más
-    // DESCONTANDO las notas de crédito (prefijos 5004/5104/5102/5204). Si el duplicado ya tiene su NC,
-    // el neto queda en 0 y NO se muestra: ya está resuelto y no requiere acción manual.
+    // Un pedido puede tener varias facturas legítimas (distinto prefijo/serie o distinto importe: envíos
+    // o ítems facturados por separado). Una factura DUPLICADA de verdad es la MISMA repetida: mismo
+    // pedido + mismo PREFIJO + mismo IMPORTE. Solo esas copias repetidas cuentan como exceso.
+    const dupInfoXPed = nro => {
+      const f = factsXPed[nro];
+      if (!f) return { copiasDup: 0, exceso: 0, dupNeto: 0 };
+      const g = {};
+      f.invoices.forEach(x => { const k = x.prefijo + "|" + Math.round(x.ba); (g[k] = g[k] || { ba: x.ba, count: 0 }).count++; });
+      let exceso = 0, copiasDup = 0;
+      Object.values(g).forEach(v => { if (v.count > 1) { exceso += (v.count - 1) * v.ba; copiasDup += v.count - 1; } });
+      const nc = ncsXPed[nro] || { ba: 0 };
+      // Si el duplicado ya tiene su NC (prefijos 5004/5104/5102/5204), el neto queda en 0 → resuelto.
+      return { copiasDup, exceso, dupNeto: Math.max(0, exceso - nc.ba) };
+    };
     const factDuplicadas = Object.keys(factsXPed)
-      .filter(nro => nInvoices(nro) > 1)   // más de una factura para el mismo pedido
       .map(nro => {
         const f = factsXPed[nro];
         const nc = ncsXPed[nro] || { n: 0, ba: 0 };
-        const maxBA = f.invoices.reduce((mx, x) => Math.max(mx, x.ba), 0);
-        const dupNeto = f.sumBA - maxBA - nc.ba;   // exceso facturado aún no acreditado por NC
-        return { nro, facturas: nInvoices(nro), ncs: nc.n, ncMonto: nc.ba, total: f.sumBA, dupNeto: Math.max(0, dupNeto), tienda: f.tienda || "—", detalle: f.invoices.map(x => x.label + " $" + Math.round(x.ba).toLocaleString("es-UY")).join("  ·  ") };
+        const di = dupInfoXPed(nro);
+        return { nro, facturas: nInvoices(nro), copiasDup: di.copiasDup, ncs: nc.n, ncMonto: nc.ba, total: f.sumBA, dupNeto: di.dupNeto, tienda: f.tienda || "—", detalle: f.invoices.map(x => x.label + " $" + Math.round(x.ba).toLocaleString("es-UY")).join("  ·  ") };
       })
-      .filter(d => d.dupNeto > 0.5)   // los ya acreditados con NC se consideran resueltos → fuera
+      .filter(d => d.copiasDup > 0 && d.dupNeto > 0.5)   // solo copias repetidas reales, aún sin NC
       .sort((a, b) => b.dupNeto - a.dupNeto);
     // Facturado por tienda (BA sin IVA y BB con IVA, netos de nota de crédito)
     const factXTienda = {};
@@ -1157,7 +1172,7 @@ function Metas({
       const wms = wmsMap[nro];
       const estadoWMS = wms ? (wms["Estado Encuentra"] || wms["Estado ecommerce"] || "—") : "No está en WMS";
       const tieneF = nInvoices(nro) > 0;
-      const esDupF = netFacturas(nro) > 1;
+      const esDupF = dupInfoXPed(nro).dupNeto > 0.5;   // duplicado real (mismo prefijo+importe) sin NC
       const esPcn = pcn || personalizada;
       const base = { nro, tienda: p.tienda || "—", fecha, estadoFen, estadoPago, estadoWMS, importe, pcn: esPcn, conCupon, cupon, montoCupon, skusPcn: (skusPcn||[]).join(", ") };
       const reversado = /revers/i.test(estadoPago) || /revers/i.test(estadoFen) || /revers/i.test(estadoWMS);
@@ -1329,7 +1344,8 @@ function Metas({
       title: "Progreso anual y mes a mes",
       subtitle: "Objetivo " + new Date().getFullYear() + " · $100.000.000"
     }, h(ProgresoAnual, {
-      metas: resumenBAS ? metas.map(m => { const r = resumenBAS.porMesNeto?.[m.mes]?.[m.tienda]; return r != null ? { ...m, real: r } : m; }) : metas,
+      metas: metas,
+      porMesNeto: resumenBAS ? resumenBAS.porMesNeto : null,
       fmtUSD: fmtUSD,
       colMeta: colMeta,
       fmtM: fmtM
