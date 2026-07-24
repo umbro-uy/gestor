@@ -224,20 +224,24 @@ function Operativa({ yo, activo, syncTick }) {
     // Fenicio "Listo para retirar": el despacho/entrega de nosotros ya se cumplió y ahora depende del
     // cliente ir a retirarlo → NO es atraso (aunque lleve días en ese estado).
     const fenListoRetiro = /listo.*retir/i.test(estadoFen);
+    // EN TRÁNSITO: ya lo despachamos y va camino al cliente (Fenicio "Pedido en tránsito"). NO es atraso
+    // — nuestra parte (el despacho) ya se cumplió, ahora depende de la logística de entrega. Se sigue en
+    // su propio filtro. "diasTransito" ≈ días hábiles desde el despacho (el tránsito arranca al despachar).
+    const enTransito = /tr[aá]nsito|camino/i.test(estadoFen) || /tr[aá]nsito|camino/i.test(estadoWMS);
+    const diasTransito = diasDesp != null ? diasDesp : dias;
+    const transitoLargo = enTransito && diasTransito != null && diasTransito > 2;
     // ATRASO (definición de operaciones): más de N días hábiles en el mismo estado de Encuentra, que
-    // NO figure "Pedido entregado" ni "Listo para retirar" en Fenicio y que NO esté cancelado (ni en
-    // WMS ni en Fenicio). Incluye los casos en que el WMS dio despachado/recibido pero Fenicio aún no
-    // marca entregado (esos requieren seguimiento manual).
-    const atrasado = !cancelado && !fenEntregado && !fenListoRetiro && dias != null && dias > filtroDias;
-    const critico = !cancelado && !fenEntregado && !fenListoRetiro && dias != null && dias > 10;
+    // NO figure "Pedido entregado" ni "Listo para retirar" ni "En tránsito" en Fenicio y que NO esté
+    // cancelado. Los "En tránsito" salen del atraso: ya se despacharon (van en su propio filtro).
+    const atrasado = !cancelado && !fenEntregado && !fenListoRetiro && !enTransito && dias != null && dias > filtroDias;
+    const critico = !cancelado && !fenEntregado && !fenListoRetiro && !enTransito && dias != null && dias > 10;
     // "Validar despacho": Monitor dice despachado pero Fenicio no pasó a entregado tras +2 días hábiles.
-    // Si Fenicio está "Listo para retirar", el despacho SÍ se cumplió (pickup) → no hay que validar nada.
-    const posibleNoDespacho = despachadoWMS && !fenEntregado && !fenListoRetiro && (diasDesp != null ? diasDesp > 2 : (dias != null && dias > 2));
+    // Si Fenicio está "Listo para retirar" o "En tránsito", el despacho SÍ se cumplió → no hay que validar.
+    const posibleNoDespacho = despachadoWMS && !fenEntregado && !fenListoRetiro && !enTransito && (diasDesp != null ? diasDesp > 2 : (dias != null && dias > 2));
     const inconsistente = posibleNoDespacho;
     // ESTANCADO: hace +2 días hábiles que NO cambia de estado en el WMS y Fenicio no lo da por entregado
-    // ni "Listo para retirar". Aplica a CUALQUIER estado (ej.: "Despachado" +2d sin pasar a entregado en
-    // Fenicio = falla el despacho). Es independiente del atraso: un pedido puede ser estancado y/o atraso.
-    const estancado = !cancelado && !fenEntregado && !fenListoRetiro && diasEstado != null && diasEstado > 2;
+    // ni "Listo para retirar" ni "En tránsito". Es independiente del atraso.
+    const estancado = !cancelado && !fenEntregado && !fenListoRetiro && !enTransito && diasEstado != null && diasEstado > 2;
     // Forma de entrega: Click & Collect ≠ Pickup ≠ Envío a domicilio
     const fe = String(row.formaEntrega || "").toLowerCase();
     const clickCollect = fe.includes("click") || fe.includes("collect");
@@ -256,7 +260,7 @@ function Operativa({ yo, activo, syncTick }) {
     // Tiempo de entrega: días corridos compra → entrega real (fecha de entrega de Fenicio). Mide la experiencia del cliente.
     let leadtimeEntrega = null;
     if (row.fechaEntrega && String(row.fechaEntrega).trim() && row.fechaEntrega !== "-") { const a = parseFecha(row.fecha), b = parseFecha(row.fechaEntrega); if (a && b && b >= a) leadtimeEntrega = Math.round((b - a) / 86400000); }
-    return { ...row, dias, diasEstado, diasDesp, fenEntregado, wmsEntregado, entregado, cancelado, cancelDiscrep, despachadoWMS, atrasado, critico, inconsistente, posibleNoDespacho, estancado, listoRetiro, clickCollect, pickup, sinStock, ccDepo9, leadtime, leadtimeEntrega };
+    return { ...row, dias, diasEstado, diasDesp, diasTransito, fenEntregado, wmsEntregado, entregado, cancelado, cancelDiscrep, despachadoWMS, atrasado, critico, inconsistente, posibleNoDespacho, estancado, enTransito, transitoLargo, listoRetiro, clickCollect, pickup, sinStock, ccDepo9, leadtime, leadtimeEntrega };
   };
   // Carga el seguimiento ya analizado (con comentarios) al entrar a la pestaña, para que el análisis quede fijo.
   // opts.soloSiMasNuevo: usado cuando YA crucé archivos en esta sesión — solo pisa mi cruce si otro
@@ -457,7 +461,7 @@ function Operativa({ yo, activo, syncTick }) {
       alert("Se leyeron " + res.length + " pedidos de Fenicio pero ninguno coincidió con la columna \"" + colVenta + "\" del Monitor de Encuentra.\n\nVerificá que el N° de pedido de Fenicio corresponda a la columna Venta del Monitor.");
     }
     // ── Enriquecer cada pedido con su comentario/accionado persistido (no se pierden al recruzar) ──
-    const relevante = r => r.atrasado || r.critico || r.posibleNoDespacho || r.estancado || r.inconsistente;
+    const relevante = r => r.atrasado || r.critico || r.posibleNoDespacho || r.estancado || r.inconsistente || r.enTransito;
     const merged = res.map(r => {
       const c = comentarios[r.pedido] || {};
       return { ...r, historial: c.historial || [], accionado: !!c.accionado };
@@ -659,6 +663,10 @@ function Operativa({ yo, activo, syncTick }) {
   const noDespacho = resultado ? resultado.filter(r => r.posibleNoDespacho && !esCancEf(r)) : [];
   // Estancado y atrasado son métricas independientes: un pedido puede ser estancado, atrasado, o ambos.
   const estancados = resultado ? resultado.filter(r => r.estancado && !esCancEf(r)) : [];
+  // En tránsito: ya despachados, en camino al cliente (no son atraso). Se ordenan mostrando primero los
+  // que llevan más días en tránsito. "transitoLargo" = +2 días hábiles desde el despacho.
+  const enTransitoArr = resultado ? resultado.filter(r => r.enTransito && !esCancEf(r)).sort((a, b) => (b.diasTransito || 0) - (a.diasTransito || 0)) : [];
+  const transitoLargoN = enTransitoArr.filter(r => r.transitoLargo).length;
   const sinWMS = resultado ? resultado.filter(r => r.sinWMS && !esCancEf(r)) : [];
   const sinStockArr = resultado ? resultado.filter(r => r.sinStock && !esCancEf(r)) : [];
   const ccDepo9Arr = resultado ? resultado.filter(r => r.ccDepo9) : [];
@@ -806,7 +814,7 @@ function Operativa({ yo, activo, syncTick }) {
   // Opciones de filtros (estados de Fenicio y depósitos presentes en el análisis)
   const estadosFenOpts = resultado ? Array.from(new Set(resultado.map(r => r.estadoFen).filter(Boolean))).sort() : [];
   const depositosOpts = resultado ? Array.from(new Set(resultado.map(r => r.deposito).filter(d => d && d !== "-"))).sort() : [];
-  const vistaBase = vistaTab === "criticos" ? criticos : vistaTab === "nodespacho" ? noDespacho : vistaTab === "estancados" ? estancados : vistaTab === "depo0" ? sinStockArr : vistaTab === "sinwms" ? sinWMS : vistaTab === "canceldiscrep" ? cancelDiscreps : vistaTab === "probcancel" ? probableCancel : vistaTab === "todos" ? (resultado || []) : atrasados;
+  const vistaBase = vistaTab === "criticos" ? criticos : vistaTab === "nodespacho" ? noDespacho : vistaTab === "estancados" ? estancados : vistaTab === "depo0" ? sinStockArr : vistaTab === "sinwms" ? sinWMS : vistaTab === "canceldiscrep" ? cancelDiscreps : vistaTab === "probcancel" ? probableCancel : vistaTab === "transito" ? enTransitoArr : vistaTab === "todos" ? (resultado || []) : atrasados;
   const buscarT = buscar.trim().toLowerCase();
   const diaISO = f => { const d = parseFecha(f); return d ? d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0") : ""; };
   const vistaRows = vistaBase.filter(r =>
@@ -953,7 +961,7 @@ function Operativa({ yo, activo, syncTick }) {
     /*#__PURE__*/React.createElement("td", { className: "px-3 py-2", style: { color: C.gray, whiteSpace: "nowrap" } }, r.fecha),
     /*#__PURE__*/React.createElement("td", { className: "px-3 py-2" }, /*#__PURE__*/React.createElement("span", { style: { background: r.entregado ? C.greenS : C.soft, color: r.entregado ? C.green : C.blue, padding: "2px 6px", borderRadius: 6, fontSize: 10, fontWeight: 600, whiteSpace: "nowrap" } }, r.estadoFen)),
     /*#__PURE__*/React.createElement("td", { className: "px-3 py-2" }, /*#__PURE__*/React.createElement("span", { style: { background: r.sinWMS ? C.amberS : r.inconsistente ? C.amberS : "#F1F4F8", color: r.sinWMS ? C.amber : r.inconsistente ? C.amber : C.gray, padding: "2px 6px", borderRadius: 6, fontSize: 10, fontWeight: 600, whiteSpace: "nowrap" } }, r.estadoWMS)),
-    /*#__PURE__*/React.createElement("td", { className: "px-3 py-2" }, /*#__PURE__*/React.createElement("span", { style: { fontWeight: 700, color: atrasadoVis ? C.red : r.dias > 1 ? C.amber : C.gray } }, r.dias != null ? r.dias : "—"), atrasadoVis && /*#__PURE__*/React.createElement("span", { style: { color: C.red } }, " ⚠")),
+    /*#__PURE__*/React.createElement("td", { className: "px-3 py-2" }, /*#__PURE__*/React.createElement("span", { style: { fontWeight: 700, color: atrasadoVis ? C.red : r.dias > 1 ? C.amber : C.gray } }, r.dias != null ? r.dias : "—"), atrasadoVis && /*#__PURE__*/React.createElement("span", { style: { color: C.red } }, " ⚠"), r.enTransito && /*#__PURE__*/React.createElement("span", { title: r.diasTransito != null ? r.diasTransito + " días háb. en tránsito (desde el despacho)" : "En tránsito", style: { color: r.transitoLargo ? C.amber : "#0EA5E9", fontWeight: 700 } }, r.transitoLargo ? " 🚚+" + r.diasTransito + "d" : " 🚚")),
     /*#__PURE__*/React.createElement("td", { className: "px-3 py-2", style: { color: C.gray, fontSize: 11, maxWidth: 150, whiteSpace: "normal", wordBreak: "break-word" } }, r.deposito),
     /*#__PURE__*/React.createElement("td", { className: "px-3 py-2" }, r.clickCollect ? /*#__PURE__*/React.createElement("span", { style: { background: "#EDE9FE", color: "#6D28D9", padding: "2px 6px", borderRadius: 6, fontSize: 10, fontWeight: 700, whiteSpace: "nowrap" } }, "C&C") : r.pickup ? /*#__PURE__*/React.createElement("span", { style: { background: "#DBEAFE", color: "#1D4ED8", padding: "2px 6px", borderRadius: 6, fontSize: 10, fontWeight: 700, whiteSpace: "nowrap" } }, "Pickup") : "")); })))));
   return /*#__PURE__*/React.createElement("div", {
@@ -1179,7 +1187,8 @@ function Operativa({ yo, activo, syncTick }) {
     /*#__PURE__*/React.createElement(AccionCard, { label: "Estancados", value: nEstancados, color: C.amber, tab: "estancados", sub: "Mismo estado WMS +2d sin entregar" }),
     /*#__PURE__*/React.createElement(AccionCard, { label: "Depo 0", value: nDepo0, color: "#7C3AED", tab: "depo0", sub: "Sin stock — acción manual" }),
     cancelDiscreps.length > 0 && /*#__PURE__*/React.createElement(AccionCard, { label: "Cancel. a alinear", value: cancelDiscreps.length, color: "#0891B2", tab: "canceldiscrep", sub: "Cancelado en una sola plataforma" }),
-    probableCancel.length > 0 && /*#__PURE__*/React.createElement(AccionCard, { label: "Cancelado (probable)", value: probableCancel.length, color: "#64748B", tab: "probcancel", sub: "Sin Fenicio + WMS procesado — verificar" })),
+    probableCancel.length > 0 && /*#__PURE__*/React.createElement(AccionCard, { label: "Cancelado (probable)", value: probableCancel.length, color: "#64748B", tab: "probcancel", sub: "Sin Fenicio + WMS procesado — verificar" }),
+    enTransitoArr.length > 0 && /*#__PURE__*/React.createElement(AccionCard, { label: "En tránsito", value: enTransitoArr.length, color: "#0EA5E9", tab: "transito", sub: "Despachados, en camino" + (transitoLargoN ? " · " + transitoLargoN + " hace +2 días háb." : "") })),
   usarSnap && atrasados.length !== nAtrasados && /*#__PURE__*/React.createElement("div", { className: "text-[11px] -mt-1", style: { color: C.gray } }, "Cifras del último cruce compartido (coinciden con Resumen). Volvé a subir los archivos y cruzar para actualizar el detalle."),
   /*#__PURE__*/React.createElement("div", { className: "text-[11px] font-bold uppercase tracking-widest", style: { color: C.blue } }, "Cumplimiento del mes"),
   /*#__PURE__*/React.createElement(ProgresoMes, null),
@@ -1218,7 +1227,7 @@ function Operativa({ yo, activo, syncTick }) {
       /*#__PURE__*/React.createElement("button", { onClick: () => setPage(p => Math.max(0, p - 1)), disabled: pageSafe <= 0, className: "text-xs font-bold px-3 py-1.5 rounded-lg disabled:opacity-40", style: { background: "#EEF1F5", color: C.gray } }, "← Anterior"),
       /*#__PURE__*/React.createElement("span", { className: "text-xs font-bold", style: { color: C.gray } }, "Hoja " + (pageSafe + 1) + " / " + totalPaginas),
       /*#__PURE__*/React.createElement("button", { onClick: () => setPage(p => Math.min(totalPaginas - 1, p + 1)), disabled: pageSafe >= totalPaginas - 1, className: "text-xs font-bold px-3 py-1.5 rounded-lg disabled:opacity-40", style: { background: "#EEF1F5", color: C.gray } }, "Siguiente →"))),
-  vistaRows.length > 0 ? Tabla({ rows: pageRows }) : Vacio({ msg: vistaTab === "criticos" ? "No hay pedidos críticos (+10 días hábiles)." : vistaTab === "nodespacho" ? "No hay pedidos despachados en WMS que sigan sin entregar en Fenicio." : vistaTab === "estancados" ? "No hay pedidos estancados (+2 días hábiles sin avanzar en el WMS)." : vistaTab === "inconsistencias" ? "Todos los estados coinciden." : vistaTab === "depo0" ? "No hay pedidos en Depo 0 (sin stock)." : vistaTab === "probcancel" ? "No hay cancelados probables (pedidos que dejaron de venir en Fenicio con el WMS ya procesado)." : vistaTab === "atrasados" ? "No hay pedidos atrasados para este periodo." : "No hay pedidos en esta vista." }),
+  vistaRows.length > 0 ? Tabla({ rows: pageRows }) : Vacio({ msg: vistaTab === "criticos" ? "No hay pedidos críticos (+10 días hábiles)." : vistaTab === "nodespacho" ? "No hay pedidos despachados en WMS que sigan sin entregar en Fenicio." : vistaTab === "estancados" ? "No hay pedidos estancados (+2 días hábiles sin avanzar en el WMS)." : vistaTab === "inconsistencias" ? "Todos los estados coinciden." : vistaTab === "depo0" ? "No hay pedidos en Depo 0 (sin stock)." : vistaTab === "probcancel" ? "No hay cancelados probables (pedidos que dejaron de venir en Fenicio con el WMS ya procesado)." : vistaTab === "transito" ? "No hay pedidos en tránsito." : vistaTab === "atrasados" ? "No hay pedidos atrasados para este periodo." : "No hay pedidos en esta vista." }),
   totalPaginas > 1 && /*#__PURE__*/React.createElement("div", { className: "flex items-center justify-center gap-3 pt-1" },
     /*#__PURE__*/React.createElement("button", { onClick: () => setPage(p => Math.max(0, p - 1)), disabled: pageSafe <= 0, className: "text-xs font-bold px-3 py-1.5 rounded-lg disabled:opacity-40", style: { background: "#EEF1F5", color: C.gray } }, "← Anterior"),
     /*#__PURE__*/React.createElement("span", { className: "text-xs font-bold", style: { color: C.gray } }, "Hoja " + (pageSafe + 1) + " / " + totalPaginas),
