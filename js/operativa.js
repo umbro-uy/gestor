@@ -64,6 +64,10 @@ function Operativa({ yo, activo, syncTick }) {
   const [buscar, setBuscar] = useState("");
   const [calMes, setCalMes] = useState("");
   const [kpiPanel, setKpiPanel] = useState(""); // "" | "cumpl" | "stock" | "entrega": desglose abierto bajo los KPI
+  // Marcador para "cancelado probable": el pedido dejó de venir en Fenicio (el demorasweb se descarga
+  // filtrado por "Pago aprobado") pero el WMS ya lo procesó → perdió el pago aprobado = se canceló.
+  const MARK_PROBCANCEL = "Cancelado (probable · sin Fenicio, WMS procesado)";
+  const esProbCancel = r => /cancelado \(probable/i.test(String(r && r.estadoFen || ""));
   const [filtroDia, setFiltroDia] = useState(""); // día (YYYY-MM-DD) elegido en el calendario para filtrar la tabla
   const POR_HOJA = 50;
   const leerFenicio = tienda => e => {
@@ -468,7 +472,7 @@ function Operativa({ yo, activo, syncTick }) {
       .filter(p => !enCruce.has(p.pedido) && ((p.historial && p.historial.length) || p.accionado))
       .map(p => {
         const w = wmsMap[String(p.pedido).trim()];
-        const base = w ? {
+        let base = w ? {
           ...p,
           estadoWMS: w[colEstEnc] || p.estadoWMS,
           estadoEco: w[colEstEco] || p.estadoEco,
@@ -477,6 +481,14 @@ function Operativa({ yo, activo, syncTick }) {
           fechaEstado: fechaUltMovWMS(w),
           sinWMS: false
         } : p;
+        // Cancelado PROBABLE: no vino en Fenicio (filtrado por "Pago aprobado" al descargar) y el WMS ya
+        // lo procesó → perdió el pago aprobado = se canceló en Fenicio (ahí no viaja, y en el WMS ya no
+        // se puede cancelar un pedido procesado). Se marca en estadoFen para que salga de atrasados y se
+        // persista (así también queda resuelto al recargar). No aplica si ya está cancelado/entregado.
+        const estW = String(base.estadoWMS || "");
+        const wmsProcesado = /clasificad|liberad|pronto|despach|tr[aá]nsito|camino|recib|entregad/i.test(estW);
+        const yaResuelto = /cancel|anul|entregad/i.test(String(base.estadoFen || "")) || /cancel|anul|entregad/i.test(estW);
+        if (w && wmsProcesado && !yaResuelto) base = { ...base, estadoFen: MARK_PROBCANCEL };
         return { ...calcDeriv(base), retenido: true };
       });
     const finalRows = merged.concat(retenidos).sort((a, b) => (b.dias || 0) - (a.dias || 0));
@@ -486,8 +498,9 @@ function Operativa({ yo, activo, syncTick }) {
     setUltimaSync(new Date());
     setVistaTab("atrasados");
     setPage(0);
-    // Persistir SOLO los pedidos accionables (snapshot); no pisa comentario/accionado existentes
-    const aSeguir = merged.filter(relevante);
+    // Persistir los accionables + los retenidos marcados como "cancelado probable" (para que su estado
+    // quede guardado y no vuelvan a contar como atrasados al recargar la pestaña).
+    const aSeguir = merged.filter(relevante).concat(retenidos.filter(esProbCancel));
     (async () => {
       try {
         const payload = aSeguir.map(r => ({
@@ -649,8 +662,11 @@ function Operativa({ yo, activo, syncTick }) {
   const sinWMS = resultado ? resultado.filter(r => r.sinWMS && !esCancEf(r)) : [];
   const sinStockArr = resultado ? resultado.filter(r => r.sinStock && !esCancEf(r)) : [];
   const ccDepo9Arr = resultado ? resultado.filter(r => r.ccDepo9) : [];
+  // Cancelado PROBABLE (inferido: sin Fenicio + WMS procesado). Lista aparte para que Sol lo verifique.
+  const probableCancel = resultado ? resultado.filter(esProbCancel) : [];
   // Cancelados en una sola plataforma (WMS o Fenicio, pero no ambas) → a revisar / alinear.
-  const cancelDiscreps = resultado ? resultado.filter(r => r.cancelDiscrep) : [];
+  // Los "cancelado probable" salen de acá: no son para alinear (un pedido procesado no se cancela en WMS).
+  const cancelDiscreps = resultado ? resultado.filter(r => r.cancelDiscrep && !esProbCancel(r)) : [];
   // Cifras de las tarjetas: si NO estoy cruzando en vivo, uso el snapshot COMPARTIDO (las MISMAS que ve
   // Resumen) para que Operativa y Resumen coincidan siempre. Al recargar la pestaña se re-derivan los
   // pedidos guardados con la fecha de hoy (más días encima) e inflan el conteo; el snapshot es la cifra
@@ -790,7 +806,7 @@ function Operativa({ yo, activo, syncTick }) {
   // Opciones de filtros (estados de Fenicio y depósitos presentes en el análisis)
   const estadosFenOpts = resultado ? Array.from(new Set(resultado.map(r => r.estadoFen).filter(Boolean))).sort() : [];
   const depositosOpts = resultado ? Array.from(new Set(resultado.map(r => r.deposito).filter(d => d && d !== "-"))).sort() : [];
-  const vistaBase = vistaTab === "criticos" ? criticos : vistaTab === "nodespacho" ? noDespacho : vistaTab === "estancados" ? estancados : vistaTab === "depo0" ? sinStockArr : vistaTab === "sinwms" ? sinWMS : vistaTab === "canceldiscrep" ? cancelDiscreps : vistaTab === "todos" ? (resultado || []) : atrasados;
+  const vistaBase = vistaTab === "criticos" ? criticos : vistaTab === "nodespacho" ? noDespacho : vistaTab === "estancados" ? estancados : vistaTab === "depo0" ? sinStockArr : vistaTab === "sinwms" ? sinWMS : vistaTab === "canceldiscrep" ? cancelDiscreps : vistaTab === "probcancel" ? probableCancel : vistaTab === "todos" ? (resultado || []) : atrasados;
   const buscarT = buscar.trim().toLowerCase();
   const diaISO = f => { const d = parseFecha(f); return d ? d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0") : ""; };
   const vistaRows = vistaBase.filter(r =>
@@ -927,7 +943,7 @@ function Operativa({ yo, activo, syncTick }) {
   }, /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", null,
     ["Pedido", "Acción / comentarios", "Acc.", "Tienda", "Fecha compra", "Estado Fenicio", "Estado WMS", "Días hábiles", "Deposito", "C&C"].map(h => /*#__PURE__*/React.createElement("th", {
       key: h, className: "px-3 py-2 text-left font-bold uppercase", style: { color: C.gray, fontSize: 10, whiteSpace: "nowrap" }
-    }, h)))), /*#__PURE__*/React.createElement("tbody", null, rows.map((r, i) => { const rowBg = r.accionado ? "#F0FDF4" : r.atrasado ? "#FFF5F5" : r.inconsistente ? "#FFFBEB" : "#fff"; return /*#__PURE__*/React.createElement("tr", {
+    }, h)))), /*#__PURE__*/React.createElement("tbody", null, rows.map((r, i) => { const atrasadoVis = r.atrasado && !esCancEf(r); const rowBg = r.accionado ? "#F0FDF4" : atrasadoVis ? "#FFF5F5" : r.inconsistente ? "#FFFBEB" : "#fff"; return /*#__PURE__*/React.createElement("tr", {
     key: r.pedido || i,
     style: { background: rowBg }
   }, /*#__PURE__*/React.createElement("td", { className: "font-bold tabular-nums", style: { background: rowBg, whiteSpace: "nowrap" } }, /*#__PURE__*/React.createElement("span", { style: { userSelect: "all", cursor: "text" }, title: "Tocá para seleccionar y copiar" }, r.pedido), /*#__PURE__*/React.createElement("button", { onClick: e => { try { navigator.clipboard && navigator.clipboard.writeText(String(r.pedido)); } catch (_) {} const b = e.currentTarget, o = b.textContent; b.textContent = "✓"; setTimeout(() => { b.textContent = o; }, 900); }, title: "Copiar Nº de pedido", className: "ml-1 align-middle text-[11px] leading-none px-1 py-0.5 rounded", style: { background: "#EEF1F5", color: C.gray, cursor: "pointer", border: "none" } }, "⧉"), r.retenido && /*#__PURE__*/React.createElement("span", { className: "ml-1.5 align-middle text-[9px] font-bold px-1.5 py-px rounded-full", style: { background: "#EEF1F5", color: C.gray }, title: "Seguimiento de una carga anterior — no vino en los archivos actuales" }, "previo")),
@@ -937,7 +953,7 @@ function Operativa({ yo, activo, syncTick }) {
     /*#__PURE__*/React.createElement("td", { className: "px-3 py-2", style: { color: C.gray, whiteSpace: "nowrap" } }, r.fecha),
     /*#__PURE__*/React.createElement("td", { className: "px-3 py-2" }, /*#__PURE__*/React.createElement("span", { style: { background: r.entregado ? C.greenS : C.soft, color: r.entregado ? C.green : C.blue, padding: "2px 6px", borderRadius: 6, fontSize: 10, fontWeight: 600, whiteSpace: "nowrap" } }, r.estadoFen)),
     /*#__PURE__*/React.createElement("td", { className: "px-3 py-2" }, /*#__PURE__*/React.createElement("span", { style: { background: r.sinWMS ? C.amberS : r.inconsistente ? C.amberS : "#F1F4F8", color: r.sinWMS ? C.amber : r.inconsistente ? C.amber : C.gray, padding: "2px 6px", borderRadius: 6, fontSize: 10, fontWeight: 600, whiteSpace: "nowrap" } }, r.estadoWMS)),
-    /*#__PURE__*/React.createElement("td", { className: "px-3 py-2" }, /*#__PURE__*/React.createElement("span", { style: { fontWeight: 700, color: r.atrasado ? C.red : r.dias > 1 ? C.amber : C.gray } }, r.dias != null ? r.dias : "—"), r.atrasado && /*#__PURE__*/React.createElement("span", { style: { color: C.red } }, " ⚠")),
+    /*#__PURE__*/React.createElement("td", { className: "px-3 py-2" }, /*#__PURE__*/React.createElement("span", { style: { fontWeight: 700, color: atrasadoVis ? C.red : r.dias > 1 ? C.amber : C.gray } }, r.dias != null ? r.dias : "—"), atrasadoVis && /*#__PURE__*/React.createElement("span", { style: { color: C.red } }, " ⚠")),
     /*#__PURE__*/React.createElement("td", { className: "px-3 py-2", style: { color: C.gray, fontSize: 11, maxWidth: 150, whiteSpace: "normal", wordBreak: "break-word" } }, r.deposito),
     /*#__PURE__*/React.createElement("td", { className: "px-3 py-2" }, r.clickCollect ? /*#__PURE__*/React.createElement("span", { style: { background: "#EDE9FE", color: "#6D28D9", padding: "2px 6px", borderRadius: 6, fontSize: 10, fontWeight: 700, whiteSpace: "nowrap" } }, "C&C") : r.pickup ? /*#__PURE__*/React.createElement("span", { style: { background: "#DBEAFE", color: "#1D4ED8", padding: "2px 6px", borderRadius: 6, fontSize: 10, fontWeight: 700, whiteSpace: "nowrap" } }, "Pickup") : "")); })))));
   return /*#__PURE__*/React.createElement("div", {
@@ -1162,7 +1178,8 @@ function Operativa({ yo, activo, syncTick }) {
     /*#__PURE__*/React.createElement(AccionCard, { label: "Validar despacho", value: nNoDespacho, color: "#B45309", tab: "nodespacho", sub: "Despachado WMS, sin entregar" }),
     /*#__PURE__*/React.createElement(AccionCard, { label: "Estancados", value: nEstancados, color: C.amber, tab: "estancados", sub: "Mismo estado WMS +2d sin entregar" }),
     /*#__PURE__*/React.createElement(AccionCard, { label: "Depo 0", value: nDepo0, color: "#7C3AED", tab: "depo0", sub: "Sin stock — acción manual" }),
-    cancelDiscreps.length > 0 && /*#__PURE__*/React.createElement(AccionCard, { label: "Cancel. a alinear", value: cancelDiscreps.length, color: "#0891B2", tab: "canceldiscrep", sub: "Cancelado en una sola plataforma" })),
+    cancelDiscreps.length > 0 && /*#__PURE__*/React.createElement(AccionCard, { label: "Cancel. a alinear", value: cancelDiscreps.length, color: "#0891B2", tab: "canceldiscrep", sub: "Cancelado en una sola plataforma" }),
+    probableCancel.length > 0 && /*#__PURE__*/React.createElement(AccionCard, { label: "Cancelado (probable)", value: probableCancel.length, color: "#64748B", tab: "probcancel", sub: "Sin Fenicio + WMS procesado — verificar" })),
   usarSnap && atrasados.length !== nAtrasados && /*#__PURE__*/React.createElement("div", { className: "text-[11px] -mt-1", style: { color: C.gray } }, "Cifras del último cruce compartido (coinciden con Resumen). Volvé a subir los archivos y cruzar para actualizar el detalle."),
   /*#__PURE__*/React.createElement("div", { className: "text-[11px] font-bold uppercase tracking-widest", style: { color: C.blue } }, "Cumplimiento del mes"),
   /*#__PURE__*/React.createElement(ProgresoMes, null),
@@ -1201,7 +1218,7 @@ function Operativa({ yo, activo, syncTick }) {
       /*#__PURE__*/React.createElement("button", { onClick: () => setPage(p => Math.max(0, p - 1)), disabled: pageSafe <= 0, className: "text-xs font-bold px-3 py-1.5 rounded-lg disabled:opacity-40", style: { background: "#EEF1F5", color: C.gray } }, "← Anterior"),
       /*#__PURE__*/React.createElement("span", { className: "text-xs font-bold", style: { color: C.gray } }, "Hoja " + (pageSafe + 1) + " / " + totalPaginas),
       /*#__PURE__*/React.createElement("button", { onClick: () => setPage(p => Math.min(totalPaginas - 1, p + 1)), disabled: pageSafe >= totalPaginas - 1, className: "text-xs font-bold px-3 py-1.5 rounded-lg disabled:opacity-40", style: { background: "#EEF1F5", color: C.gray } }, "Siguiente →"))),
-  vistaRows.length > 0 ? Tabla({ rows: pageRows }) : Vacio({ msg: vistaTab === "criticos" ? "No hay pedidos críticos (+10 días hábiles)." : vistaTab === "nodespacho" ? "No hay pedidos despachados en WMS que sigan sin entregar en Fenicio." : vistaTab === "estancados" ? "No hay pedidos estancados (+2 días hábiles sin avanzar en el WMS)." : vistaTab === "inconsistencias" ? "Todos los estados coinciden." : vistaTab === "depo0" ? "No hay pedidos en Depo 0 (sin stock)." : vistaTab === "atrasados" ? "No hay pedidos atrasados para este periodo." : "No hay pedidos en esta vista." }),
+  vistaRows.length > 0 ? Tabla({ rows: pageRows }) : Vacio({ msg: vistaTab === "criticos" ? "No hay pedidos críticos (+10 días hábiles)." : vistaTab === "nodespacho" ? "No hay pedidos despachados en WMS que sigan sin entregar en Fenicio." : vistaTab === "estancados" ? "No hay pedidos estancados (+2 días hábiles sin avanzar en el WMS)." : vistaTab === "inconsistencias" ? "Todos los estados coinciden." : vistaTab === "depo0" ? "No hay pedidos en Depo 0 (sin stock)." : vistaTab === "probcancel" ? "No hay cancelados probables (pedidos que dejaron de venir en Fenicio con el WMS ya procesado)." : vistaTab === "atrasados" ? "No hay pedidos atrasados para este periodo." : "No hay pedidos en esta vista." }),
   totalPaginas > 1 && /*#__PURE__*/React.createElement("div", { className: "flex items-center justify-center gap-3 pt-1" },
     /*#__PURE__*/React.createElement("button", { onClick: () => setPage(p => Math.max(0, p - 1)), disabled: pageSafe <= 0, className: "text-xs font-bold px-3 py-1.5 rounded-lg disabled:opacity-40", style: { background: "#EEF1F5", color: C.gray } }, "← Anterior"),
     /*#__PURE__*/React.createElement("span", { className: "text-xs font-bold", style: { color: C.gray } }, "Hoja " + (pageSafe + 1) + " / " + totalPaginas),
