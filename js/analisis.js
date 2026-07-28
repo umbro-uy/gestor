@@ -1041,6 +1041,9 @@ function Metas({
     const colFechF = findCol(sF, [/fecha.*pago/i, /fecha.*com/i, /comienzo/i, /^fecha/i]) || "Fecha pago";
     const colEstF = findCol(sF, [/estado.*entr/i, /entr.*estado/i]) || "Estado entrega";
     const colEstPago = findCol(sF, [/^estado$/i]) || "Estado";
+    // Columna "Estado de pago" (distinta de "Estado"): acá aparece "Pago reversado" vs "Pago aprobado".
+    // Antes no se leía, por eso nunca se detectaba el reverso del pago.
+    const colEstPago2 = findCol(sF, [/estado\s*de\s*pago/i, /estado.*pago/i]);
     const colImp = findCol(sF, [/importe.*total.*pedido/i, /importe.*pedido/i]) || findCol(sF, [/importe/i]) || "Importe total pedido";
     const colSku = findCol(sF, [/^sku$/i, /sku/i, /c[oó]d.*art/i]) || "SKU";
     // Cupón / personalizada: sólo vienen en algunos exports de Fenicio (Nacional/TimeOut, no en el "clásico")
@@ -1132,7 +1135,7 @@ function Metas({
     rowsFen.forEach(r => {
       const nro = String(r[colNro] || "").trim();
       if (!nro) return;
-      if (!fenPed[nro]) fenPed[nro] = { nro, fecha: String(r[colFechF]||"").slice(0,10), estadoFen: String(r[colEstF]||""), estadoPago: String(r[colEstPago]||""), importe: Number(r[colImp]||0), tienda: r._tiendaFen || "", cupon: colCupon ? String(r[colCupon]||"").trim() : "", montoCupon: colMontoCup ? num(r[colMontoCup]) : 0, conCupon: hayCupon(r), personalizada: colPers ? /^s[ií]$/i.test(String(r[colPers]||"").trim()) : false, lineas: 0, pcn: false, skusPcn: [] };
+      if (!fenPed[nro]) fenPed[nro] = { nro, fecha: String(r[colFechF]||"").slice(0,10), estadoFen: String(r[colEstF]||""), estadoPago: String(r[colEstPago]||""), estadoPago2: colEstPago2 ? String(r[colEstPago2]||"") : "", importe: Number(r[colImp]||0), tienda: r._tiendaFen || "", cupon: colCupon ? String(r[colCupon]||"").trim() : "", montoCupon: colMontoCup ? num(r[colMontoCup]) : 0, conCupon: hayCupon(r), personalizada: colPers ? /^s[ií]$/i.test(String(r[colPers]||"").trim()) : false, lineas: 0, pcn: false, skusPcn: [] };
       fenPed[nro].lineas++;
     });
     // Marcar como PCN los pedidos de Fenicio que el WMS identifica con artículo personalizado
@@ -1144,7 +1147,7 @@ function Metas({
     Object.values(fenPed).forEach(p => {
       const t = p.tienda; if (!t) return;
       const o = ventaXTienda[t] = ventaXTienda[t] || { vendido: 0, pedidos: 0, cancelado: 0, canc: 0 };
-      const canc = /cancel|anul|revers/i.test(p.estadoPago) || /cancel|anul/i.test(p.estadoFen);
+      const canc = /cancel|anul/i.test(p.estadoPago) || /cancel|anul/i.test(p.estadoFen) || /revers/i.test(p.estadoPago2 || "");
       if (canc) { o.cancelado += p.importe; o.canc++; } else { o.vendido += p.importe; o.pedidos++; }
     });
     // Resumen por tienda: Vendido (Fenicio, c/IVA) vs Facturado (BAS) vs lo que falta facturar.
@@ -1168,22 +1171,29 @@ function Metas({
     const grupos = { facturado: [], facturaDup: [], pendienteOK: [], pcnManual: [], revisar: [], cancelado: [], canceladoConFactura: [], canceladoCupon: [] };
 
     Object.values(fenPed).forEach(p => {
-      const { nro, fecha, estadoFen, estadoPago, importe, pcn, personalizada, conCupon, cupon, montoCupon, skusPcn } = p;
+      const { nro, fecha, estadoFen, estadoPago, estadoPago2, importe, pcn, personalizada, conCupon, cupon, montoCupon, skusPcn } = p;
       const wms = wmsMap[nro];
       const estadoWMS = wms ? (wms["Estado Encuentra"] || wms["Estado ecommerce"] || "—") : "No está en WMS";
       const tieneF = nInvoices(nro) > 0;
       const esDupF = dupInfoXPed(nro).dupNeto > 0.5;   // duplicado real (mismo prefijo+importe) sin NC
       const esPcn = pcn || personalizada;
-      const base = { nro, tienda: p.tienda || "—", fecha, estadoFen, estadoPago, estadoWMS, importe, pcn: esPcn, conCupon, cupon, montoCupon, skusPcn: (skusPcn||[]).join(", ") };
-      const reversado = /revers/i.test(estadoPago) || /revers/i.test(estadoFen) || /revers/i.test(estadoWMS);
+      const base = { nro, tienda: p.tienda || "—", fecha, estadoFen, estadoPago, estadoPago2, estadoWMS, importe, pcn: esPcn, conCupon, cupon, montoCupon, skusPcn: (skusPcn||[]).join(", ") };
+      // "Pago reversado" vive en la columna "Estado de pago" (no en "Estado"). Cancelado = orden anulada.
+      const reversado = /revers/i.test(estadoPago2 || "") || /revers/i.test(estadoPago) || /revers/i.test(estadoWMS);
       const cancelado = /cancelad|anulad/i.test(estadoWMS) || /cancelad|anulad/i.test(estadoFen) || /cancelad|anulad/i.test(estadoPago);
       if (cancelado || reversado) {
-        const etq = reversado && !cancelado ? "Pago reversado" : "Cancelado";
-        // Un cancelado NO debería tener factura. Si la tiene, hay que anularla a mano → avisar.
-        if (tieneF) grupos.canceladoConFactura.push({ ...base, nFact: nInvoices(nro), razon: etq + " CON factura — anular la factura manualmente ⚠️" });
-        // Con cupón web no se factura solo: hay que facturarlo a mano → categoría aparte.
-        else if (conCupon) grupos.canceladoCupon.push({ ...base, razon: etq + " con cupón web (" + (cupon || "cupón") + ") — facturar manualmente ⚠️" });
-        else grupos.cancelado.push({ ...base, razon: etq });
+        const nNC = ncsXPed[nro] ? ncsXPed[nro].n : 0;
+        const netF = nInvoices(nro) - nNC;   // facturas todavía activas (no anuladas por una NC)
+        if (reversado) {
+          // Pago REVERSADO → el pago se devolvió, NO debe quedar factura activa. Si la hay, generar NC.
+          if (netF > 0) grupos.canceladoConFactura.push({ ...base, nFact: nInvoices(nro), razon: "Pago reversado CON factura activa — generar nota de crédito para anularla ⚠️" });
+          else grupos.cancelado.push({ ...base, razon: nNC ? "Pago reversado — factura ya anulada con NC ✓" : "Pago reversado sin factura — correcto ✓" });
+        } else {
+          // Cancelado SIN reversar → el pago (seña web) queda registrado, así que DEBE existir factura.
+          if (tieneF) grupos.cancelado.push({ ...base, razon: "Cancelado sin reversar — factura de la seña web OK ✓" });
+          else if (conCupon) grupos.canceladoCupon.push({ ...base, razon: "Cancelado sin reversar, con cupón web (" + (cupon || "cupón") + ") — facturar la seña manualmente ⚠️" });
+          else grupos.revisar.push({ ...base, razon: "Cancelado sin reversar SIN factura — falta emitir la factura de la seña web ⚠️" });
+        }
         return;
       }
       if (tieneF) {
