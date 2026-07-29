@@ -565,6 +565,20 @@ const mapearTienda = suc => {
 // Clasificación de comprobantes del BAS por PREFIJO (fuente de verdad indicada por operaciones):
 //   Notas de crédito → 5004 / 5104 / 5102 / 5204   ·   Facturas → 5011 / 5111 / 5211 / 5001 / 5101 / 5201
 // Si el archivo no trae Prefijo se cae al "Abreviado" (NCD… / FA…) como respaldo.
+// Fusiona el resumen de facturación NUEVO con el ya guardado (memoria acumulada del año). Los meses que
+// ya estaban se conservan; los meses presentes en el archivo nuevo se REEMPLAZAN (para re-cargar un mes
+// corregido). Así no hay que volver a cargar enero (ni los meses viejos) en cada actualización.
+const mergeResumen = (viejo, nuevo) => {
+  if (!viejo) return nuevo;
+  const mm = (a, b) => { const r = { ...(a || {}) }; Object.keys(b || {}).forEach(k => { r[k] = b[k]; }); return r; };
+  const out = { ...nuevo };  // metadata/columnas: las del archivo más reciente
+  ["porMes", "porMesConIVA", "porMesNeto", "ncdPorMes", "ncdPorMesTienda", "cantPedMes", "cantFacMes"].forEach(k => { out[k] = mm(viejo[k], nuevo[k]); });
+  out.meses = Array.from(new Set([...(viejo.meses || []), ...(nuevo.meses || [])])).sort();
+  // Totales acumulados recomputados desde los mapas fusionados (no doble-cuentan meses re-cargados).
+  out.fabTotal = Object.values(out.cantFacMes || {}).reduce((a, tt) => a + Object.values(tt || {}).reduce((x, y) => x + (Number(y) || 0), 0), 0);
+  out.ncdTotal = Object.values(out.ncdPorMes || {}).reduce((a, o) => a + ((o && o.cant) || 0), 0);
+  return out;
+};
 const NCD_PREFIJOS = new Set(["5004", "5104", "5102", "5204"]);
 const FAC_PREFIJOS = new Set(["5011", "5111", "5211", "5001", "5101", "5201"]);
 const esNCDrow = r => {
@@ -1012,11 +1026,18 @@ function Metas({
     const fabTotal = fabDoc ? fabDoc.length : fabLineas.length;
     const ncdTotal = ncdDoc ? ncdDoc.length : ncdLineas.length;
     const resumen = {porMes, porMesConIVA, porMesNeto, ncdPorMes, ncdPorMesTienda, cantPedMes, cantFacMes, meses, fabTotal, ncdTotal, tieneBA, sucSinMapa:Array.from(sucSinMapa), colImporte:tieneBA?rowsBAS._colTotGrav:rowsBAS._colImporte, colIva:rowsBAS._colIva, colTotGrav:rowsBAS._colTotGrav, colTotal:rowsBAS._colTotal, basCols, primeraFAB};
-    setResumenBAS(resumen);
+    // MEMORIA ACUMULADA: fusionar con lo ya guardado. Los meses que ya estaban se conservan; los meses
+    // del archivo actual se actualizan. Así no hay que recargar enero (ni meses viejos) en cada carga.
+    let resumenFinal = resumen;
+    try {
+      const { data: snapPrev } = await supa.from("analisis_snapshot").select("resumen").eq("id", "ultimo").maybeSingle();
+      if (snapPrev && snapPrev.resumen) resumenFinal = mergeResumen(snapPrev.resumen, resumen);
+    } catch (_) {}
+    setResumenBAS(resumenFinal);
     // Posicionar la vista de metas en el mes más reciente del archivo
     const mesReciente = meses[meses.length-1];
     if (mesReciente && mes !== mesReciente) setMes(mesReciente);
-    guardarSnapshot({ mes: mesReciente || mes, resumen });
+    guardarSnapshot({ mes: mesReciente || mes, resumen: resumenFinal });
     // Guardar en Supabase: una fila por (mes, tienda)
     if (esAdmin && supa) {
       try {
