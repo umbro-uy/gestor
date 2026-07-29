@@ -1179,7 +1179,10 @@ function Metas({
       const esPcn = pcn || personalizada;
       const base = { nro, tienda: p.tienda || "—", fecha, estadoFen, estadoPago, estadoPago2, estadoWMS, importe, pcn: esPcn, conCupon, cupon, montoCupon, skusPcn: (skusPcn||[]).join(", ") };
       // "Pago reversado" vive en la columna "Estado de pago" (no en "Estado"). Cancelado = orden anulada.
+      // OJO: el reporte a veces trae ese pedido SIN estado de pago (columna vacía) — la cancelación se
+      // detecta por el WMS. En ese caso no sabemos si se reversó o no, así que NO inventamos "falta seña".
       const reversado = /revers/i.test(estadoPago2 || "") || /revers/i.test(estadoPago) || /revers/i.test(estadoWMS);
+      const pagoAprobado = /aprobad/i.test(estadoPago2 || "");   // col16 confirma que el pago sigue registrado (seña)
       const cancelado = /cancelad|anulad/i.test(estadoWMS) || /cancelad|anulad/i.test(estadoFen) || /cancelad|anulad/i.test(estadoPago);
       if (cancelado || reversado) {
         const nNC = ncsXPed[nro] ? ncsXPed[nro].n : 0;
@@ -1188,11 +1191,16 @@ function Metas({
           // Pago REVERSADO → el pago se devolvió, NO debe quedar factura activa. Si la hay, generar NC.
           if (netF > 0) grupos.canceladoConFactura.push({ ...base, nFact: nInvoices(nro), razon: "Pago reversado CON factura activa — generar nota de crédito para anularla ⚠️" });
           else grupos.cancelado.push({ ...base, razon: nNC ? "Pago reversado — factura ya anulada con NC ✓" : "Pago reversado sin factura — correcto ✓" });
+        } else if (pagoAprobado) {
+          // Cancelado con el pago AÚN aprobado (seña web registrada) → DEBE existir la factura de la seña.
+          if (tieneF) grupos.cancelado.push({ ...base, razon: "Cancelado, pago aprobado — factura de la seña web OK ✓" });
+          else if (conCupon) grupos.canceladoCupon.push({ ...base, razon: "Cancelado, pago aprobado con cupón web (" + (cupon || "cupón") + ") — facturar la seña manualmente ⚠️" });
+          else grupos.revisar.push({ ...base, razon: "Cancelado con pago aprobado SIN factura — falta emitir la factura de la seña web ⚠️" });
         } else {
-          // Cancelado SIN reversar → el pago (seña web) queda registrado, así que DEBE existir factura.
-          if (tieneF) grupos.cancelado.push({ ...base, razon: "Cancelado sin reversar — factura de la seña web OK ✓" });
-          else if (conCupon) grupos.canceladoCupon.push({ ...base, razon: "Cancelado sin reversar, con cupón web (" + (cupon || "cupón") + ") — facturar la seña manualmente ⚠️" });
-          else grupos.revisar.push({ ...base, razon: "Cancelado sin reversar SIN factura — falta emitir la factura de la seña web ⚠️" });
+          // Sin estado de pago en el reporte: no se puede saber si se reversó. Solo avisamos si quedó una
+          // factura activa (por si hay que anular); si no hay factura, es un cancelado normal (sin acción).
+          if (netF > 0) grupos.canceladoConFactura.push({ ...base, nFact: nInvoices(nro), razon: "Cancelado CON factura — revisar: si el pago se reversó, anular con NC; si es la seña, está OK ⚠️" });
+          else grupos.cancelado.push({ ...base, razon: "Cancelado" });
         }
         return;
       }
