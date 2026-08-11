@@ -68,6 +68,9 @@ function Operativa({ yo, activo, syncTick }) {
   // filtrado por "Pago aprobado") pero el WMS ya lo procesó → perdió el pago aprobado = se canceló.
   const MARK_PROBCANCEL = "Cancelado (probable · sin Fenicio, WMS procesado)";
   const esProbCancel = r => /cancelado \(probable/i.test(String(r && r.estadoFen || ""));
+  // Promesa de entrega en días hábiles (el KPI de cumplimiento mide entregas DENTRO de este plazo).
+  // Cambiar acá el número si se ajusta la promesa (hoy 5).
+  const PROMESA_DH = 5;
   const [filtroDia, setFiltroDia] = useState(""); // día (YYYY-MM-DD) elegido en el calendario para filtrar la tabla
   const POR_HOJA = 50;
   const leerFenicio = tienda => e => {
@@ -599,12 +602,11 @@ function Operativa({ yo, activo, syncTick }) {
             return { depo: b.depo, nombre: b.nombre, conf: b.conf, mas2, pctMas2: b.dias.length ? Math.round(mas2 / b.dias.length * 100) : 0, p90: percentil(b.dias, PCTL), p90Desp: percentil(b.diasDesp, PCTL), pend: b.pend, pendAtr: b.pendAtr };
           }).sort((a, b) => (a.depo === "9" ? -1 : b.depo === "9" ? 1 : 0) || b.pctMas2 - a.pctMas2 || b.conf - a.conf);
         }
-        // Cumplimiento DE LA PROMESA del mes: % de pedidos entregados DENTRO de los 7 días hábiles.
+        // Cumplimiento DE LA PROMESA del mes: % de pedidos entregados DENTRO de PROMESA_DH días hábiles.
         // Universo evaluable = entregados con fecha de entrega + no entregados con la promesa ya vencida.
         // Un pedido entregado TARDE cuenta como incumplimiento (antes contaba como éxito si ya estaba
         // entregado). Los recién comprados sin entregar todavía no se pueden juzgar → quedan afuera.
         // Cancelados afuera (no son incumplimiento de entrega).
-        const PROMESA_DH = 7;
         let maduros = null;
         if (mk) {
           const delMes = efectivos.filter(r => { const d = parseFecha(r.fecha); return d && (d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0")) === mk; });
@@ -878,9 +880,9 @@ function Operativa({ yo, activo, syncTick }) {
       const filas = (desgSnap.cumplPorTienda || []).slice().sort((a, b) => (b.entregaP90 || 0) - (a.entregaP90 || 0)).map(t => ce("tr", { key: t.tienda, style: { borderTop: "1px solid " + C.line } },
         td(t.tienda, { className: "px-3 py-1.5 font-semibold" }),
         td(t.despachoP90 != null ? t.despachoP90 + " días" : "—"),
-        td(t.entregaP90 != null ? t.entregaP90 + " días" : "—", { className: "px-3 py-1.5 font-black", style: { color: (t.entregaP90 || 0) > 7 ? C.red : C.ink } }),
+        td(t.entregaP90 != null ? t.entregaP90 + " días" : "—", { className: "px-3 py-1.5 font-black", style: { color: (t.entregaP90 || 0) > PROMESA_DH ? C.red : C.ink } }),
         td(t.total)));
-      return caja("Tiempos por tienda (días corridos)", "Tiempo en el que entra 9 de cada 10 pedidos. Despacho = compra → despacho WMS · Entrega = compra → entrega al cliente. En rojo: por encima de la promesa de 7 días.", ["Tienda", "Despacho", "Entrega", "Pedidos"], filas);
+      return caja("Tiempos por tienda (días corridos)", "Tiempo en el que entra 9 de cada 10 pedidos. Despacho = compra → despacho WMS · Entrega = compra → entrega al cliente. En rojo: por encima de la promesa de " + PROMESA_DH + " días.", ["Tienda", "Despacho", "Entrega", "Pedidos"], filas);
     }
     const filas = (desgSnap.stockTiendas || []).map(t => ce("tr", { key: t.depo, style: { borderTop: "1px solid " + C.line, background: t.depo === "9" ? "#F6F8FB" : undefined } },
       td(t.nombre + " (" + t.depo + ")", { className: "px-3 py-1.5 font-semibold" }), td(t.conf),
@@ -897,7 +899,7 @@ function Operativa({ yo, activo, syncTick }) {
   const ProgresoMes = () => {
     const ce = React.createElement;
     const META_MIN = 90, META_MAX = 95;
-    // El % PROTAGONISTA es el EXIGIBLE: pedidos del mes con la promesa de 7 días hábiles ya vencida.
+    // El % PROTAGONISTA es el EXIGIBLE: pedidos del mes con la promesa (PROMESA_DH días hábiles) ya vencida.
     // El % bruto del mes mezcla compras recientes que aún están en plazo (no son incumplimiento) y
     // contra una meta de 90–95% siempre se vería artificialmente bajo.
     const exig = madurosSnap;
@@ -908,7 +910,7 @@ function Operativa({ yo, activo, syncTick }) {
       ce("div", { className: "flex items-baseline justify-between mb-2 flex-wrap gap-1" },
         ce("span", { className: "text-[11px] font-bold uppercase tracking-wide", style: { color: C.gray } },
           "Cumplimiento de ", ce("span", { style: { color: C.ink } }, fmtMesLargo(mesShownKey)),
-          exig ? " — entregados dentro de la promesa (7 días háb.)" : ""),
+          exig ? " — entregados dentro de la promesa (" + PROMESA_DH + " días háb.)" : ""),
         ce("span", { className: "text-3xl font-black fraunces tabular-nums", style: { color: col } }, pctHead != null ? pctHead + "%" : "—")),
       ce("div", { style: { position: "relative", height: 18, borderRadius: 9, background: "#EEF1F5", overflow: "hidden" } },
         ce("div", { title: "Meta 90–95%", style: { position: "absolute", left: META_MIN + "%", width: (META_MAX - META_MIN) + "%", top: 0, bottom: 0, background: "rgba(14,138,95,0.22)" } }),
@@ -918,12 +920,12 @@ function Operativa({ yo, activo, syncTick }) {
         ce("span", { style: { position: "absolute", left: META_MAX + "%", transform: "translateX(-50%)", fontSize: 9, color: C.gray } }, "95%")),
       ce("div", { className: "text-[11px] mt-1", style: { color: C.gray } },
         exig
-          ? exig.entregados + " de " + exig.total + " cumplieron la promesa (entregado en ≤7 días háb.; el entregado tarde cuenta como incumplido) · meta 90–95%"
+          ? exig.entregados + " de " + exig.total + " cumplieron la promesa (entregado en ≤" + PROMESA_DH + " días háb.; el entregado tarde cuenta como incumplido) · meta 90–95%"
           : cumplShown != null
             ? entregMesShown + " de " + totalMesShown + " entregados · meta 90–95%"
             : "Cargá archivos para ver el cumplimiento del mes · meta 90–95%"),
       !exig && cumplShown != null && ce("div", { className: "text-[11px] mt-0.5 font-semibold", style: { color: C.amber } },
-        "⚠ Este % mezcla compras recientes aún en plazo. Volvé a cruzar los archivos con la app actualizada para ver el % exigible (promesa de 7 dh vencida)."));
+        "⚠ Este % mezcla compras recientes aún en plazo. Volvé a cruzar los archivos con la app actualizada para ver el % exigible (promesa de " + PROMESA_DH + " dh vencida)."));
   };
   const TabBtn = ({
     id,
