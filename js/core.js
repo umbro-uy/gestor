@@ -432,6 +432,27 @@ function Collapse({
   }, children));
 }
 
+// Menú lateral REUSABLE para secciones con info anidada (Operativa, Análisis, …). En pantallas anchas
+// es una columna fija (sticky) a la izquierda; en angostas, una fila con scroll horizontal. Recibe
+// items [{id,label,badge?}], el id activo y onSelect. Se usa junto a una columna de contenido flex-1.
+function SubMenuNav({ items, active, onSelect }) {
+  return /*#__PURE__*/React.createElement("div", {
+    className: "shrink-0 flex flex-row lg:flex-col gap-1.5 overflow-x-auto lg:w-56 lg:sticky lg:top-4 self-start"
+  }, (items || []).map(it => /*#__PURE__*/React.createElement("button", {
+    key: it.id, onClick: () => onSelect(it.id),
+    className: "text-left px-4 py-3 rounded-xl text-sm font-bold transition-colors whitespace-nowrap flex items-center justify-between gap-2",
+    style: {
+      background: active === it.id ? C.soft : "#F6F8FB",
+      color: active === it.id ? C.blue : C.gray,
+      borderLeft: active === it.id ? ("4px solid " + C.blue) : "4px solid transparent"
+    }
+  }, /*#__PURE__*/React.createElement("span", null, it.label),
+     it.badge != null && /*#__PURE__*/React.createElement("span", {
+       className: "text-[10px] font-black px-2 py-0.5 rounded-full",
+       style: { background: active === it.id ? C.blue : "#E2E8F0", color: active === it.id ? "#fff" : C.gray }
+     }, it.badge))));
+}
+
 // Logo de Umbro recreado como SVG (rombo concéntrico). Escalable y sin archivos externos.
 // h = alto en px. wordmark = agrega la palabra "umbro" debajo (para el login).
 const UmbroLogo = ({ h = 24, color = "#fff", wordmark = false, row = false, className = "", style = {} }) => {
