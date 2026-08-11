@@ -71,6 +71,10 @@ function Operativa({ yo, activo, syncTick }) {
   // Promesa de entrega en días hábiles (el KPI de cumplimiento mide entregas DENTRO de este plazo).
   // Cambiar acá el número si se ajusta la promesa (hoy 5).
   const PROMESA_DH = 5;
+  // Vista por TIENDA (selector grande arriba) y subsección (menú lateral).
+  const TIENDAS_OP = ["todas", "TimeOut", "Tienda Nacional", "Classico"];
+  const [tiendaVista, setTiendaVista] = useState("todas");
+  const [subOper, setSubOper] = useState("resumen"); // resumen | listado | tiempos | calendario | cargar
   const [filtroDia, setFiltroDia] = useState(""); // día (YYYY-MM-DD) elegido en el calendario para filtrar la tabla
   const POR_HOJA = 50;
   const leerFenicio = tienda => e => {
@@ -580,14 +584,15 @@ function Operativa({ yo, activo, syncTick }) {
         let promEvalTot = 0, promEnPlazoTot = 0;
         efectivos.forEach(r => {
           const t = r.tienda || "-";
-          const b = porTienda[t] || (porTienda[t] = { tienda: t, total: 0, evalN: 0, enPlazo: 0, lt: [], ltE: [] });
+          const b = porTienda[t] || (porTienda[t] = { tienda: t, total: 0, entregadosRaw: 0, evalN: 0, enPlazo: 0, lt: [], ltE: [] });
           b.total++;
+          if (r.entregado) b.entregadosRaw++;
           const pe = promEval(r);
           if (pe != null) { b.evalN++; promEvalTot++; if (pe) { b.enPlazo++; promEnPlazoTot++; } }
           if (r.leadtime != null) b.lt.push(r.leadtime);
           if (r.leadtimeEntrega != null) b.ltE.push(r.leadtimeEntrega);
         });
-        const cumplPorTienda = Object.values(porTienda).map(b => ({ tienda: b.tienda, total: b.total, evalN: b.evalN, enPlazo: b.enPlazo, pct: b.evalN ? Math.round(b.enPlazo / b.evalN * 100) : null, despachoP90: percentil(b.lt, PCTL), entregaP90: percentil(b.ltE, PCTL) })).filter(x => x.pct != null).sort((a, b) => a.pct - b.pct);
+        const cumplPorTienda = Object.values(porTienda).map(b => ({ tienda: b.tienda, total: b.total, entregados: b.entregadosRaw, evalN: b.evalN, enPlazo: b.enPlazo, pct: b.evalN ? Math.round(b.enPlazo / b.evalN * 100) : null, despachoP90: percentil(b.lt, PCTL), entregaP90: percentil(b.ltE, PCTL) })).filter(x => x.pct != null).sort((a, b) => a.pct - b.pct);
         const tasaCumplProm = promEvalTot ? Math.round(promEnPlazoTot / promEvalTot * 100) : 0;
         // Solicitud de stock a TIENDAS (Deposito pedido ≠ 9/0): tiempo confirmado → procesado en central.
         // +2 días hábiles sin procesar = la tienda no envió la mercadería o se extravió.
@@ -678,29 +683,35 @@ function Operativa({ yo, activo, syncTick }) {
   // enviar"), pero el equipo la anota en el comentario ("Cancelado…"). Si el comentario dice cancelado/
   // anulado, el pedido está resuelto → NO cuenta como atrasado/crítico/estancado/etc.
   const esCancEf = r => r.cancelado || (Array.isArray(r.historial) && r.historial.some(h => /cancel|anul/i.test(String(h && h.t || ""))));
-  const atrasados = resultado ? resultado.filter(r => r.atrasado && !esCancEf(r)) : [];
-  const criticos = resultado ? resultado.filter(r => r.critico && !esCancEf(r)) : [];
-  const inconsistentes = resultado ? resultado.filter(r => r.inconsistente && !esCancEf(r)) : [];
-  const noDespacho = resultado ? resultado.filter(r => r.posibleNoDespacho && !esCancEf(r)) : [];
+  // Vista filtrada por la tienda elegida arriba. "todas" = todo (coincide con Resumen). Todos los KPIs
+  // y listados de abajo se calculan sobre resVista → cada tienda ve sus propios números.
+  const porTiendaVista = tiendaVista !== "todas";
+  const resVista = !resultado ? null : (porTiendaVista ? resultado.filter(r => (r.tienda || "") === tiendaVista) : resultado);
+  const atrasados = resVista ? resVista.filter(r => r.atrasado && !esCancEf(r)) : [];
+  const criticos = resVista ? resVista.filter(r => r.critico && !esCancEf(r)) : [];
+  const inconsistentes = resVista ? resVista.filter(r => r.inconsistente && !esCancEf(r)) : [];
+  const noDespacho = resVista ? resVista.filter(r => r.posibleNoDespacho && !esCancEf(r)) : [];
   // Estancado y atrasado son métricas independientes: un pedido puede ser estancado, atrasado, o ambos.
-  const estancados = resultado ? resultado.filter(r => r.estancado && !esCancEf(r)) : [];
+  const estancados = resVista ? resVista.filter(r => r.estancado && !esCancEf(r)) : [];
   // En tránsito: ya despachados, en camino al cliente (no son atraso). Se ordenan mostrando primero los
   // que llevan más días en tránsito. "transitoLargo" = +2 días hábiles desde el despacho.
-  const enTransitoArr = resultado ? resultado.filter(r => r.enTransito && !esCancEf(r)).sort((a, b) => (b.diasTransito || 0) - (a.diasTransito || 0)) : [];
+  const enTransitoArr = resVista ? resVista.filter(r => r.enTransito && !esCancEf(r)).sort((a, b) => (b.diasTransito || 0) - (a.diasTransito || 0)) : [];
   const transitoLargoN = enTransitoArr.filter(r => r.transitoLargo).length;
-  const sinWMS = resultado ? resultado.filter(r => r.sinWMS && !esCancEf(r)) : [];
-  const sinStockArr = resultado ? resultado.filter(r => r.sinStock && !esCancEf(r)) : [];
-  const ccDepo9Arr = resultado ? resultado.filter(r => r.ccDepo9) : [];
+  const sinWMS = resVista ? resVista.filter(r => r.sinWMS && !esCancEf(r)) : [];
+  const sinStockArr = resVista ? resVista.filter(r => r.sinStock && !esCancEf(r)) : [];
+  const ccDepo9Arr = resVista ? resVista.filter(r => r.ccDepo9) : [];
   // Cancelado PROBABLE (inferido: sin Fenicio + WMS procesado). Lista aparte para que Sol lo verifique.
-  const probableCancel = resultado ? resultado.filter(esProbCancel) : [];
+  const probableCancel = resVista ? resVista.filter(esProbCancel) : [];
   // Cancelados en una sola plataforma (WMS o Fenicio, pero no ambas) → a revisar / alinear.
   // Los "cancelado probable" salen de acá: no son para alinear (un pedido procesado no se cancela en WMS).
-  const cancelDiscreps = resultado ? resultado.filter(r => r.cancelDiscrep && !esProbCancel(r)) : [];
+  const cancelDiscreps = resVista ? resVista.filter(r => r.cancelDiscrep && !esProbCancel(r)) : [];
   // Cifras de las tarjetas: si NO estoy cruzando en vivo, uso el snapshot COMPARTIDO (las MISMAS que ve
   // Resumen) para que Operativa y Resumen coincidan siempre. Al recargar la pestaña se re-derivan los
   // pedidos guardados con la fecha de hoy (más días encima) e inflan el conteo; el snapshot es la cifra
   // oficial del último cruce. Al cruzar archivos (cruceEnSesion) uso el cálculo en vivo.
-  const usarSnap = !cruceEnSesion.current && !!operSnap;
+  // Para "todas" y sin cruce en vivo, las tarjetas usan el snapshot COMPARTIDO (coinciden con Resumen).
+  // Para una tienda puntual se cuentan los pedidos de esa tienda (resVista) — el snapshot es global.
+  const usarSnap = !cruceEnSesion.current && !!operSnap && !porTiendaVista;
   const nAtrasados = usarSnap ? (operSnap.atrasados || 0) : atrasados.length;
   const nCriticos = usarSnap ? (operSnap.criticos || 0) : criticos.length;
   const nNoDespacho = usarSnap ? (operSnap.no_despacho || 0) : noDespacho.length;
@@ -741,16 +752,21 @@ function Operativa({ yo, activo, syncTick }) {
   const entCur = bCur ? percentil(bCur.ltE, PCTL) : null;
   // ── Números de VOLUMEN / cumplimiento: salen del snapshot COMPARTIDO (iguales a Resumen y a lo que
   // ve todo el equipo). Si todavía no hay snapshot, caen a lo calculado de lo cargado en esta sesión. ──
-  const volTotal = operSnap ? (operSnap.total || 0) : (resultado ? resultado.length : 0);
-  const volEntreg = operSnap ? (operSnap.entregados || 0) : entregadosArr.length;
-  const volTasa = operSnap ? (operSnap.tasa_cumpl || 0) : tasaCumpl;
-  const volDesp = operSnap ? operSnap.leadtime_despacho : leadtimeProm;
-  const volEnt = operSnap ? operSnap.leadtime_entrega : leadtimeEntProm;
   // "serie" ahora también transporta el calendario; solo cuenta como serie mensual si trae mesKey.
   const serieSnap = operSnap && operSnap.serie && operSnap.serie.mesKey ? operSnap.serie : null;
   // Desgloses por tienda/depósito del último cruce (viajan dentro de serie, compartidos con el equipo)
   const desgSnap = operSnap && operSnap.serie && operSnap.serie.desgloses ? operSnap.serie.desgloses : null;
   const madurosSnap = operSnap && operSnap.serie && operSnap.serie.maduros ? operSnap.serie.maduros : null;
+  // Entrada de cumplimiento/tiempos de la tienda elegida (del snapshot). null = "todas" o sin dato.
+  const ctv = porTiendaVista && desgSnap ? (desgSnap.cumplPorTienda || []).find(x => x.tienda === tiendaVista) || null : null;
+  const entregadosVista = resVista ? resVista.filter(r => r.entregado) : [];
+  // Tarjetas de volumen: para "todas" salen del snapshot global (= Resumen); para una tienda salen de su
+  // desglose (cumplPorTienda) y caen a lo calculado en vivo si el snapshot no lo trae.
+  const volTotal = porTiendaVista ? (ctv ? ctv.total : (resVista ? resVista.length : 0)) : (operSnap ? (operSnap.total || 0) : (resultado ? resultado.length : 0));
+  const volEntreg = porTiendaVista ? (ctv ? (ctv.entregados || 0) : entregadosVista.length) : (operSnap ? (operSnap.entregados || 0) : entregadosArr.length);
+  const volTasa = porTiendaVista ? (ctv ? ctv.pct : 0) : (operSnap ? (operSnap.tasa_cumpl || 0) : tasaCumpl);
+  const volDesp = porTiendaVista ? (ctv ? ctv.despachoP90 : null) : (operSnap ? operSnap.leadtime_despacho : leadtimeProm);
+  const volEnt = porTiendaVista ? (ctv ? ctv.entregaP90 : null) : (operSnap ? operSnap.leadtime_entrega : leadtimeEntProm);
   const cumplShown = serieSnap ? serieSnap.cumpl : cumplCur;
   const despShown = serieSnap ? serieSnap.despachoP90 : despCur;
   const entShown = serieSnap ? serieSnap.entregaP90 : entCur;
@@ -991,12 +1007,25 @@ function Operativa({ yo, activo, syncTick }) {
     /*#__PURE__*/React.createElement("td", { className: "px-3 py-2" }, /*#__PURE__*/React.createElement("span", { style: { fontWeight: 700, color: atrasadoVis ? C.red : r.dias > 1 ? C.amber : C.gray } }, r.dias != null ? r.dias : "—"), atrasadoVis && /*#__PURE__*/React.createElement("span", { style: { color: C.red } }, " ⚠"), r.enTransito && /*#__PURE__*/React.createElement("span", { title: r.diasTransito != null ? r.diasTransito + " días háb. en tránsito (desde el despacho)" : "En tránsito", style: { color: r.transitoLargo ? C.amber : "#0EA5E9", fontWeight: 700 } }, r.transitoLargo ? " 🚚+" + r.diasTransito + "d" : " 🚚")),
     /*#__PURE__*/React.createElement("td", { className: "px-3 py-2", style: { color: C.gray, fontSize: 11, maxWidth: 150, whiteSpace: "normal", wordBreak: "break-word" } }, r.deposito),
     /*#__PURE__*/React.createElement("td", { className: "px-3 py-2" }, r.clickCollect ? /*#__PURE__*/React.createElement("span", { style: { background: "#EDE9FE", color: "#6D28D9", padding: "2px 6px", borderRadius: 6, fontSize: 10, fontWeight: 700, whiteSpace: "nowrap" } }, "C&C") : r.pickup ? /*#__PURE__*/React.createElement("span", { style: { background: "#DBEAFE", color: "#1D4ED8", padding: "2px 6px", borderRadius: 6, fontSize: 10, fontWeight: 700, whiteSpace: "nowrap" } }, "Pickup") : "")); })))));
+  // ── Selector de TIENDA (grande, arriba) y menú lateral de subsecciones ──
+  const ceEl = React.createElement;
+  const selectorTienda = ceEl("div", { className: "flex flex-wrap gap-2" }, TIENDAS_OP.map(t => ceEl("button", {
+    key: t, onClick: () => { setTiendaVista(t); setPage(0); },
+    className: "px-4 py-2 rounded-xl text-sm font-black fraunces transition-colors",
+    style: { background: tiendaVista === t ? C.blue : "#EEF1F5", color: tiendaVista === t ? "#fff" : C.ink }
+  }, t === "todas" ? "Todas" : t)));
+  const SUBS = [{ id: "resumen", l: "Resumen · KPIs" }, { id: "listado", l: "Listado de pedidos" }, { id: "tiempos", l: "Tiempos y despacho" }, { id: "calendario", l: "Calendario" }, { id: "cargar", l: "Cargar archivos" }];
+  const sidebar = ceEl("div", { className: "shrink-0 flex flex-row lg:flex-col gap-1 overflow-x-auto", style: { minWidth: 0 } }, SUBS.map(s => ceEl("button", {
+    key: s.id, onClick: () => setSubOper(s.id),
+    className: "text-left px-3 py-2 rounded-lg text-xs font-bold transition-colors whitespace-nowrap",
+    style: { background: subOper === s.id ? C.soft : "transparent", color: subOper === s.id ? C.blue : C.gray, borderLeft: subOper === s.id ? ("3px solid " + C.blue) : "3px solid transparent" }
+  }, s.l)));
   return /*#__PURE__*/React.createElement("div", {
     className: "space-y-3"
   }, /*#__PURE__*/React.createElement(Title, {
-    eyebrow: "Operativa",
+    eyebrow: "Operativa" + (porTiendaVista ? " · " + tiendaVista : ""),
     title: "Cruce Fenicio × Encuentra"
-  }), /*#__PURE__*/React.createElement(Collapse, {
+  }), resultado && selectorTienda, /*#__PURE__*/React.createElement("div", { className: "flex flex-col lg:flex-row gap-3 items-start" }, resultado && sidebar, /*#__PURE__*/React.createElement("div", { className: "flex-1 min-w-0 space-y-3" }, (!resultado || subOper === "cargar") && /*#__PURE__*/React.createElement(Collapse, {
     key: resultado ? "cargado" : "vacio",
     title: "Cargar archivos y cruzar",
     subtitle: rowsA.length || rowsB.length ? (rowsA.length + " pedidos Fenicio · " + rowsB.length + " filas WMS") : "Subí Fenicio (.xls por tienda) y el Monitor de Encuentra (.xlsx)",
@@ -1188,10 +1217,10 @@ function Operativa({ yo, activo, syncTick }) {
     }
   }, !rowsA.length || !rowsB.length ? "Carga los dos archivos primero" : "Cruzar archivos")))), resultado && /*#__PURE__*/React.createElement("div", {
     className: "space-y-3"
-  }, calData.length > 0 && /*#__PURE__*/React.createElement("div", { className: "bg-white rounded-2xl border p-3", style: { borderColor: C.line } },
+  }, subOper === "calendario" && calData.length > 0 && /*#__PURE__*/React.createElement("div", { className: "bg-white rounded-2xl border p-3", style: { borderColor: C.line } },
     /*#__PURE__*/React.createElement("div", { className: "flex items-center justify-between flex-wrap gap-2 mb-2" },
       /*#__PURE__*/React.createElement("div", null,
-        /*#__PURE__*/React.createElement("span", { className: "text-sm font-bold" }, "Filtrar por fecha"),
+        /*#__PURE__*/React.createElement("span", { className: "text-sm font-bold" }, "Filtrar por fecha (las 3 tiendas juntas)"),
         /*#__PURE__*/React.createElement("span", { className: "text-[11px] ml-2", style: { color: C.gray } }, "Tocá un día para ver sus pedidos · color = % entregado o listo para retirar"),
         !cruceEnSesion.current && !calComp && /*#__PURE__*/React.createElement("div", { className: "text-[11px] font-semibold mt-1", style: { color: C.amber } }, "⚠ El último cruce se hizo con una versión anterior de la app y no guardó el calendario compartido: estos % solo cuentan los pedidos accionables. Se corrige recargando la app (Ctrl+Shift+R) y volviendo a cruzar los archivos.")),
       /*#__PURE__*/React.createElement("div", { className: "flex items-center gap-2" },
@@ -1206,7 +1235,7 @@ function Operativa({ yo, activo, syncTick }) {
         /*#__PURE__*/React.createElement("div", { className: "text-sm font-black fraunces", style: { color: sel ? "#fff" : col } }, d.pct + "%"));
     })),
     filtroDia && /*#__PURE__*/React.createElement("div", { className: "text-[11px] mt-2 font-semibold", style: { color: C.blue } }, "Mostrando pedidos del " + filtroDia.slice(8, 10) + "/" + filtroDia.slice(5, 7) + "/" + filtroDia.slice(0, 4))),
-  /*#__PURE__*/React.createElement("div", { className: "text-[11px] font-bold uppercase tracking-widest", style: { color: C.blue } }, "Acción rápida"),
+  subOper === "resumen" && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", { className: "text-[11px] font-bold uppercase tracking-widest", style: { color: C.blue } }, "Acción rápida" + (porTiendaVista ? " · " + tiendaVista : "")),
   /*#__PURE__*/React.createElement("div", { className: "grid grid-cols-2 lg:grid-cols-5 gap-2" },
     /*#__PURE__*/React.createElement(AccionCard, { label: "Atrasados +" + filtroDias + "d", value: nAtrasados, color: C.red, tab: "atrasados", sub: "Sin entregar a tiempo" }),
     /*#__PURE__*/React.createElement(AccionCard, { label: "Críticos +10d", value: nCriticos, color: "#B91C1C", tab: "criticos", sub: "Muy atrasados" }),
@@ -1217,8 +1246,8 @@ function Operativa({ yo, activo, syncTick }) {
     probableCancel.length > 0 && /*#__PURE__*/React.createElement(AccionCard, { label: "Cancelado (probable)", value: probableCancel.length, color: "#64748B", tab: "probcancel", sub: "Sin Fenicio + WMS procesado — verificar" }),
     enTransitoArr.length > 0 && /*#__PURE__*/React.createElement(AccionCard, { label: "En tránsito", value: enTransitoArr.length, color: "#0EA5E9", tab: "transito", sub: "Despachados, en camino" + (transitoLargoN ? " · " + transitoLargoN + " hace +2 días háb." : "") })),
   usarSnap && atrasados.length !== nAtrasados && /*#__PURE__*/React.createElement("div", { className: "text-[11px] -mt-1", style: { color: C.gray } }, "Cifras del último cruce compartido (coinciden con Resumen). Volvé a subir los archivos y cruzar para actualizar el detalle."),
-  /*#__PURE__*/React.createElement("div", { className: "text-[11px] font-bold uppercase tracking-widest", style: { color: C.blue } }, "Cumplimiento del mes"),
-  /*#__PURE__*/React.createElement(ProgresoMes, null),
+  !porTiendaVista && /*#__PURE__*/React.createElement("div", { className: "text-[11px] font-bold uppercase tracking-widest", style: { color: C.blue } }, "Cumplimiento del mes"),
+  !porTiendaVista && /*#__PURE__*/React.createElement(ProgresoMes, null),
   /*#__PURE__*/React.createElement("div", { className: "grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2" },
     /*#__PURE__*/React.createElement(MetricCard, { label: "Total pedidos", value: volTotal, color: C.blue, tab: "todos" }),
     /*#__PURE__*/React.createElement(MetricCard, { label: "Entregados", value: volEntreg, color: C.green }),
@@ -1226,7 +1255,8 @@ function Operativa({ yo, activo, syncTick }) {
     /*#__PURE__*/React.createElement(MetricCard, { label: "Tiempo a despacho", value: volDesp != null ? volDesp + " días" : "—", color: C.blue, sub: "ver por depósito ▾", onClick: () => setKpiPanel(kpiPanel === "stock" ? "" : "stock"), activoCard: kpiPanel === "stock" }),
     /*#__PURE__*/React.createElement(MetricCard, { label: "Tiempo de entrega", value: volEnt != null ? volEnt + " días" : "—", color: C.ink, sub: "ver por tienda ▾", onClick: () => setKpiPanel(kpiPanel === "entrega" ? "" : "entrega"), activoCard: kpiPanel === "entrega" }),
     /*#__PURE__*/React.createElement(MetricCard, { label: "Sin WMS", value: operSnap ? (operSnap.sin_wms || 0) : sinWMS.length, color: (operSnap ? operSnap.sin_wms : sinWMS.length) ? C.amber : C.gray, tab: sinWMS.length ? "sinwms" : null })),
-  kpiPanel && DesglosePanel({ tipo: kpiPanel }),
+  subOper === "resumen" && kpiPanel && DesglosePanel({ tipo: kpiPanel })),
+  subOper === "tiempos" && /*#__PURE__*/React.createElement(React.Fragment, null, DesglosePanel({ tipo: "cumpl" }), DesglosePanel({ tipo: "stock" }), DesglosePanel({ tipo: "entrega" })),
   leadtimeEntProm == null && entregaDiag && /*#__PURE__*/React.createElement("div", { className: "rounded-xl px-4 py-3 text-xs", style: { background: C.amberS, color: C.amber } },
     /*#__PURE__*/React.createElement("b", null, "Tiempo de entrega sin datos. "),
     entregaDiag.col ? ("Detecté la columna “" + entregaDiag.col + "” pero ningún pedido tiene una fecha de entrega válida (" + entregaDiag.conEntrega + " de " + entregaDiag.total + "). ") : "No encontré una columna de fecha de entrega en tu Fenicio. ",
@@ -1236,7 +1266,7 @@ function Operativa({ yo, activo, syncTick }) {
   persistOK === false && /*#__PURE__*/React.createElement("div", { className: "rounded-xl px-4 py-3 text-xs font-medium", style: { background: C.amberS, color: C.amber } }, "⚠ La persistencia no está activa: falta crear la tabla en Supabase, así que los comentarios y el seguimiento NO se guardan entre sesiones. Ejecutá el SQL de sql/operativa_seguimiento.sql en Supabase → SQL Editor."),
   snapError && /*#__PURE__*/React.createElement("div", { className: "rounded-xl px-4 py-3 text-xs font-medium", style: { background: C.redS, color: C.red } }, "⚠ No se pudo guardar el resumen compartido de Operativa (por eso el Resumen no coincide). Detalle: " + snapError + ". Suele ser que falta correr sql/operativa_snapshot.sql, o que la tabla quedó con columnas distintas."),
   ccDepo9Arr.length > 0 && /*#__PURE__*/React.createElement("div", { className: "rounded-xl px-4 py-3 text-xs font-medium", style: { background: "#FEE2E2", color: "#B91C1C" } }, "⚠ " + ccDepo9Arr.length + " pedido(s) Click & Collect asignados a Depo 9 — según el criterio del WMS no deberían; revisar la derivación de depósito."),
-  /*#__PURE__*/React.createElement("div", { className: "bg-white rounded-2xl border p-3 flex flex-wrap gap-2 items-end", style: { borderColor: C.line } },
+  subOper === "listado" && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", { className: "bg-white rounded-2xl border p-3 flex flex-wrap gap-2 items-end", style: { borderColor: C.line } },
     /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", { className: "text-[10px] font-bold uppercase block mb-1", style: { color: C.gray } }, "Buscar pedido"), /*#__PURE__*/React.createElement("input", { type: "text", value: buscar, onChange: e => { setBuscar(e.target.value); setPage(0); }, placeholder: "N° pedido…", className: "px-2 py-1.5 rounded-lg border text-xs", style: { borderColor: C.line } })),
     /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", { className: "text-[10px] font-bold uppercase block mb-1", style: { color: C.gray } }, "Estado Fenicio"), /*#__PURE__*/React.createElement("select", { value: filtroEstadoFen, onChange: e => { setFiltroEstadoFen(e.target.value); setPage(0); }, className: "px-2 py-1.5 rounded-lg border text-xs bg-white", style: { borderColor: C.line, maxWidth: 220 } }, /*#__PURE__*/React.createElement("option", { value: "" }, "Todos"), estadosFenOpts.map(s => /*#__PURE__*/React.createElement("option", { key: s, value: s }, s)))),
     /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", { className: "text-[10px] font-bold uppercase block mb-1", style: { color: C.gray } }, "Depósito"), /*#__PURE__*/React.createElement("select", { value: filtroDeposito, onChange: e => { setFiltroDeposito(e.target.value); setPage(0); }, className: "px-2 py-1.5 rounded-lg border text-xs bg-white", style: { borderColor: C.line, maxWidth: 200 } }, /*#__PURE__*/React.createElement("option", { value: "" }, "Todos"), depositosOpts.map(s => /*#__PURE__*/React.createElement("option", { key: s, value: s }, s)))),
@@ -1258,5 +1288,5 @@ function Operativa({ yo, activo, syncTick }) {
   totalPaginas > 1 && /*#__PURE__*/React.createElement("div", { className: "flex items-center justify-center gap-3 pt-1" },
     /*#__PURE__*/React.createElement("button", { onClick: () => setPage(p => Math.max(0, p - 1)), disabled: pageSafe <= 0, className: "text-xs font-bold px-3 py-1.5 rounded-lg disabled:opacity-40", style: { background: "#EEF1F5", color: C.gray } }, "← Anterior"),
     /*#__PURE__*/React.createElement("span", { className: "text-xs font-bold", style: { color: C.gray } }, "Hoja " + (pageSafe + 1) + " / " + totalPaginas),
-    /*#__PURE__*/React.createElement("button", { onClick: () => setPage(p => Math.min(totalPaginas - 1, p + 1)), disabled: pageSafe >= totalPaginas - 1, className: "text-xs font-bold px-3 py-1.5 rounded-lg disabled:opacity-40", style: { background: "#EEF1F5", color: C.gray } }, "Siguiente →"))));
+    /*#__PURE__*/React.createElement("button", { onClick: () => setPage(p => Math.min(totalPaginas - 1, p + 1)), disabled: pageSafe >= totalPaginas - 1, className: "text-xs font-bold px-3 py-1.5 rounded-lg disabled:opacity-40", style: { background: "#EEF1F5", color: C.gray } }, "Siguiente →")))))));
 }
