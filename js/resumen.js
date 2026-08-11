@@ -104,7 +104,7 @@ function Resumen({
     { id: "estancados_op", l: "Pedidos estancados (+2 días sin avanzar)", tipo: "num" },
     { id: "depo0_op", l: "Pedidos en Depo 0 (sin stock)", tipo: "num" },
     { id: "sinwms_op", l: "Pedidos sin WMS", tipo: "num" },
-    { id: "tasa_cumpl_op", l: "Tasa de cumplimiento", tipo: "pct" },
+    { id: "tasa_cumpl_op", l: "Cumple promesa (≤5 días háb.)", tipo: "pct" },
     { id: "leadtime_desp_op", l: "Tiempo a despacho (9 de cada 10)", tipo: "dias" },
     { id: "leadtime_ent_op", l: "Tiempo de entrega (9 de cada 10)", tipo: "dias" },
     { id: "pendientes_factura", l: "Pendientes sin factura", tipo: "num" },

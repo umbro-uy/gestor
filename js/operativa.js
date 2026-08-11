@@ -566,10 +566,29 @@ function Operativa({ yo, activo, syncTick }) {
         efectivos.forEach(r => { const d = parseFecha(r.fecha); if (!d) return; const dia = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); const b = calM[dia] || (calM[dia] = { dia, total: 0, entregados: 0 }); b.total++; if (r.entregado || r.listoRetiro) b.entregados++; });
         const calArr = Object.values(calM).sort((a, b) => a.dia.localeCompare(b.dia));
         // ── Desgloses por tienda/depósito (para los KPI clickeables) ──
-        // Cumplimiento y tiempos por tienda (canal de venta)
+        // Cumplimiento y tiempos por tienda (canal de venta). El cumplimiento mide la PROMESA (entregado
+        // dentro de PROMESA_DH días háb.), no el crudo entregados/total: entregado tarde = incumplido,
+        // recién comprado aún en plazo = no evaluable (fuera).
+        const promEval = r => {
+          if (r.entregado) {
+            const dhE = r.fechaEntrega && String(r.fechaEntrega).trim() && r.fechaEntrega !== "-" ? diasHabEntre(r.fecha, r.fechaEntrega) : null;
+            return dhE == null ? null : (dhE <= PROMESA_DH);   // null = entregado sin fecha (no evaluable)
+          }
+          return (r.dias != null ? r.dias : 0) > PROMESA_DH ? false : null;  // vencido sin entregar = incumple; en plazo = fuera
+        };
         const porTienda = {};
-        efectivos.forEach(r => { const t = r.tienda || "-"; const b = porTienda[t] || (porTienda[t] = { tienda: t, total: 0, entregados: 0, lt: [], ltE: [] }); b.total++; if (r.entregado) b.entregados++; if (r.leadtime != null) b.lt.push(r.leadtime); if (r.leadtimeEntrega != null) b.ltE.push(r.leadtimeEntrega); });
-        const cumplPorTienda = Object.values(porTienda).map(b => ({ tienda: b.tienda, total: b.total, entregados: b.entregados, pct: b.total ? Math.round(b.entregados / b.total * 100) : 0, despachoP90: percentil(b.lt, PCTL), entregaP90: percentil(b.ltE, PCTL) })).sort((a, b) => a.pct - b.pct);
+        let promEvalTot = 0, promEnPlazoTot = 0;
+        efectivos.forEach(r => {
+          const t = r.tienda || "-";
+          const b = porTienda[t] || (porTienda[t] = { tienda: t, total: 0, evalN: 0, enPlazo: 0, lt: [], ltE: [] });
+          b.total++;
+          const pe = promEval(r);
+          if (pe != null) { b.evalN++; promEvalTot++; if (pe) { b.enPlazo++; promEnPlazoTot++; } }
+          if (r.leadtime != null) b.lt.push(r.leadtime);
+          if (r.leadtimeEntrega != null) b.ltE.push(r.leadtimeEntrega);
+        });
+        const cumplPorTienda = Object.values(porTienda).map(b => ({ tienda: b.tienda, total: b.total, evalN: b.evalN, enPlazo: b.enPlazo, pct: b.evalN ? Math.round(b.enPlazo / b.evalN * 100) : null, despachoP90: percentil(b.lt, PCTL), entregaP90: percentil(b.ltE, PCTL) })).filter(x => x.pct != null).sort((a, b) => a.pct - b.pct);
+        const tasaCumplProm = promEvalTot ? Math.round(promEnPlazoTot / promEvalTot * 100) : 0;
         // Solicitud de stock a TIENDAS (Deposito pedido ≠ 9/0): tiempo confirmado → procesado en central.
         // +2 días hábiles sin procesar = la tienda no envió la mercadería o se extravió.
         const colFConf = findCol(sW, [/^fecha\s*confirmad/i]);
@@ -633,7 +652,7 @@ function Operativa({ yo, activo, syncTick }) {
           sin_wms: finalRows.filter(r => r.sinWMS && !esCancEf(r)).length,
           entregados: efectivos.filter(r => r.entregado).length,
           // Tasa histórica sobre pedidos EFECTIVOS (sin cancelados): un cancelado no incumple la entrega
-          tasa_cumpl: efectivos.length ? Math.round(efectivos.filter(r => r.entregado).length / efectivos.length * 100) : 0,
+          tasa_cumpl: tasaCumplProm,   // % que cumplió la promesa (entregado ≤ PROMESA_DH días háb.)
           leadtime_despacho: percentil(lt, PCTL),
           leadtime_entrega: percentil(ltE, PCTL),
           // El calendario y los desgloses van TAMBIÉN adentro de "serie" (columna jsonb que ya existe
@@ -872,9 +891,9 @@ function Operativa({ yo, activo, syncTick }) {
     const colPct = p => p >= 90 ? C.green : p >= 70 ? C.amber : C.red;
     if (tipo === "cumpl") {
       const filas = (desgSnap.cumplPorTienda || []).map(t => ce("tr", { key: t.tienda, style: { borderTop: "1px solid " + C.line } },
-        td(t.tienda, { className: "px-3 py-1.5 font-semibold" }), td(t.total), td(t.entregados),
+        td(t.tienda, { className: "px-3 py-1.5 font-semibold" }), td(t.evalN != null ? t.evalN : t.total), td(t.enPlazo != null ? t.enPlazo : t.entregados),
         td(t.pct + "%", { className: "px-3 py-1.5 font-black", style: { color: colPct(t.pct) } })));
-      return caja("Tasa de cumplimiento por tienda", "Ordenado de peor a mejor: la primera fila es la que más afecta el indicador.", ["Tienda", "Pedidos", "Entregados", "% entregado"], filas);
+      return caja("Cumplimiento de la promesa por tienda", "% de pedidos entregados DENTRO de la promesa (" + PROMESA_DH + " días háb.). Evaluables = entregados + no entregados con la promesa vencida (los recién comprados en plazo y los cancelados quedan afuera). Un entregado tarde cuenta como incumplido. Ordenado de peor a mejor.", ["Tienda", "Evaluables", "En plazo (≤" + PROMESA_DH + "d)", "% en plazo"], filas);
     }
     if (tipo === "entrega") {
       const filas = (desgSnap.cumplPorTienda || []).slice().sort((a, b) => (b.entregaP90 || 0) - (a.entregaP90 || 0)).map(t => ce("tr", { key: t.tienda, style: { borderTop: "1px solid " + C.line } },
@@ -1203,7 +1222,7 @@ function Operativa({ yo, activo, syncTick }) {
   /*#__PURE__*/React.createElement("div", { className: "grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2" },
     /*#__PURE__*/React.createElement(MetricCard, { label: "Total pedidos", value: volTotal, color: C.blue, tab: "todos" }),
     /*#__PURE__*/React.createElement(MetricCard, { label: "Entregados", value: volEntreg, color: C.green }),
-    /*#__PURE__*/React.createElement(MetricCard, { label: "Tasa cumplimiento", value: volTasa + "%", color: volTasa >= 90 ? C.green : volTasa >= 70 ? C.amber : C.red, sub: "ver por tienda ▾", onClick: () => setKpiPanel(kpiPanel === "cumpl" ? "" : "cumpl"), activoCard: kpiPanel === "cumpl" }),
+    /*#__PURE__*/React.createElement(MetricCard, { label: "Cumple promesa", value: volTasa + "%", color: volTasa >= 90 ? C.green : volTasa >= 70 ? C.amber : C.red, sub: "≤" + PROMESA_DH + " días háb. · por tienda ▾", onClick: () => setKpiPanel(kpiPanel === "cumpl" ? "" : "cumpl"), activoCard: kpiPanel === "cumpl" }),
     /*#__PURE__*/React.createElement(MetricCard, { label: "Tiempo a despacho", value: volDesp != null ? volDesp + " días" : "—", color: C.blue, sub: "ver por depósito ▾", onClick: () => setKpiPanel(kpiPanel === "stock" ? "" : "stock"), activoCard: kpiPanel === "stock" }),
     /*#__PURE__*/React.createElement(MetricCard, { label: "Tiempo de entrega", value: volEnt != null ? volEnt + " días" : "—", color: C.ink, sub: "ver por tienda ▾", onClick: () => setKpiPanel(kpiPanel === "entrega" ? "" : "entrega"), activoCard: kpiPanel === "entrega" }),
     /*#__PURE__*/React.createElement(MetricCard, { label: "Sin WMS", value: operSnap ? (operSnap.sin_wms || 0) : sinWMS.length, color: (operSnap ? operSnap.sin_wms : sinWMS.length) ? C.amber : C.gray, tab: sinWMS.length ? "sinwms" : null })),
