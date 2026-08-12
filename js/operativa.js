@@ -74,7 +74,7 @@ function Operativa({ yo, activo, syncTick }) {
   // Vista por TIENDA (selector grande arriba) y subsección (menú lateral).
   const TIENDAS_OP = ["todas", "TimeOut", "Tienda Nacional", "Classico"];
   const [tiendaVista, setTiendaVista] = useState("todas");
-  const [subOper, setSubOper] = useState("resumen"); // resumen | listado | tiempos | calendario | cargar
+  const [subOper, setSubOper] = useState("resumen"); // resumen (incluye listado) | tiempos | cargar · calendario va siempre arriba
   const [filtroDia, setFiltroDia] = useState(""); // día (YYYY-MM-DD) elegido en el calendario para filtrar la tabla
   const POR_HOJA = 50;
   const leerFenicio = tienda => e => {
@@ -582,17 +582,23 @@ function Operativa({ yo, activo, syncTick }) {
         };
         const porTienda = {};
         let promEvalTot = 0, promEnPlazoTot = 0;
+        // Distribución del tiempo de ENTREGA en días hábiles (para decidir si podemos bajar la promesa):
+        // de todo lo entregado, qué % llegó dentro de cada plazo (acumulado). Se calcula por tienda y global.
+        const DIST_TRAMOS = [2, 3, 5, 7];
+        const distDe = arr => { const n = arr.length; return { n, tramos: DIST_TRAMOS.map(t => ({ d: t, pct: n ? Math.round(arr.filter(x => x <= t).length / n * 100) : null })) }; };
         efectivos.forEach(r => {
           const t = r.tienda || "-";
-          const b = porTienda[t] || (porTienda[t] = { tienda: t, total: 0, entregadosRaw: 0, evalN: 0, enPlazo: 0, lt: [], ltE: [] });
+          const b = porTienda[t] || (porTienda[t] = { tienda: t, total: 0, entregadosRaw: 0, evalN: 0, enPlazo: 0, lt: [], ltE: [], dhEnt: [] });
           b.total++;
           if (r.entregado) b.entregadosRaw++;
           const pe = promEval(r);
           if (pe != null) { b.evalN++; promEvalTot++; if (pe) { b.enPlazo++; promEnPlazoTot++; } }
           if (r.leadtime != null) b.lt.push(r.leadtime);
           if (r.leadtimeEntrega != null) b.ltE.push(r.leadtimeEntrega);
+          if (r.entregado && r.fechaEntrega && String(r.fechaEntrega).trim() && r.fechaEntrega !== "-") { const dhE = diasHabEntre(r.fecha, r.fechaEntrega); if (dhE != null) b.dhEnt.push(dhE); }
         });
-        const cumplPorTienda = Object.values(porTienda).map(b => ({ tienda: b.tienda, total: b.total, entregados: b.entregadosRaw, evalN: b.evalN, enPlazo: b.enPlazo, pct: b.evalN ? Math.round(b.enPlazo / b.evalN * 100) : null, despachoP90: percentil(b.lt, PCTL), entregaP90: percentil(b.ltE, PCTL) })).filter(x => x.pct != null).sort((a, b) => a.pct - b.pct);
+        const cumplPorTienda = Object.values(porTienda).map(b => ({ tienda: b.tienda, total: b.total, entregados: b.entregadosRaw, evalN: b.evalN, enPlazo: b.enPlazo, pct: b.evalN ? Math.round(b.enPlazo / b.evalN * 100) : null, despachoP90: percentil(b.lt, PCTL), entregaP90: percentil(b.ltE, PCTL), dist: distDe(b.dhEnt) })).filter(x => x.pct != null).sort((a, b) => a.pct - b.pct);
+        const distEntrega = distDe([].concat(...Object.values(porTienda).map(b => b.dhEnt)));
         const tasaCumplProm = promEvalTot ? Math.round(promEnPlazoTot / promEvalTot * 100) : 0;
         // Solicitud de stock a TIENDAS (Deposito pedido ≠ 9/0): tiempo confirmado → procesado en central.
         // +2 días hábiles sin procesar = la tienda no envió la mercadería o se extravió.
@@ -662,7 +668,7 @@ function Operativa({ yo, activo, syncTick }) {
           leadtime_entrega: percentil(ltE, PCTL),
           // El calendario y los desgloses van TAMBIÉN adentro de "serie" (columna jsonb que ya existe
           // en la tabla): así se comparten sin necesidad de correr ninguna migración.
-          serie: { ...(serie || {}), calendario: calArr, maduros, desgloses: { cumplPorTienda, stockTiendas } },
+          serie: { ...(serie || {}), calendario: calArr, maduros, desgloses: { cumplPorTienda, stockTiendas, distEntrega } },
           calendario: calArr,
           actualizado: new Date().toISOString()
         };
@@ -727,6 +733,13 @@ function Operativa({ yo, activo, syncTick }) {
   const leadtimeProm = percentil(leadtimes, PCTL);
   const leadtimesEnt = resultado ? resultado.filter(r => r.leadtimeEntrega != null).map(r => r.leadtimeEntrega) : [];
   const leadtimeEntProm = percentil(leadtimesEnt, PCTL);
+  // Distribución del tiempo de ENTREGA (días hábiles) de lo cargado en esta sesión, respetando la tienda vista.
+  const DIST_TRAMOS_V = [2, 3, 5, 7];
+  const distEntCalc = rows => {
+    const arr = (rows || []).filter(r => r.entregado && r.fechaEntrega && String(r.fechaEntrega).trim() && r.fechaEntrega !== "-").map(r => diasHabEntre(r.fecha, r.fechaEntrega)).filter(x => x != null);
+    const n = arr.length;
+    return { n, tramos: DIST_TRAMOS_V.map(t => ({ d: t, pct: n ? Math.round(arr.filter(x => x <= t).length / n * 100) : null })) };
+  };
   // ── Evolución MENSUAL de los KPIs operativos (agrupado por mes de COMPRA) ──
   // Para cada mes calculamos la tasa de cumplimiento y los tiempos por percentil P90,
   // así se ve la tendencia y no solo el número global.
@@ -767,6 +780,11 @@ function Operativa({ yo, activo, syncTick }) {
   const volTasa = porTiendaVista ? (ctv ? ctv.pct : 0) : (operSnap ? (operSnap.tasa_cumpl || 0) : tasaCumpl);
   const volDesp = porTiendaVista ? (ctv ? ctv.despachoP90 : null) : (operSnap ? operSnap.leadtime_despacho : leadtimeProm);
   const volEnt = porTiendaVista ? (ctv ? ctv.entregaP90 : null) : (operSnap ? operSnap.leadtime_entrega : leadtimeEntProm);
+  // Distribución de tiempos de entrega a mostrar: si cruzamos en esta sesión, la de lo cargado; si no,
+  // la guardada en el snapshot (por tienda desde ctv.dist; global desde desgSnap.distEntrega). Fallback a live.
+  const distEntLive = distEntCalc(resVista);
+  const distEntSnap = porTiendaVista ? (ctv && ctv.dist ? ctv.dist : null) : (desgSnap && desgSnap.distEntrega ? desgSnap.distEntrega : null);
+  const distEnt = cruceEnSesion.current && distEntLive.n ? distEntLive : (distEntSnap || distEntLive);
   const cumplShown = serieSnap ? serieSnap.cumpl : cumplCur;
   const despShown = serieSnap ? serieSnap.despachoP90 : despCur;
   const entShown = serieSnap ? serieSnap.entregaP90 : entCur;
@@ -1014,14 +1032,53 @@ function Operativa({ yo, activo, syncTick }) {
     className: "px-4 py-2 rounded-xl text-sm font-black fraunces transition-colors",
     style: { background: tiendaVista === t ? C.blue : "#EEF1F5", color: tiendaVista === t ? "#fff" : C.ink }
   }, t === "todas" ? "Todas" : t)));
-  const SUBS = [{ id: "resumen", l: "Resumen · KPIs" }, { id: "listado", l: "Listado de pedidos" }, { id: "tiempos", l: "Tiempos y despacho" }, { id: "calendario", l: "Calendario" }, { id: "cargar", l: "Cargar archivos" }];
+  // El Listado de pedidos vive DENTRO de "Resumen" (ver cuántos atrasados y CUÁLES en la misma vista).
+  // El Calendario NO va en el menú: se muestra siempre arriba, unificando las 3 tiendas.
+  const SUBS = [{ id: "resumen", l: "Resumen · KPIs" }, { id: "tiempos", l: "Tiempos y despacho" }, { id: "cargar", l: "Cargar archivos" }];
   const sidebar = ceEl(SubMenuNav, { items: SUBS.map(s => ({ id: s.id, label: s.l })), active: subOper, onSelect: setSubOper });
+  // ── Panel SIEMPRE visible: ¿estamos listos para bajar la promesa de entrega? ──
+  // De todo lo entregado, qué % llegó dentro de cada plazo (acumulado, días hábiles). Sirve para decidir
+  // si la operación aguanta bajar la promesa: si en 7 días entregamos el 80%, bajar a 5 sería contraproducente.
+  const distPanel = distEnt.n > 0 ? ceEl("div", { className: "bg-white rounded-2xl border p-4", style: { borderColor: C.line } },
+    ceEl("div", { className: "flex items-baseline justify-between flex-wrap gap-2 mb-1" },
+      ceEl("span", { className: "text-sm font-black fraunces", style: { color: C.ink } }, "¿Estamos listos para bajar la promesa?"),
+      ceEl("span", { className: "text-[11px]", style: { color: C.gray } }, distEnt.n + " pedidos entregados con fecha" + (porTiendaVista ? " · " + tiendaVista : ""))),
+    ceEl("p", { className: "text-[11px] mb-3", style: { color: C.gray } }, "Del total entregado, qué % llegó dentro de cada plazo (días hábiles, acumulado). Promesa actual: ≤ " + PROMESA_DH + " días."),
+    ceEl("div", { className: "space-y-2" }, distEnt.tramos.map(t => {
+      const esProm = t.d === PROMESA_DH;
+      const col = t.pct == null ? C.gray : t.pct >= 90 ? C.green : t.pct >= 70 ? C.amber : C.red;
+      return ceEl("div", { key: t.d, className: "flex items-center gap-3" },
+        ceEl("span", { className: "text-xs font-bold shrink-0", style: { color: esProm ? C.blue : C.ink, width: 78 } }, "≤ " + t.d + " días"),
+        ceEl("div", { className: "flex-1 rounded-full overflow-hidden", style: { background: "#EEF1F5", height: 18 } },
+          ceEl("div", { className: "h-full rounded-full transition-all", style: { width: (t.pct || 0) + "%", background: col } })),
+        ceEl("span", { className: "text-sm font-black fraunces tabular-nums shrink-0", style: { color: col, width: 46, textAlign: "right" } }, t.pct == null ? "—" : t.pct + "%"),
+        esProm ? ceEl("span", { className: "text-[10px] font-bold px-2 py-0.5 rounded-full shrink-0", style: { background: C.soft, color: C.blue } }, "promesa") : ceEl("span", { className: "shrink-0", style: { width: 62 } }));
+    }))) : null;
+  // ── Calendario UNIFICADO (las 3 tiendas) — se muestra siempre, arriba de todo ──
+  const calendarEl = calData.length > 0 ? ceEl("div", { className: "bg-white rounded-2xl border p-3", style: { borderColor: C.line } },
+    ceEl("div", { className: "flex items-center justify-between flex-wrap gap-2 mb-2" },
+      ceEl("div", null,
+        ceEl("span", { className: "text-sm font-bold" }, "Cumplimiento por día · las 3 tiendas juntas"),
+        ceEl("span", { className: "text-[11px] ml-2", style: { color: C.gray } }, "Tocá un día para filtrar el listado · color = % entregado o listo para retirar"),
+        !cruceEnSesion.current && !calComp && ceEl("div", { className: "text-[11px] font-semibold mt-1", style: { color: C.amber } }, "⚠ El último cruce se hizo con una versión anterior de la app y no guardó el calendario compartido: estos % solo cuentan los pedidos accionables. Se corrige recargando la app (Ctrl+Shift+R) y volviendo a cruzar los archivos.")),
+      ceEl("div", { className: "flex items-center gap-2" },
+        filtroDia && ceEl("button", { onClick: () => { setFiltroDia(""); setPage(0); setSubOper("resumen"); }, className: "text-xs font-bold px-3 py-1.5 rounded-lg", style: { background: C.soft, color: C.blue } }, "✕ Ver todos los días"),
+        ceEl("select", { value: calSelMes, onChange: e => setCalMes(e.target.value), className: "px-2 py-1.5 rounded-lg border text-xs font-bold bg-white", style: { borderColor: C.line, color: C.ink } }, mesesCal.map(m => ceEl("option", { key: m, value: m }, fmtMesYM(m)))))),
+    ceEl("div", { className: "flex flex-wrap gap-1.5" }, calDias.map(d => {
+      const col = d.pct >= 90 ? C.green : d.pct >= 70 ? C.amber : C.red;
+      const bg = d.pct >= 90 ? C.greenS : d.pct >= 70 ? C.amberS : C.redS;
+      const sel = filtroDia === d.dia;
+      return ceEl("button", { key: d.dia, onClick: () => { setFiltroDia(sel ? "" : d.dia); setPage(0); setSubOper("resumen"); }, title: d.dia + " — " + d.entregados + "/" + d.total + " entregados o listos para retirar", className: "rounded-lg px-2 py-1 text-center transition-all", style: { background: sel ? col : bg, minWidth: 50, border: sel ? "2px solid " + col : "2px solid transparent" } },
+        ceEl("div", { className: "text-[10px] font-bold", style: { color: sel ? "#fff" : C.gray } }, d.dia.slice(8, 10) + "/" + d.dia.slice(5, 7)),
+        ceEl("div", { className: "text-sm font-black fraunces", style: { color: sel ? "#fff" : col } }, d.pct + "%"));
+    })),
+    filtroDia && ceEl("div", { className: "text-[11px] mt-2 font-semibold", style: { color: C.blue } }, "Mostrando pedidos del " + filtroDia.slice(8, 10) + "/" + filtroDia.slice(5, 7) + "/" + filtroDia.slice(0, 4) + " en el Listado (abajo)")) : null;
   return /*#__PURE__*/React.createElement("div", {
-    className: "space-y-3"
+    className: "space-y-5"
   }, /*#__PURE__*/React.createElement(Title, {
     eyebrow: "Operativa" + (porTiendaVista ? " · " + tiendaVista : ""),
     title: "Cruce Fenicio × Encuentra"
-  }), resultado && selectorTienda, /*#__PURE__*/React.createElement("div", { className: "flex flex-col lg:flex-row gap-3 items-start" }, resultado && sidebar, /*#__PURE__*/React.createElement("div", { className: "flex-1 min-w-0 space-y-3" }, (!resultado || subOper === "cargar") && /*#__PURE__*/React.createElement(Collapse, {
+  }), resultado && selectorTienda, resultado && calendarEl, /*#__PURE__*/React.createElement("div", { className: "flex flex-col lg:flex-row gap-6 lg:gap-8 items-start" }, resultado && sidebar, /*#__PURE__*/React.createElement("div", { className: "flex-1 min-w-0 space-y-5" }, (!resultado || subOper === "cargar") && /*#__PURE__*/React.createElement(Collapse, {
     key: resultado ? "cargado" : "vacio",
     title: "Cargar archivos y cruzar",
     subtitle: rowsA.length || rowsB.length ? (rowsA.length + " pedidos Fenicio · " + rowsB.length + " filas WMS") : "Subí Fenicio (.xls por tienda) y el Monitor de Encuentra (.xlsx)",
@@ -1212,27 +1269,9 @@ function Operativa({ yo, activo, syncTick }) {
       background: C.blue
     }
   }, !rowsA.length || !rowsB.length ? "Carga los dos archivos primero" : "Cruzar archivos")))), resultado && /*#__PURE__*/React.createElement("div", {
-    className: "space-y-3"
-  }, subOper === "calendario" && calData.length > 0 && /*#__PURE__*/React.createElement("div", { className: "bg-white rounded-2xl border p-3", style: { borderColor: C.line } },
-    /*#__PURE__*/React.createElement("div", { className: "flex items-center justify-between flex-wrap gap-2 mb-2" },
-      /*#__PURE__*/React.createElement("div", null,
-        /*#__PURE__*/React.createElement("span", { className: "text-sm font-bold" }, "Filtrar por fecha (las 3 tiendas juntas)"),
-        /*#__PURE__*/React.createElement("span", { className: "text-[11px] ml-2", style: { color: C.gray } }, "Tocá un día para ver sus pedidos · color = % entregado o listo para retirar"),
-        !cruceEnSesion.current && !calComp && /*#__PURE__*/React.createElement("div", { className: "text-[11px] font-semibold mt-1", style: { color: C.amber } }, "⚠ El último cruce se hizo con una versión anterior de la app y no guardó el calendario compartido: estos % solo cuentan los pedidos accionables. Se corrige recargando la app (Ctrl+Shift+R) y volviendo a cruzar los archivos.")),
-      /*#__PURE__*/React.createElement("div", { className: "flex items-center gap-2" },
-        filtroDia && /*#__PURE__*/React.createElement("button", { onClick: () => { setFiltroDia(""); setPage(0); }, className: "text-xs font-bold px-3 py-1.5 rounded-lg", style: { background: C.soft, color: C.blue } }, "✕ Ver todos los días"),
-        /*#__PURE__*/React.createElement("select", { value: calSelMes, onChange: e => setCalMes(e.target.value), className: "px-2 py-1.5 rounded-lg border text-xs font-bold bg-white", style: { borderColor: C.line, color: C.ink } }, mesesCal.map(m => /*#__PURE__*/React.createElement("option", { key: m, value: m }, fmtMesYM(m)))))),
-    /*#__PURE__*/React.createElement("div", { className: "flex flex-wrap gap-1.5" }, calDias.map(d => {
-      const col = d.pct >= 90 ? C.green : d.pct >= 70 ? C.amber : C.red;
-      const bg = d.pct >= 90 ? C.greenS : d.pct >= 70 ? C.amberS : C.redS;
-      const sel = filtroDia === d.dia;
-      return /*#__PURE__*/React.createElement("button", { key: d.dia, onClick: () => { setFiltroDia(sel ? "" : d.dia); setPage(0); }, title: d.dia + " — " + d.entregados + "/" + d.total + " entregados o listos para retirar", className: "rounded-lg px-2 py-1 text-center transition-all", style: { background: sel ? col : bg, minWidth: 50, border: sel ? "2px solid " + col : "2px solid transparent" } },
-        /*#__PURE__*/React.createElement("div", { className: "text-[10px] font-bold", style: { color: sel ? "#fff" : C.gray } }, d.dia.slice(8, 10) + "/" + d.dia.slice(5, 7)),
-        /*#__PURE__*/React.createElement("div", { className: "text-sm font-black fraunces", style: { color: sel ? "#fff" : col } }, d.pct + "%"));
-    })),
-    filtroDia && /*#__PURE__*/React.createElement("div", { className: "text-[11px] mt-2 font-semibold", style: { color: C.blue } }, "Mostrando pedidos del " + filtroDia.slice(8, 10) + "/" + filtroDia.slice(5, 7) + "/" + filtroDia.slice(0, 4))),
-  subOper === "resumen" && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", { className: "text-[11px] font-bold uppercase tracking-widest", style: { color: C.blue } }, "Acción rápida" + (porTiendaVista ? " · " + tiendaVista : "")),
-  /*#__PURE__*/React.createElement("div", { className: "grid grid-cols-2 lg:grid-cols-5 gap-2" },
+    className: "space-y-5"
+  }, subOper === "resumen" && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", { className: "text-[11px] font-bold uppercase tracking-widest", style: { color: C.blue } }, "Acción rápida" + (porTiendaVista ? " · " + tiendaVista : "")),
+  /*#__PURE__*/React.createElement("div", { className: "grid grid-cols-2 lg:grid-cols-5 gap-3" },
     /*#__PURE__*/React.createElement(AccionCard, { label: "Atrasados +" + filtroDias + "d", value: nAtrasados, color: C.red, tab: "atrasados", sub: "Sin entregar a tiempo" }),
     /*#__PURE__*/React.createElement(AccionCard, { label: "Críticos +10d", value: nCriticos, color: "#B91C1C", tab: "criticos", sub: "Muy atrasados" }),
     /*#__PURE__*/React.createElement(AccionCard, { label: "Validar despacho", value: nNoDespacho, color: "#B45309", tab: "nodespacho", sub: "Despachado WMS, sin entregar" }),
@@ -1242,9 +1281,10 @@ function Operativa({ yo, activo, syncTick }) {
     probableCancel.length > 0 && /*#__PURE__*/React.createElement(AccionCard, { label: "Cancelado (probable)", value: probableCancel.length, color: "#64748B", tab: "probcancel", sub: "Sin Fenicio + WMS procesado — verificar" }),
     enTransitoArr.length > 0 && /*#__PURE__*/React.createElement(AccionCard, { label: "En tránsito", value: enTransitoArr.length, color: "#0EA5E9", tab: "transito", sub: "Despachados, en camino" + (transitoLargoN ? " · " + transitoLargoN + " hace +2 días háb." : "") })),
   usarSnap && atrasados.length !== nAtrasados && /*#__PURE__*/React.createElement("div", { className: "text-[11px] -mt-1", style: { color: C.gray } }, "Cifras del último cruce compartido (coinciden con Resumen). Volvé a subir los archivos y cruzar para actualizar el detalle."),
+  distPanel,
   !porTiendaVista && /*#__PURE__*/React.createElement("div", { className: "text-[11px] font-bold uppercase tracking-widest", style: { color: C.blue } }, "Cumplimiento del mes"),
   !porTiendaVista && /*#__PURE__*/React.createElement(ProgresoMes, null),
-  /*#__PURE__*/React.createElement("div", { className: "grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2" },
+  /*#__PURE__*/React.createElement("div", { className: "grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3" },
     /*#__PURE__*/React.createElement(MetricCard, { label: "Total pedidos", value: volTotal, color: C.blue, tab: "todos" }),
     /*#__PURE__*/React.createElement(MetricCard, { label: "Entregados", value: volEntreg, color: C.green }),
     /*#__PURE__*/React.createElement(MetricCard, { label: "Cumple promesa", value: volTasa + "%", color: volTasa >= 90 ? C.green : volTasa >= 70 ? C.amber : C.red, sub: "≤" + PROMESA_DH + " días háb. · por tienda ▾", onClick: () => setKpiPanel(kpiPanel === "cumpl" ? "" : "cumpl"), activoCard: kpiPanel === "cumpl" }),
@@ -1262,7 +1302,7 @@ function Operativa({ yo, activo, syncTick }) {
   persistOK === false && /*#__PURE__*/React.createElement("div", { className: "rounded-xl px-4 py-3 text-xs font-medium", style: { background: C.amberS, color: C.amber } }, "⚠ La persistencia no está activa: falta crear la tabla en Supabase, así que los comentarios y el seguimiento NO se guardan entre sesiones. Ejecutá el SQL de sql/operativa_seguimiento.sql en Supabase → SQL Editor."),
   snapError && /*#__PURE__*/React.createElement("div", { className: "rounded-xl px-4 py-3 text-xs font-medium", style: { background: C.redS, color: C.red } }, "⚠ No se pudo guardar el resumen compartido de Operativa (por eso el Resumen no coincide). Detalle: " + snapError + ". Suele ser que falta correr sql/operativa_snapshot.sql, o que la tabla quedó con columnas distintas."),
   ccDepo9Arr.length > 0 && /*#__PURE__*/React.createElement("div", { className: "rounded-xl px-4 py-3 text-xs font-medium", style: { background: "#FEE2E2", color: "#B91C1C" } }, "⚠ " + ccDepo9Arr.length + " pedido(s) Click & Collect asignados a Depo 9 — según el criterio del WMS no deberían; revisar la derivación de depósito."),
-  subOper === "listado" && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", { className: "bg-white rounded-2xl border p-3 flex flex-wrap gap-2 items-end", style: { borderColor: C.line } },
+  subOper === "resumen" && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", { className: "text-[11px] font-bold uppercase tracking-widest pt-1", style: { color: C.blue } }, "Listado de pedidos" + (porTiendaVista ? " · " + tiendaVista : "")), /*#__PURE__*/React.createElement("div", { className: "bg-white rounded-2xl border p-3 flex flex-wrap gap-2 items-end", style: { borderColor: C.line } },
     /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", { className: "text-[10px] font-bold uppercase block mb-1", style: { color: C.gray } }, "Buscar pedido"), /*#__PURE__*/React.createElement("input", { type: "text", value: buscar, onChange: e => { setBuscar(e.target.value); setPage(0); }, placeholder: "N° pedido…", className: "px-2 py-1.5 rounded-lg border text-xs", style: { borderColor: C.line } })),
     /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", { className: "text-[10px] font-bold uppercase block mb-1", style: { color: C.gray } }, "Estado Fenicio"), /*#__PURE__*/React.createElement("select", { value: filtroEstadoFen, onChange: e => { setFiltroEstadoFen(e.target.value); setPage(0); }, className: "px-2 py-1.5 rounded-lg border text-xs bg-white", style: { borderColor: C.line, maxWidth: 220 } }, /*#__PURE__*/React.createElement("option", { value: "" }, "Todos"), estadosFenOpts.map(s => /*#__PURE__*/React.createElement("option", { key: s, value: s }, s)))),
     /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", { className: "text-[10px] font-bold uppercase block mb-1", style: { color: C.gray } }, "Depósito"), /*#__PURE__*/React.createElement("select", { value: filtroDeposito, onChange: e => { setFiltroDeposito(e.target.value); setPage(0); }, className: "px-2 py-1.5 rounded-lg border text-xs bg-white", style: { borderColor: C.line, maxWidth: 200 } }, /*#__PURE__*/React.createElement("option", { value: "" }, "Todos"), depositosOpts.map(s => /*#__PURE__*/React.createElement("option", { key: s, value: s }, s)))),
