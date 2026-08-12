@@ -486,11 +486,15 @@ function Operativa({ yo, activo, syncTick }) {
     // Conservar los pedidos YA SEGUIDOS (con comentario o marcados como accionado) que NO vinieron en
     // los archivos nuevos, para no perder su seguimiento al recruzar. Se re-derivan para refrescar días.
     const enCruce = new Set(merged.map(r => r.pedido));
+    // ¿El pedido está en el Monitor WMS de HOY? El Monitor lista TODOS los pedidos activos, así que si un
+    // pedido ya no aparece ahí (ni en Fenicio), está resuelto/archivado: no debe arrastrarse como atrasado
+    // con datos viejos. Sin esto, un pedido comentado hace meses seguía saliendo "demorado 30 días".
+    const enWMSHoy = p => !!wmsMap[String(p).trim()];
     // Al retener, refrescamos el estado desde el WMS ACTUAL (el Monitor trae TODOS los pedidos, incluso
     // los que Fenicio ya no lista por estar cancelados/entregados). Así un pedido retenido que hoy figura
     // "Cancelado" en el WMS deja de contar como atrasado, aunque no venga en el Fenicio de hoy.
     const retenidos = (resultado || [])
-      .filter(p => !enCruce.has(p.pedido) && ((p.historial && p.historial.length) || p.accionado))
+      .filter(p => !enCruce.has(p.pedido) && ((p.historial && p.historial.length) || p.accionado) && enWMSHoy(p.pedido))
       .map(p => {
         const w = wmsMap[String(p.pedido).trim()];
         let base = w ? {
@@ -540,14 +544,17 @@ function Operativa({ yo, activo, syncTick }) {
         // refleja el ÚLTIMO cruce y no arrastra pedidos viejos (era la causa de que Resumen mostrara
         // 617 en vez de los 272 reales). Regla:
         //  · ENTREGADO en este cruce → se borra SIEMPRE (aunque tenga comentario): ya está resuelto.
+        //  · Ya NO está en las planillas nuevas (ni en Fenicio ni en el Monitor WMS) → se borra: está
+        //    resuelto/archivado, aunque tenga nota (era lo que arrastraba pedidos viejísimos como demorados).
         //  · No accionable y sin nota ni accionado (de una tienda cruzada) → se borra.
-        //  · Con comentario / accionado y NO entregado → se mantiene (sigue pendiente, la nota importa).
+        //  · Con comentario / accionado, NO entregado y TODAVÍA en el Monitor → se mantiene (sigue pendiente).
         const keepSet = new Set(aSeguir.map(r => r.pedido));
         const entregadosEnCruce = new Set(merged.filter(r => r.entregado).map(r => r.pedido));
         const tiendasEnCruce = new Set(merged.map(r => r.tienda));
         const aBorrar = Object.entries(comentarios).filter(([p, c]) => {
           if (keepSet.has(p)) return false;
           if (entregadosEnCruce.has(p)) return true;
+          if (!enCruce.has(p) && !enWMSHoy(p)) return true; // desapareció de ambas planillas nuevas → resuelto
           return tiendasEnCruce.has(c.tienda) && !(c.historial && c.historial.length) && !c.accionado;
         }).map(([p]) => p);
         for (let i = 0; i < aBorrar.length; i += 200) {
