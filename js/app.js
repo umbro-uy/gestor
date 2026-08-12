@@ -230,7 +230,7 @@ function Panel({
       background: C.ink
     }
   }, /*#__PURE__*/React.createElement("div", {
-    className: "max-w-6xl mx-auto"
+    className: "max-w-[1600px] mx-auto"
   }, /*#__PURE__*/React.createElement("div", {
     className: "flex items-start justify-between gap-3 flex-wrap"
   }, /*#__PURE__*/React.createElement("div", {
@@ -341,7 +341,7 @@ function Panel({
     setTema: setTema,
     cerrar: () => setVerAp(false)
   }), /*#__PURE__*/React.createElement("main", {
-    className: "px-4 sm:px-8 py-6 max-w-6xl mx-auto"
+    className: "px-4 sm:px-8 py-6 max-w-[1600px] mx-auto"
   }, cargando ? /*#__PURE__*/React.createElement("div", {
     className: "text-sm py-10 text-center",
     style: {

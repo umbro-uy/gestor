@@ -1015,11 +1015,7 @@ function Operativa({ yo, activo, syncTick }) {
     style: { background: tiendaVista === t ? C.blue : "#EEF1F5", color: tiendaVista === t ? "#fff" : C.ink }
   }, t === "todas" ? "Todas" : t)));
   const SUBS = [{ id: "resumen", l: "Resumen · KPIs" }, { id: "listado", l: "Listado de pedidos" }, { id: "tiempos", l: "Tiempos y despacho" }, { id: "calendario", l: "Calendario" }, { id: "cargar", l: "Cargar archivos" }];
-  const sidebar = ceEl("div", { className: "shrink-0 flex flex-row lg:flex-col gap-1 overflow-x-auto", style: { minWidth: 0 } }, SUBS.map(s => ceEl("button", {
-    key: s.id, onClick: () => setSubOper(s.id),
-    className: "text-left px-3 py-2 rounded-lg text-xs font-bold transition-colors whitespace-nowrap",
-    style: { background: subOper === s.id ? C.soft : "transparent", color: subOper === s.id ? C.blue : C.gray, borderLeft: subOper === s.id ? ("3px solid " + C.blue) : "3px solid transparent" }
-  }, s.l)));
+  const sidebar = ceEl(SubMenuNav, { items: SUBS.map(s => ({ id: s.id, label: s.l })), active: subOper, onSelect: setSubOper });
   return /*#__PURE__*/React.createElement("div", {
     className: "space-y-3"
   }, /*#__PURE__*/React.createElement(Title, {
