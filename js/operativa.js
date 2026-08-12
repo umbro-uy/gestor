@@ -69,8 +69,11 @@ function Operativa({ yo, activo, syncTick }) {
   const MARK_PROBCANCEL = "Cancelado (probable · sin Fenicio, WMS procesado)";
   const esProbCancel = r => /cancelado \(probable/i.test(String(r && r.estadoFen || ""));
   // Promesa de entrega en días hábiles (el KPI de cumplimiento mide entregas DENTRO de este plazo).
-  // Cambiar acá el número si se ajusta la promesa (hoy 5).
+  // Promesa de entrega por DEFECTO (días hábiles). El equipo puede cambiarla desde la UI y queda guardada;
+  // todos los KPIs de la promesa se recalculan en pantalla con ese valor (sin volver a cruzar archivos).
   const PROMESA_DH = 5;
+  const [promesaDH, setPromesaDH] = useState(() => { try { const v = parseInt(localStorage.getItem("umbro_promesaDH") || "", 10); return v >= 1 && v <= 15 ? v : PROMESA_DH; } catch (e) { return PROMESA_DH; } });
+  const setPromesa = n => { const v = Math.max(1, Math.min(15, n | 0)); setPromesaDH(v); try { localStorage.setItem("umbro_promesaDH", String(v)); } catch (e) {} };
   // Vista por TIENDA (selector grande arriba) y subsección (menú lateral).
   const TIENDAS_OP = ["todas", "TimeOut", "Tienda Nacional", "Classico"];
   const [tiendaVista, setTiendaVista] = useState("todas");
@@ -320,6 +323,13 @@ function Operativa({ yo, activo, syncTick }) {
     if (activo === false) return;
     cargarSeguimiento(cruceEnSesion.current ? { soloSiMasNuevo: true } : undefined);
   }, [activo, cargarSeguimiento]);
+  // Promesa COMPARTIDA: si el equipo ya definió una promesa (viaja en el snapshot) y este usuario todavía
+  // no eligió la suya, adoptamos la del equipo. Si el usuario ya la cambió (localStorage), respetamos la suya.
+  useEffect(() => {
+    try { if (localStorage.getItem("umbro_promesaDH")) return; } catch (e) {}
+    const p = operSnap && operSnap.serie && operSnap.serie.promesaDH;
+    if (p >= 1 && p <= 15 && p !== promesaDH) setPromesaDH(p);
+  }, [operSnap]);
   // En VIVO: cuando otro usuario cambia algo (realtime → syncTick) recargamos. Si crucé en esta sesión,
   // solo se pisa mi cruce cuando el snapshot remoto es MÁS NUEVO (otro usuario cruzó después que yo).
   useEffect(() => {
@@ -582,23 +592,31 @@ function Operativa({ yo, activo, syncTick }) {
         };
         const porTienda = {};
         let promEvalTot = 0, promEnPlazoTot = 0;
-        // Distribución del tiempo de ENTREGA en días hábiles (para decidir si podemos bajar la promesa):
-        // de todo lo entregado, qué % llegó dentro de cada plazo (acumulado). Se calcula por tienda y global.
-        const DIST_TRAMOS = [2, 3, 5, 7];
-        const distDe = arr => { const n = arr.length; return { n, tramos: DIST_TRAMOS.map(t => ({ d: t, pct: n ? Math.round(arr.filter(x => x <= t).length / n * 100) : null })) }; };
+        // Histogramas de tiempos en DÍAS HÁBILES (compactos), para poder recalcular en pantalla el
+        // cumplimiento con CUALQUIER promesa que elija el equipo, sin volver a cruzar los archivos:
+        //   histEnt  = entregados con fecha, por días hábiles compra → entrega
+        //   histPend = SIN entregar (no cancelados), por días hábiles desde la compra (para "promesa vencida")
+        //   histDesp = por días hábiles compra → despacho del WMS
+        // Índice = días hábiles (0..HCAP); el último índice acumula todo lo que supera HCAP.
+        const HCAP = 20;
+        const histDe = arr => { const h = new Array(HCAP + 2).fill(0); (arr || []).forEach(d => { h[d < 0 ? 0 : d > HCAP ? HCAP + 1 : d]++; }); return h; };
         efectivos.forEach(r => {
           const t = r.tienda || "-";
-          const b = porTienda[t] || (porTienda[t] = { tienda: t, total: 0, entregadosRaw: 0, evalN: 0, enPlazo: 0, lt: [], ltE: [], dhEnt: [] });
+          const b = porTienda[t] || (porTienda[t] = { tienda: t, total: 0, entregadosRaw: 0, evalN: 0, enPlazo: 0, lt: [], ltE: [], dhEnt: [], dhPend: [], dhDesp: [] });
           b.total++;
           if (r.entregado) b.entregadosRaw++;
           const pe = promEval(r);
           if (pe != null) { b.evalN++; promEvalTot++; if (pe) { b.enPlazo++; promEnPlazoTot++; } }
           if (r.leadtime != null) b.lt.push(r.leadtime);
           if (r.leadtimeEntrega != null) b.ltE.push(r.leadtimeEntrega);
-          if (r.entregado && r.fechaEntrega && String(r.fechaEntrega).trim() && r.fechaEntrega !== "-") { const dhE = diasHabEntre(r.fecha, r.fechaEntrega); if (dhE != null) b.dhEnt.push(dhE); }
+          if (r.entregado) { const dhE = r.fechaEntrega && String(r.fechaEntrega).trim() && r.fechaEntrega !== "-" ? diasHabEntre(r.fecha, r.fechaEntrega) : null; if (dhE != null) b.dhEnt.push(dhE); }
+          else b.dhPend.push(r.dias != null ? r.dias : 0);
+          if (r.fechaDespacho && r.fechaDespacho !== "-") { const dhD = diasHabEntre(r.fecha, r.fechaDespacho); if (dhD != null) b.dhDesp.push(dhD); }
         });
-        const cumplPorTienda = Object.values(porTienda).map(b => ({ tienda: b.tienda, total: b.total, entregados: b.entregadosRaw, evalN: b.evalN, enPlazo: b.enPlazo, pct: b.evalN ? Math.round(b.enPlazo / b.evalN * 100) : null, despachoP90: percentil(b.lt, PCTL), entregaP90: percentil(b.ltE, PCTL), dist: distDe(b.dhEnt) })).filter(x => x.pct != null).sort((a, b) => a.pct - b.pct);
-        const distEntrega = distDe([].concat(...Object.values(porTienda).map(b => b.dhEnt)));
+        const cumplPorTienda = Object.values(porTienda).map(b => ({ tienda: b.tienda, total: b.total, entregados: b.entregadosRaw, evalN: b.evalN, enPlazo: b.enPlazo, pct: b.evalN ? Math.round(b.enPlazo / b.evalN * 100) : null, despachoP90: percentil(b.lt, PCTL), entregaP90: percentil(b.ltE, PCTL), histEnt: histDe(b.dhEnt), histPend: histDe(b.dhPend), histDesp: histDe(b.dhDesp) })).filter(x => x.total > 0).sort((a, b) => (a.pct == null ? 999 : a.pct) - (b.pct == null ? 999 : b.pct));
+        const histEntrega = histDe([].concat(...Object.values(porTienda).map(b => b.dhEnt)));
+        const histPendGlob = histDe([].concat(...Object.values(porTienda).map(b => b.dhPend)));
+        const histDespGlob = histDe([].concat(...Object.values(porTienda).map(b => b.dhDesp)));
         const tasaCumplProm = promEvalTot ? Math.round(promEnPlazoTot / promEvalTot * 100) : 0;
         // Solicitud de stock a TIENDAS (Deposito pedido ≠ 9/0): tiempo confirmado → procesado en central.
         // +2 días hábiles sin procesar = la tienda no envió la mercadería o se extravió.
@@ -640,17 +658,19 @@ function Operativa({ yo, activo, syncTick }) {
         let maduros = null;
         if (mk) {
           const delMes = efectivos.filter(r => { const d = parseFecha(r.fecha); return d && (d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0")) === mk; });
-          let evalTotal = 0, enPlazo = 0;
+          let evalTotal = 0, enPlazo = 0; const dhEntMes = [], dhPendMes = [];
           delMes.forEach(r => {
             if (r.entregado) {
               const dhE = r.fechaEntrega && String(r.fechaEntrega).trim() && r.fechaEntrega !== "-" ? diasHabEntre(r.fecha, r.fechaEntrega) : null;
               if (dhE == null) return; // entregado sin fecha de entrega: no se puede juzgar
-              evalTotal++; if (dhE <= PROMESA_DH) enPlazo++;
-            } else if ((r.dias != null ? r.dias : 0) > PROMESA_DH) {
-              evalTotal++; // promesa vencida sin entregar = incumplida
+              evalTotal++; if (dhE <= PROMESA_DH) enPlazo++; dhEntMes.push(dhE);
+            } else {
+              dhPendMes.push(r.dias != null ? r.dias : 0);
+              if ((r.dias != null ? r.dias : 0) > PROMESA_DH) evalTotal++; // promesa vencida sin entregar = incumplida
             }
           });
-          if (evalTotal) maduros = { total: evalTotal, entregados: enPlazo, pct: Math.round(enPlazo / evalTotal * 100) };
+          // Guardamos también los histogramas del mes para poder recalcular el % con otra promesa en pantalla.
+          if (evalTotal) maduros = { total: evalTotal, entregados: enPlazo, pct: Math.round(enPlazo / evalTotal * 100), histEnt: histDe(dhEntMes), histPend: histDe(dhPendMes) };
         }
         const snap = {
           id: "ultimo",
@@ -668,7 +688,7 @@ function Operativa({ yo, activo, syncTick }) {
           leadtime_entrega: percentil(ltE, PCTL),
           // El calendario y los desgloses van TAMBIÉN adentro de "serie" (columna jsonb que ya existe
           // en la tabla): así se comparten sin necesidad de correr ninguna migración.
-          serie: { ...(serie || {}), calendario: calArr, maduros, desgloses: { cumplPorTienda, stockTiendas, distEntrega } },
+          serie: { ...(serie || {}), calendario: calArr, maduros, promesaDH: promesaDH, desgloses: { cumplPorTienda, stockTiendas, histEntrega, histPend: histPendGlob, histDesp: histDespGlob } },
           calendario: calArr,
           actualizado: new Date().toISOString()
         };
@@ -733,12 +753,28 @@ function Operativa({ yo, activo, syncTick }) {
   const leadtimeProm = percentil(leadtimes, PCTL);
   const leadtimesEnt = resultado ? resultado.filter(r => r.leadtimeEntrega != null).map(r => r.leadtimeEntrega) : [];
   const leadtimeEntProm = percentil(leadtimesEnt, PCTL);
-  // Distribución del tiempo de ENTREGA (días hábiles) de lo cargado en esta sesión, respetando la tienda vista.
-  const DIST_TRAMOS_V = [2, 3, 5, 7];
-  const distEntCalc = rows => {
-    const arr = (rows || []).filter(r => r.entregado && r.fechaEntrega && String(r.fechaEntrega).trim() && r.fechaEntrega !== "-").map(r => diasHabEntre(r.fecha, r.fechaEntrega)).filter(x => x != null);
-    const n = arr.length;
-    return { n, tramos: DIST_TRAMOS_V.map(t => ({ d: t, pct: n ? Math.round(arr.filter(x => x <= t).length / n * 100) : null })) };
+  // ── Histogramas de tiempos (días hábiles) y helpers para recalcular la promesa en pantalla ──
+  const HCAP_V = 20;
+  const histBuild = arr => { const h = new Array(HCAP_V + 2).fill(0); (arr || []).forEach(d => { h[d < 0 ? 0 : d > HCAP_V ? HCAP_V + 1 : d]++; }); return h; };
+  const histTotal = h => (h || []).reduce((a, b) => a + b, 0);
+  const histWithin = (h, n) => { if (!h) return 0; let s = 0; for (let d = 0; d <= Math.min(n, h.length - 1); d++) s += h[d] || 0; return s; };
+  const histAbove = (h, n) => histTotal(h) - histWithin(h, n);
+  const histPctWithin = (h, n) => { const t = histTotal(h); return t ? Math.round(histWithin(h, n) / t * 100) : null; };
+  const histPctl = (h, p) => { const t = histTotal(h); if (!t) return null; const target = t * p / 100; let s = 0; for (let d = 0; d < h.length; d++) { s += h[d] || 0; if (s >= target) return d; } return h.length - 1; };
+  const histMediana = h => histPctl(h, 50);
+  // Cumplimiento de la promesa para un N cualquiera, a partir de los histogramas (idéntico a promEval en N=5):
+  // en plazo = entregados en ≤N ; evaluables = entregados(con fecha) + sin entregar con promesa (N) vencida.
+  const cumplHist = (hEnt, hPend, n) => { const enPlazo = histWithin(hEnt, n); const evalN = histTotal(hEnt) + histAbove(hPend, n); return { enPlazo, evalN, pct: evalN ? Math.round(enPlazo / evalN * 100) : null }; };
+  // Histogramas por tienda de lo cargado en ESTA sesión (para verlo en vivo antes de que viaje el snapshot).
+  const histsLiveDe = rows => {
+    const dhEnt = [], dhPend = [], dhDesp = [];
+    (rows || []).forEach(r => {
+      if (r.cancelado) return; // los cancelados no cuentan (igual que en el cruce, que usa "efectivos")
+      if (r.entregado) { const e = r.fechaEntrega && String(r.fechaEntrega).trim() && r.fechaEntrega !== "-" ? diasHabEntre(r.fecha, r.fechaEntrega) : null; if (e != null) dhEnt.push(e); }
+      else dhPend.push(r.dias != null ? r.dias : 0);
+      if (r.fechaDespacho && r.fechaDespacho !== "-") { const d = diasHabEntre(r.fecha, r.fechaDespacho); if (d != null) dhDesp.push(d); }
+    });
+    return { histEnt: histBuild(dhEnt), histPend: histBuild(dhPend), histDesp: histBuild(dhDesp) };
   };
   // ── Evolución MENSUAL de los KPIs operativos (agrupado por mes de COMPRA) ──
   // Para cada mes calculamos la tasa de cumplimiento y los tiempos por percentil P90,
@@ -777,14 +813,21 @@ function Operativa({ yo, activo, syncTick }) {
   // desglose (cumplPorTienda) y caen a lo calculado en vivo si el snapshot no lo trae.
   const volTotal = porTiendaVista ? (ctv ? ctv.total : (resVista ? resVista.length : 0)) : (operSnap ? (operSnap.total || 0) : (resultado ? resultado.length : 0));
   const volEntreg = porTiendaVista ? (ctv ? (ctv.entregados || 0) : entregadosVista.length) : (operSnap ? (operSnap.entregados || 0) : entregadosArr.length);
-  const volTasa = porTiendaVista ? (ctv ? ctv.pct : 0) : (operSnap ? (operSnap.tasa_cumpl || 0) : tasaCumpl);
-  const volDesp = porTiendaVista ? (ctv ? ctv.despachoP90 : null) : (operSnap ? operSnap.leadtime_despacho : leadtimeProm);
-  const volEnt = porTiendaVista ? (ctv ? ctv.entregaP90 : null) : (operSnap ? operSnap.leadtime_entrega : leadtimeEntProm);
-  // Distribución de tiempos de entrega a mostrar: si cruzamos en esta sesión, la de lo cargado; si no,
-  // la guardada en el snapshot (por tienda desde ctv.dist; global desde desgSnap.distEntrega). Fallback a live.
-  const distEntLive = distEntCalc(resVista);
-  const distEntSnap = porTiendaVista ? (ctv && ctv.dist ? ctv.dist : null) : (desgSnap && desgSnap.distEntrega ? desgSnap.distEntrega : null);
-  const distEnt = cruceEnSesion.current && distEntLive.n ? distEntLive : (distEntSnap || distEntLive);
+  // ── Histogramas VIGENTES (de la vista actual): en vivo si cruzamos en esta sesión, del snapshot si no ──
+  // Con ellos recalculamos en pantalla el cumplimiento para la promesa elegida (promesaDH), sin re-cruzar.
+  const histsLive = cruceEnSesion.current ? histsLiveDe(resVista) : null;
+  const histEntV = histsLive ? histsLive.histEnt : (porTiendaVista ? (ctv && ctv.histEnt) : (desgSnap && desgSnap.histEntrega)) || null;
+  const histPendV = histsLive ? histsLive.histPend : (porTiendaVista ? (ctv && ctv.histPend) : (desgSnap && desgSnap.histPend)) || null;
+  const histDespV = histsLive ? histsLive.histDesp : (porTiendaVista ? (ctv && ctv.histDesp) : (desgSnap && desgSnap.histDesp)) || null;
+  // Cumplimiento de la promesa (recalculado con promesaDH). Cae al valor guardado si no hay histogramas (snap viejo).
+  const cumplV = histEntV ? cumplHist(histEntV, histPendV, promesaDH) : null;
+  const volTasa = cumplV && cumplV.pct != null ? cumplV.pct : (porTiendaVista ? (ctv ? ctv.pct : 0) : (operSnap ? (operSnap.tasa_cumpl || 0) : tasaCumpl));
+  // Tiempo de despacho / entrega TÍPICOS (mediana en días hábiles), recalculados de los histogramas.
+  const volDesp = histDespV && histTotal(histDespV) ? histMediana(histDespV) : (porTiendaVista ? (ctv ? ctv.despachoP90 : null) : (operSnap ? operSnap.leadtime_despacho : leadtimeProm));
+  const volEnt = histEntV && histTotal(histEntV) ? histMediana(histEntV) : (porTiendaVista ? (ctv ? ctv.entregaP90 : null) : (operSnap ? operSnap.leadtime_entrega : leadtimeEntProm));
+  // Distribución acumulada del tiempo de entrega (para el panel "¿listos para bajar la promesa?"), en vivo con promesaDH.
+  const distTramos = Array.from(new Set([2, 3, 5, 7, promesaDH])).filter(d => d >= 1).sort((a, b) => a - b);
+  const distEnt = { n: histEntV ? histTotal(histEntV) : 0, tramos: distTramos.map(d => ({ d, pct: histEntV ? histPctWithin(histEntV, d) : null })) };
   const cumplShown = serieSnap ? serieSnap.cumpl : cumplCur;
   const despShown = serieSnap ? serieSnap.despachoP90 : despCur;
   const entShown = serieSnap ? serieSnap.entregaP90 : entCur;
@@ -923,19 +966,10 @@ function Operativa({ yo, activo, syncTick }) {
         ce("thead", null, ce("tr", null, headers.map(th))), ce("tbody", null, filas))));
     if (!desgSnap) return caja("Desglose no disponible", "El último cruce se hizo con una versión anterior de la app y no guardó el desglose por tienda. Recargá la app (Ctrl+Shift+R) y volvé a cruzar los archivos.", [], []);
     const colPct = p => p >= 90 ? C.green : p >= 70 ? C.amber : C.red;
-    if (tipo === "cumpl") {
-      const filas = (desgSnap.cumplPorTienda || []).map(t => ce("tr", { key: t.tienda, style: { borderTop: "1px solid " + C.line } },
-        td(t.tienda, { className: "px-3 py-1.5 font-semibold" }), td(t.evalN != null ? t.evalN : t.total), td(t.enPlazo != null ? t.enPlazo : t.entregados),
-        td(t.pct + "%", { className: "px-3 py-1.5 font-black", style: { color: colPct(t.pct) } })));
-      return caja("Cumplimiento de la promesa por tienda", "% de pedidos entregados DENTRO de la promesa (" + PROMESA_DH + " días háb.). Evaluables = entregados + no entregados con la promesa vencida (los recién comprados en plazo y los cancelados quedan afuera). Un entregado tarde cuenta como incumplido. Ordenado de peor a mejor.", ["Tienda", "Evaluables", "En plazo (≤" + PROMESA_DH + "d)", "% en plazo"], filas);
-    }
-    if (tipo === "entrega") {
-      const filas = (desgSnap.cumplPorTienda || []).slice().sort((a, b) => (b.entregaP90 || 0) - (a.entregaP90 || 0)).map(t => ce("tr", { key: t.tienda, style: { borderTop: "1px solid " + C.line } },
-        td(t.tienda, { className: "px-3 py-1.5 font-semibold" }),
-        td(t.despachoP90 != null ? t.despachoP90 + " días" : "—"),
-        td(t.entregaP90 != null ? t.entregaP90 + " días" : "—", { className: "px-3 py-1.5 font-black", style: { color: (t.entregaP90 || 0) > PROMESA_DH ? C.red : C.ink } }),
-        td(t.total)));
-      return caja("Tiempos por tienda (días corridos)", "Tiempo en el que entra 9 de cada 10 pedidos. Despacho = compra → despacho WMS · Entrega = compra → entrega al cliente. En rojo: por encima de la promesa de " + PROMESA_DH + " días.", ["Tienda", "Despacho", "Entrega", "Pedidos"], filas);
+    if (tipo === "cumpl" || tipo === "entrega") {
+      // Los tiempos de entrega y el cumplimiento por tienda ahora viven en el panel de Resumen (fusionados
+      // con la promesa editable). Este desglose quedó solo para las solicitudes de stock a tiendas.
+      return distPanel || caja("Tiempos", "Los tiempos de entrega y el cumplimiento por tienda están en Resumen.", [], []);
     }
     const filas = (desgSnap.stockTiendas || []).map(t => ce("tr", { key: t.depo, style: { borderTop: "1px solid " + C.line, background: t.depo === "9" ? "#F6F8FB" : undefined } },
       td(t.nombre + " (" + t.depo + ")", { className: "px-3 py-1.5 font-semibold" }), td(t.conf),
@@ -955,15 +989,19 @@ function Operativa({ yo, activo, syncTick }) {
     // El % PROTAGONISTA es el EXIGIBLE: pedidos del mes con la promesa (PROMESA_DH días hábiles) ya vencida.
     // El % bruto del mes mezcla compras recientes que aún están en plazo (no son incumplimiento) y
     // contra una meta de 90–95% siempre se vería artificialmente bajo.
+    // Recalculamos el % del mes con la promesa elegida (promesaDH) a partir de los histogramas guardados.
+    const exigRe = madurosSnap && madurosSnap.histEnt ? cumplHist(madurosSnap.histEnt, madurosSnap.histPend, promesaDH) : null;
     const exig = madurosSnap;
-    const pctHead = exig ? exig.pct : cumplShown;
+    const pctHead = exigRe && exigRe.pct != null ? exigRe.pct : (exig ? exig.pct : cumplShown);
+    const exigEnPlazo = exigRe ? exigRe.enPlazo : (exig ? exig.entregados : null);
+    const exigTotal = exigRe ? exigRe.evalN : (exig ? exig.total : null);
     const col = pctHead == null ? C.gray : pctHead >= META_MIN ? C.green : pctHead >= 70 ? C.amber : C.red;
     const pctFill = Math.max(0, Math.min(100, pctHead || 0));
     return ce("div", { className: "bg-white rounded-2xl border p-4", style: { borderColor: C.line } },
       ce("div", { className: "flex items-baseline justify-between mb-2 flex-wrap gap-1" },
         ce("span", { className: "text-[11px] font-bold uppercase tracking-wide", style: { color: C.gray } },
           "Cumplimiento de ", ce("span", { style: { color: C.ink } }, fmtMesLargo(mesShownKey)),
-          exig ? " — entregados dentro de la promesa (" + PROMESA_DH + " días háb.)" : ""),
+          exig ? " — entregados dentro de la promesa (≤" + promesaDH + " días háb.)" : ""),
         ce("span", { className: "text-3xl font-black fraunces tabular-nums", style: { color: col } }, pctHead != null ? pctHead + "%" : "—")),
       ce("div", { style: { position: "relative", height: 18, borderRadius: 9, background: "#EEF1F5", overflow: "hidden" } },
         ce("div", { title: "Meta 90–95%", style: { position: "absolute", left: META_MIN + "%", width: (META_MAX - META_MIN) + "%", top: 0, bottom: 0, background: "rgba(14,138,95,0.22)" } }),
@@ -973,12 +1011,12 @@ function Operativa({ yo, activo, syncTick }) {
         ce("span", { style: { position: "absolute", left: META_MAX + "%", transform: "translateX(-50%)", fontSize: 9, color: C.gray } }, "95%")),
       ce("div", { className: "text-[11px] mt-1", style: { color: C.gray } },
         exig
-          ? exig.entregados + " de " + exig.total + " cumplieron la promesa (entregado en ≤" + PROMESA_DH + " días háb.; el entregado tarde cuenta como incumplido) · meta 90–95%"
+          ? exigEnPlazo + " de " + exigTotal + " cumplieron la promesa (entregado en ≤" + promesaDH + " días háb.; el entregado tarde cuenta como incumplido) · meta 90–95%"
           : cumplShown != null
             ? entregMesShown + " de " + totalMesShown + " entregados · meta 90–95%"
             : "Cargá archivos para ver el cumplimiento del mes · meta 90–95%"),
       !exig && cumplShown != null && ce("div", { className: "text-[11px] mt-0.5 font-semibold", style: { color: C.amber } },
-        "⚠ Este % mezcla compras recientes aún en plazo. Volvé a cruzar los archivos con la app actualizada para ver el % exigible (promesa de " + PROMESA_DH + " dh vencida)."));
+        "⚠ Este % mezcla compras recientes aún en plazo. Volvé a cruzar los archivos con la app actualizada para ver el % exigible (promesa de " + promesaDH + " dh vencida)."));
   };
   const TabBtn = ({
     id,
@@ -1036,24 +1074,53 @@ function Operativa({ yo, activo, syncTick }) {
   // El Calendario NO va en el menú: se muestra siempre arriba, unificando las 3 tiendas.
   const SUBS = [{ id: "resumen", l: "Resumen · KPIs" }, { id: "tiempos", l: "Tiempos y despacho" }, { id: "cargar", l: "Cargar archivos" }];
   const sidebar = ceEl(SubMenuNav, { items: SUBS.map(s => ({ id: s.id, label: s.l })), active: subOper, onSelect: setSubOper });
-  // ── Panel SIEMPRE visible: ¿estamos listos para bajar la promesa de entrega? ──
-  // De todo lo entregado, qué % llegó dentro de cada plazo (acumulado, días hábiles). Sirve para decidir
-  // si la operación aguanta bajar la promesa: si en 7 días entregamos el 80%, bajar a 5 sería contraproducente.
-  const distPanel = distEnt.n > 0 ? ceEl("div", { className: "bg-white rounded-2xl border p-4", style: { borderColor: C.line } },
-    ceEl("div", { className: "flex items-baseline justify-between flex-wrap gap-2 mb-1" },
-      ceEl("span", { className: "text-sm font-black fraunces", style: { color: C.ink } }, "¿Estamos listos para bajar la promesa?"),
-      ceEl("span", { className: "text-[11px]", style: { color: C.gray } }, distEnt.n + " pedidos entregados con fecha" + (porTiendaVista ? " · " + tiendaVista : ""))),
-    ceEl("p", { className: "text-[11px] mb-3", style: { color: C.gray } }, "Del total entregado, qué % llegó dentro de cada plazo (días hábiles, acumulado). Promesa actual: ≤ " + PROMESA_DH + " días."),
-    ceEl("div", { className: "space-y-2" }, distEnt.tramos.map(t => {
-      const esProm = t.d === PROMESA_DH;
+  // ── Panel SIEMPRE visible: promesa de entrega editable + tiempos por tienda (fusión de ambos paneles) ──
+  // Mide COMPRA → ENTREGA al cliente en días hábiles. La promesa se cambia con − / + y todo se recalcula
+  // en pantalla: sirve para ver si la operación está lista para bajarla (5 → 3) antes de comprometerse.
+  const fmtDH = v => v == null ? "—" : ((v > HCAP_V ? HCAP_V + "+" : v) + " d");
+  const fmtDias = v => v == null ? "—" : ((v > HCAP_V ? HCAP_V + "+" : v) + " días");
+  const tiemposPorTienda = (cruceEnSesion.current && resultado)
+    ? (() => { const byT = {}; (resultado || []).forEach(r => { if (r.cancelado) return; const t = r.tienda || "-"; (byT[t] || (byT[t] = [])).push(r); }); return Object.keys(byT).map(t => Object.assign({ tienda: t, total: byT[t].length }, histsLiveDe(byT[t]))); })()
+    : (desgSnap && desgSnap.cumplPorTienda ? desgSnap.cumplPorTienda : []).map(t => ({ tienda: t.tienda, total: t.total, histEnt: t.histEnt, histPend: t.histPend, histDesp: t.histDesp }));
+  const conHist = tiemposPorTienda.some(t => t.histEnt);
+  const promesaStep = ceEl("div", { className: "flex items-center gap-2" },
+    ceEl("span", { className: "text-[11px] font-bold uppercase", style: { color: C.gray } }, "Promesa"),
+    ceEl("button", { onClick: () => setPromesa(promesaDH - 1), disabled: promesaDH <= 1, className: "w-7 h-7 rounded-lg font-black disabled:opacity-40", style: { background: C.soft, color: C.blue } }, "−"),
+    ceEl("span", { className: "text-sm font-black fraunces tabular-nums", style: { color: C.ink, minWidth: 70, textAlign: "center" } }, promesaDH + " días háb."),
+    ceEl("button", { onClick: () => setPromesa(promesaDH + 1), disabled: promesaDH >= 15, className: "w-7 h-7 rounded-lg font-black disabled:opacity-40", style: { background: C.soft, color: C.blue } }, "+"));
+  const distPanel = (distEnt.n > 0 || conHist) ? ceEl("div", { className: "bg-white rounded-2xl border p-4 space-y-4", style: { borderColor: C.line } },
+    ceEl("div", { className: "flex items-center justify-between flex-wrap gap-2" },
+      ceEl("div", null,
+        ceEl("span", { className: "text-sm font-black fraunces", style: { color: C.ink } }, "Promesa de entrega y tiempos"),
+        ceEl("span", { className: "text-[11px] ml-2", style: { color: C.gray } }, (porTiendaVista ? tiendaVista + " · " : "") + distEnt.n + " entregas con fecha")),
+      promesaStep),
+    ceEl("p", { className: "text-[11px]", style: { color: C.gray } }, "Mido el tiempo entre la COMPRA y la ENTREGA al cliente, en días hábiles. Abajo, de todo lo entregado, qué % llegó dentro de cada plazo (acumulado). Cambiá la promesa con − / + para simular: si al bajar a ≤3 días caés muy por debajo del 90%, todavía no conviene bajarla."),
+    distEnt.n > 0 && ceEl("div", { className: "space-y-2" }, distEnt.tramos.map(t => {
+      const esProm = t.d === promesaDH;
       const col = t.pct == null ? C.gray : t.pct >= 90 ? C.green : t.pct >= 70 ? C.amber : C.red;
       return ceEl("div", { key: t.d, className: "flex items-center gap-3" },
         ceEl("span", { className: "text-xs font-bold shrink-0", style: { color: esProm ? C.blue : C.ink, width: 78 } }, "≤ " + t.d + " días"),
-        ceEl("div", { className: "flex-1 rounded-full overflow-hidden", style: { background: "#EEF1F5", height: 18 } },
+        ceEl("div", { className: "flex-1 rounded-full overflow-hidden", style: { background: "#EEF1F5", height: 18, outline: esProm ? "2px solid " + C.blue : "none" } },
           ceEl("div", { className: "h-full rounded-full transition-all", style: { width: (t.pct || 0) + "%", background: col } })),
         ceEl("span", { className: "text-sm font-black fraunces tabular-nums shrink-0", style: { color: col, width: 46, textAlign: "right" } }, t.pct == null ? "—" : t.pct + "%"),
         esProm ? ceEl("span", { className: "text-[10px] font-bold px-2 py-0.5 rounded-full shrink-0", style: { background: C.soft, color: C.blue } }, "promesa") : ceEl("span", { className: "shrink-0", style: { width: 62 } }));
-    }))) : null;
+    })),
+    conHist && ceEl("div", null,
+      ceEl("div", { className: "text-[11px] font-bold uppercase tracking-widest mb-1", style: { color: C.blue } }, "Por tienda (días hábiles)"),
+      ceEl("div", { className: "overflow-auto" }, ceEl("table", { className: "w-full", style: { fontSize: 12 } },
+        ceEl("thead", null, ceEl("tr", null, ["Tienda", "Entrega típica", "Despacho típico", "Cumple ≤" + promesaDH + "d", "Pedidos"].map(h => ceEl("th", { key: h, className: "px-3 py-2 text-left font-bold uppercase", style: { color: C.gray, fontSize: 10, whiteSpace: "nowrap" } }, h)))),
+        ceEl("tbody", null, tiemposPorTienda.slice().sort((a, b) => (histMediana(b.histEnt) || 0) - (histMediana(a.histEnt) || 0)).map(t => {
+          const cp = cumplHist(t.histEnt, t.histPend, promesaDH);
+          const cpc = cp.pct == null ? C.gray : cp.pct >= 90 ? C.green : cp.pct >= 70 ? C.amber : C.red;
+          return ceEl("tr", { key: t.tienda, style: { borderTop: "1px solid " + C.line } },
+            ceEl("td", { className: "px-3 py-1.5 font-semibold" }, t.tienda),
+            ceEl("td", { className: "px-3 py-1.5" }, fmtDH(histTotal(t.histEnt) ? histMediana(t.histEnt) : null)),
+            ceEl("td", { className: "px-3 py-1.5" }, fmtDH(histTotal(t.histDesp) ? histMediana(t.histDesp) : null)),
+            ceEl("td", { className: "px-3 py-1.5 font-black", style: { color: cpc } }, cp.pct == null ? "—" : cp.pct + "%"),
+            ceEl("td", { className: "px-3 py-1.5" }, t.total));
+        })))),
+      ceEl("p", { className: "text-[10px] mt-1", style: { color: C.gray } }, "Entrega/Despacho típico = la mitad de los pedidos llega antes de ese plazo (mediana). Cumple = de los pedidos ya juzgables, el % entregado dentro de la promesa; los recién comprados que aún están en plazo no cuentan y un entregado tarde cuenta como incumplido.")) )
+    : null;
   // ── Calendario UNIFICADO (las 3 tiendas) — se muestra siempre, arriba de todo ──
   const calendarEl = calData.length > 0 ? ceEl("div", { className: "bg-white rounded-2xl border p-3", style: { borderColor: C.line } },
     ceEl("div", { className: "flex items-center justify-between flex-wrap gap-2 mb-2" },
@@ -1287,12 +1354,12 @@ function Operativa({ yo, activo, syncTick }) {
   /*#__PURE__*/React.createElement("div", { className: "grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3" },
     /*#__PURE__*/React.createElement(MetricCard, { label: "Total pedidos", value: volTotal, color: C.blue, tab: "todos" }),
     /*#__PURE__*/React.createElement(MetricCard, { label: "Entregados", value: volEntreg, color: C.green }),
-    /*#__PURE__*/React.createElement(MetricCard, { label: "Cumple promesa", value: volTasa + "%", color: volTasa >= 90 ? C.green : volTasa >= 70 ? C.amber : C.red, sub: "≤" + PROMESA_DH + " días háb. · por tienda ▾", onClick: () => setKpiPanel(kpiPanel === "cumpl" ? "" : "cumpl"), activoCard: kpiPanel === "cumpl" }),
-    /*#__PURE__*/React.createElement(MetricCard, { label: "Tiempo a despacho", value: volDesp != null ? volDesp + " días" : "—", color: C.blue, sub: "ver por depósito ▾", onClick: () => setKpiPanel(kpiPanel === "stock" ? "" : "stock"), activoCard: kpiPanel === "stock" }),
-    /*#__PURE__*/React.createElement(MetricCard, { label: "Tiempo de entrega", value: volEnt != null ? volEnt + " días" : "—", color: C.ink, sub: "ver por tienda ▾", onClick: () => setKpiPanel(kpiPanel === "entrega" ? "" : "entrega"), activoCard: kpiPanel === "entrega" }),
+    /*#__PURE__*/React.createElement(MetricCard, { label: "Cumple promesa", value: volTasa != null ? volTasa + "%" : "—", color: volTasa == null ? C.gray : volTasa >= 90 ? C.green : volTasa >= 70 ? C.amber : C.red, sub: "entregado ≤" + promesaDH + " días háb." }),
+    /*#__PURE__*/React.createElement(MetricCard, { label: "Tiempo a despacho", value: fmtDias(volDesp), color: C.blue, sub: "típico (mediana)" }),
+    /*#__PURE__*/React.createElement(MetricCard, { label: "Tiempo de entrega", value: fmtDias(volEnt), color: C.ink, sub: "típico (mediana)" }),
     /*#__PURE__*/React.createElement(MetricCard, { label: "Sin WMS", value: operSnap ? (operSnap.sin_wms || 0) : sinWMS.length, color: (operSnap ? operSnap.sin_wms : sinWMS.length) ? C.amber : C.gray, tab: sinWMS.length ? "sinwms" : null })),
   subOper === "resumen" && kpiPanel && DesglosePanel({ tipo: kpiPanel })),
-  subOper === "tiempos" && /*#__PURE__*/React.createElement(React.Fragment, null, DesglosePanel({ tipo: "cumpl" }), DesglosePanel({ tipo: "stock" }), DesglosePanel({ tipo: "entrega" })),
+  subOper === "tiempos" && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", { className: "text-[11px]", style: { color: C.gray } }, "Tiempo de despacho de STOCK desde cada tienda al depósito central (confirmado → procesado). Los tiempos de entrega al cliente y el cumplimiento de la promesa están arriba, en Resumen."), distPanel, DesglosePanel({ tipo: "stock" })),
   leadtimeEntProm == null && entregaDiag && /*#__PURE__*/React.createElement("div", { className: "rounded-xl px-4 py-3 text-xs", style: { background: C.amberS, color: C.amber } },
     /*#__PURE__*/React.createElement("b", null, "Tiempo de entrega sin datos. "),
     entregaDiag.col ? ("Detecté la columna “" + entregaDiag.col + "” pero ningún pedido tiene una fecha de entrega válida (" + entregaDiag.conEntrega + " de " + entregaDiag.total + "). ") : "No encontré una columna de fecha de entrega en tu Fenicio. ",
