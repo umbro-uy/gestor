@@ -47,6 +47,18 @@ function ResultadoCruce({
     s: C.redS,
     arr: grupos.revisar
   }, {
+    id: "ccForzar",
+    l: "C&C a forzar",
+    c: "#0891B2",
+    s: "#CFFAFE",
+    arr: grupos.ccForzar || []
+  }, {
+    id: "pagoDespues",
+    l: "Pago Después",
+    c: "#0D9488",
+    s: "#CCFBF1",
+    arr: grupos.pagoDespues || []
+  }, {
     id: "facturaDup",
     l: "Facturas duplicadas",
     c: "#7C3AED",
@@ -104,9 +116,10 @@ function ResultadoCruce({
   const totalPags = Math.max(1, Math.ceil(arr.length / POR_PAGINA));
   const pagActual = Math.min(pagina, totalPags - 1);
   const filasPagina = arr.slice(pagActual * POR_PAGINA, pagActual * POR_PAGINA + POR_PAGINA);
-  const sinFacturaTotal = grupos.revisar.length + grupos.pendienteOK.length + pcnArr.length;
-  const sinFacturaUrgente = grupos.revisar.length;
-  const sinFacturaMonto = sumImporte(grupos.revisar) + sumImporte(grupos.pendienteOK) + sumImporte(pcnArr);
+  const ccArr = grupos.ccForzar || [];
+  const sinFacturaTotal = grupos.revisar.length + ccArr.length + grupos.pendienteOK.length + pcnArr.length;
+  const sinFacturaUrgente = grupos.revisar.length + ccArr.length;
+  const sinFacturaMonto = sumImporte(grupos.revisar) + sumImporte(ccArr) + sumImporte(grupos.pendienteOK) + sumImporte(pcnArr);
   const fmtSigno = n => (n < 0 ? "−" : "") + "$" + Math.abs(Math.round(n || 0)).toLocaleString("es-UY");
   return /*#__PURE__*/React.createElement("div", {
     className: "space-y-4"
@@ -145,11 +158,13 @@ function ResultadoCruce({
     className: "rounded-xl px-4 py-2 text-xs font-semibold",
     style: { background: C.amberS, color: C.amber }
   }, "ℹ El reporte de Fenicio cargado no trae columna de cupón, así que no se pueden separar los cancelados con cupón web. Exportá el reporte de ventas que incluye \"Cupón\" (el de Nacional/TimeOut) para verlos.")),
-  (grupos.revisar.length + (grupos.pcnManual || []).length + (grupos.canceladoCupon || []).length) > 0 && /*#__PURE__*/React.createElement("div", { className: "space-y-2" },
-    /*#__PURE__*/React.createElement("div", { className: "text-xs font-black uppercase tracking-wide", style: { color: C.gray } }, "Falta por facturar"),
-    /*#__PURE__*/React.createElement("div", { className: "grid sm:grid-cols-3 gap-3" },
+  (grupos.revisar.length + (grupos.ccForzar || []).length + (grupos.pagoDespues || []).length + (grupos.pcnManual || []).length + (grupos.canceladoCupon || []).length) > 0 && /*#__PURE__*/React.createElement("div", { className: "space-y-2" },
+    /*#__PURE__*/React.createElement("div", { className: "text-xs font-black uppercase tracking-wide", style: { color: C.gray } }, "Falta por facturar · a revisar"),
+    /*#__PURE__*/React.createElement("div", { className: "grid sm:grid-cols-3 lg:grid-cols-5 gap-3" },
       [
         { id: "revisar", l: "Automática", sub: "Ya entregados — emitir factura", arr: grupos.revisar, c: C.red, s: C.redS },
+        { id: "ccForzar", l: "Click & Collect", sub: "No se autofacturan — forzar en el WMS", arr: grupos.ccForzar || [], c: "#0891B2", s: "#CFFAFE" },
+        { id: "pagoDespues", l: "Pago Después", sub: "Revisar caso a caso — puede no faltar factura", arr: grupos.pagoDespues || [], c: "#0D9488", s: "#CCFBF1" },
         { id: "pcnManual", l: "Manual · PCN", sub: "Personalizadas — solicitar al WMS", arr: grupos.pcnManual || [], c: "#B45309", s: "#FEF3C7" },
         { id: "canceladoCupon", l: "Manual · Cupón", sub: "Cupón web — facturar a mano", arr: grupos.canceladoCupon || [], c: "#C2410C", s: "#FFEDD5" }
       ].map(k => /*#__PURE__*/React.createElement("button", {
@@ -1071,6 +1086,12 @@ function Metas({
     const colCupon = findCol(sF, [/^cup[oó]n$/i, /c[oó]digo.*cup[oó]n/i]);
     const colMontoCup = findCol(sF, [/monto.*cup[oó]n/i]);
     const colPers = findCol(sF, [/personalizada/i]);
+    // Método de pago "Pago Después" (Fenicio): no reversan el pago y a veces no necesitan factura/seña.
+    // Se separan para revisarlos caso a caso en vez de marcarlos siempre como "falta factura".
+    const colFormaPago = findCol(sF, [/forma.*pago/i, /medio.*pago/i, /m[eé]todo.*pago/i, /tipo.*pago/i]);
+    const esPagoDespues = r => colFormaPago
+      ? /pago\s*despu[eé]s|despu[eé]s\s*de|contra\s*entrega/i.test(String(r[colFormaPago] || ""))
+      : Object.values(r).some(v => /pago\s*despu[eé]s/i.test(String(v || "")));
     const tieneCuponInfo = !!(colCupon || colMontoCup);
     const hayCupon = r => {
       const c = String(r[colCupon] || "").trim();
@@ -1131,6 +1152,7 @@ function Metas({
     //    (columna "Articulo"), NO en los reportes de Fenicio. Se detectan acá, no en Fenicio.
     const wmsMap = {};
     const pcnXVenta = {};   // { venta: { arts:[], estadoEnc, estadoEco, importe, deposito, fecha } }
+    const ccByVenta = {};   // { venta: true } → pedido Click & Collect (retiro en tienda), detectado en Encuentra
     if (rowsWMS.length) {
       const sW = rowsWMS[0] || {};
       const colArt = findCol(sW, [/art[ií]culo/i, /^sku$/i, /c[oó]d.*art/i]) || "Articulo";
@@ -1140,9 +1162,16 @@ function Metas({
       const colDep = findCol(sW, [/dep[oó]sito/i]) || "Deposito pedido";
       const colImpW = findCol(sW, [/^importe$/i, /importe/i]) || "Importe";
       const colFechW = findCol(sW, [/fecha.*ped/i, /^fecha/i]) || "Fecha pedido";
+      // Forma de entrega en el Monitor de Encuentra: Click & Collect / retiro en tienda (no se autofacturan).
+      const colFormaW = findCol(sW, [/forma.*entr/i, /m[eé]todo.*entr/i, /tipo.*entr/i, /modalidad/i]);
       rowsWMS.forEach(r => {
         const k = String(r[colVenta] || "").trim();
         if (k && !wmsMap[k]) wmsMap[k] = r;
+        if (k) {
+          const forma = colFormaW ? String(r[colFormaW] || "").toLowerCase() : "";
+          const estados = (String(r[colEstEnc] || "") + " " + String(r[colEstEco] || "")).toLowerCase();
+          if (/click|collect|retir/i.test(forma) || /listo.*retir|retir.*(tienda|local)/i.test(estados)) ccByVenta[k] = true;
+        }
         const art = String(r[colArt] || "").trim();
         if (k && art.toUpperCase().startsWith("PCN")) {
           if (!pcnXVenta[k]) pcnXVenta[k] = { arts: [], estadoEnc: String(r[colEstEnc]||""), estadoEco: String(r[colEstEco]||""), importe: Number(r[colImpW]||0), deposito: String(r[colDep]||""), fecha: String(r[colFechW]||"").slice(0,10) };
@@ -1156,7 +1185,7 @@ function Metas({
     rowsFen.forEach(r => {
       const nro = String(r[colNro] || "").trim();
       if (!nro) return;
-      if (!fenPed[nro]) fenPed[nro] = { nro, fecha: String(r[colFechF]||"").slice(0,10), estadoFen: String(r[colEstF]||""), estadoPago: String(r[colEstPago]||""), estadoPago2: colEstPago2 ? String(r[colEstPago2]||"") : "", importe: Number(r[colImp]||0), tienda: r._tiendaFen || "", cupon: colCupon ? String(r[colCupon]||"").trim() : "", montoCupon: colMontoCup ? num(r[colMontoCup]) : 0, conCupon: hayCupon(r), personalizada: colPers ? /^s[ií]$/i.test(String(r[colPers]||"").trim()) : false, lineas: 0, pcn: false, skusPcn: [] };
+      if (!fenPed[nro]) fenPed[nro] = { nro, fecha: String(r[colFechF]||"").slice(0,10), estadoFen: String(r[colEstF]||""), estadoPago: String(r[colEstPago]||""), estadoPago2: colEstPago2 ? String(r[colEstPago2]||"") : "", importe: Number(r[colImp]||0), tienda: r._tiendaFen || "", cupon: colCupon ? String(r[colCupon]||"").trim() : "", montoCupon: colMontoCup ? num(r[colMontoCup]) : 0, conCupon: hayCupon(r), pagoDespues: esPagoDespues(r), personalizada: colPers ? /^s[ií]$/i.test(String(r[colPers]||"").trim()) : false, lineas: 0, pcn: false, skusPcn: [] };
       fenPed[nro].lineas++;
     });
     // Marcar como PCN los pedidos de Fenicio que el WMS identifica con artículo personalizado
@@ -1189,16 +1218,17 @@ function Metas({
     // todavía no se factura y no debe contar como "sin factura".
     const reLiberado = /clasificad|orden\s*liberad|liberad|pronto.*despach|despachad|tr[aá]nsito|camino|recibid[oa]?\s*(en\s*)?tienda|listo.*retir|entregad/i;
     const reDespEntr = /despachad|tr[aá]nsito|camino|recibid[oa]?\s*(en\s*)?tienda|entregad/i;
-    const grupos = { facturado: [], facturaDup: [], pendienteOK: [], pcnManual: [], revisar: [], cancelado: [], canceladoConFactura: [], canceladoCupon: [] };
+    const grupos = { facturado: [], facturaDup: [], pendienteOK: [], pcnManual: [], revisar: [], cancelado: [], canceladoConFactura: [], canceladoCupon: [], ccForzar: [], pagoDespues: [] };
 
     Object.values(fenPed).forEach(p => {
-      const { nro, fecha, estadoFen, estadoPago, estadoPago2, importe, pcn, personalizada, conCupon, cupon, montoCupon, skusPcn } = p;
+      const { nro, fecha, estadoFen, estadoPago, estadoPago2, importe, pcn, personalizada, conCupon, cupon, montoCupon, skusPcn, pagoDespues } = p;
       const wms = wmsMap[nro];
       const estadoWMS = wms ? (wms["Estado Encuentra"] || wms["Estado ecommerce"] || "—") : "No está en WMS";
+      const clickCollect = !!ccByVenta[nro];
       const tieneF = nInvoices(nro) > 0;
       const esDupF = dupInfoXPed(nro).dupNeto > 0.5;   // duplicado real (mismo prefijo+importe) sin NC
       const esPcn = pcn || personalizada;
-      const base = { nro, tienda: p.tienda || "—", fecha, estadoFen, estadoPago, estadoPago2, estadoWMS, importe, pcn: esPcn, conCupon, cupon, montoCupon, skusPcn: (skusPcn||[]).join(", ") };
+      const base = { nro, tienda: p.tienda || "—", fecha, estadoFen, estadoPago, estadoPago2, estadoWMS, importe, pcn: esPcn, conCupon, cupon, montoCupon, clickCollect, pagoDespues, skusPcn: (skusPcn||[]).join(", ") };
       // "Pago reversado" vive en la columna "Estado de pago" (no en "Estado"). Cancelado = orden anulada.
       // OJO: el reporte a veces trae ese pedido SIN estado de pago (columna vacía) — la cancelación se
       // detecta por el WMS. En ese caso no sabemos si se reversó o no, así que NO inventamos "falta seña".
@@ -1215,6 +1245,7 @@ function Metas({
         } else if (pagoAprobado) {
           // Cancelado con el pago AÚN aprobado (seña web registrada) → DEBE existir la factura de la seña.
           if (tieneF) grupos.cancelado.push({ ...base, razon: "Cancelado, pago aprobado — factura de la seña web OK ✓" });
+          else if (pagoDespues) grupos.pagoDespues.push({ ...base, razon: "Cancelado con método Pago Después — revisar caso a caso: no reversan el pago y puede NO requerir factura ni seña" });
           else if (conCupon) grupos.canceladoCupon.push({ ...base, razon: "Cancelado, pago aprobado con cupón web (" + (cupon || "cupón") + ") — facturar la seña manualmente ⚠️" });
           else grupos.revisar.push({ ...base, razon: "Cancelado con pago aprobado SIN factura — falta emitir la factura de la seña web ⚠️" });
         } else {
@@ -1235,6 +1266,10 @@ function Metas({
       // Solo se espera factura si el pedido fue procesado (orden liberada o más). Si no, no se factura todavía.
       const liberado = reLiberado.test(estadoFen) || reLiberado.test(estadoWMS);
       if (!liberado) { grupos.pendienteOK.push({ ...base, razon: "Sin orden liberada — todavía no se procesó (no se factura)" }); return; }
+      // Pago Después: no siempre falta factura (se factura al cobrar) → a revisar caso a caso, no a "Revisar".
+      if (pagoDespues) { grupos.pagoDespues.push({ ...base, razon: "Método Pago Después sin factura — revisar caso a caso (suele facturarse al cobrar)" }); return; }
+      // Click & Collect: no se autofacturan solos → hay que pedirle al WMS que fuerce la facturación.
+      if (clickCollect) { grupos.ccForzar.push({ ...base, razon: "Click & Collect sin factura — pedir al WMS que fuerce la facturación automática" }); return; }
       if (reDespEntr.test(estadoFen) || reDespEntr.test(estadoWMS)) { grupos.revisar.push({ ...base, razon: "Despachado/entregado SIN factura ⚠️" }); return; }
       if (fecha >= hoy) { grupos.pendienteOK.push({ ...base, razon: "Orden liberada hoy — a facturar" }); return; }
       grupos.revisar.push({ ...base, razon: "Orden liberada sin factura — verificar" });
@@ -1272,7 +1307,7 @@ function Metas({
     setPendientes(pend);
     guardarSnapshot({ pendientes: pend });
     if (esAdmin) {
-      const pendCount = grupos.revisar.length + grupos.pcnManual.length + grupos.facturaDup.length;
+      const pendCount = grupos.revisar.length + (grupos.ccForzar || []).length + grupos.pcnManual.length + grupos.facturaDup.length;
       const { data: kpisG } = await supa.from("kpis_globales").select("id,nombre");
       const kpi = kpisG?.find(k => k.nombre.toLowerCase().includes("factur") && k.nombre.toLowerCase().includes("pendiente"));
       if (kpi) await supa.from("kpis_globales").update({ valor: String(pendCount) }).eq("id", kpi.id);
@@ -1308,8 +1343,9 @@ function Metas({
   const pedidosMes = resumenBAS ? Object.values(resumenBAS.cantPedMes?.[mes] || {}).reduce((a, b) => a + b, 0) : null;
   const facturasMes = resumenBAS ? Object.values(resumenBAS.cantFacMes?.[mes] || {}).reduce((a, b) => a + b, 0) : null;
   const pcnArrM = pendientes ? (pendientes.grupos.pcnManual || []) : [];
-  const pendUrg = pendientes ? pendientes.grupos.revisar.length : null;
-  const pendTot = pendientes ? (pendientes.grupos.revisar.length + pendientes.grupos.pendienteOK.length + pcnArrM.length) : null;
+  const ccArrM = pendientes ? (pendientes.grupos.ccForzar || []) : [];
+  const pendUrg = pendientes ? (pendientes.grupos.revisar.length + ccArrM.length) : null;
+  const pendTot = pendientes ? (pendientes.grupos.revisar.length + ccArrM.length + pendientes.grupos.pendienteOK.length + pcnArrM.length) : null;
   const kpi = (eyebrow, valor, sub, color, extra) => h("div", {
     className: "bg-white rounded-2xl border p-4 flex flex-col",
     style: { borderColor: C.line }
