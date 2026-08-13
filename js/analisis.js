@@ -676,6 +676,7 @@ function Metas({
   const [mes, setMes] = useState(mesActual);
   const [metas, setMetas] = useState([]);
   const [formMeta, setFormMeta] = useState(null);
+  const [subAn, setSubAn] = useState(null); // null = automático (según haya datos o no)
   const [archivoBAS, setArchivoBAS] = useState(null);
   const [rowsBAS, setRowsBAS] = useState([]);
   const TIENDAS_FEN_AN = [{
@@ -1359,6 +1360,16 @@ function Metas({
     className: "text-xs mt-1",
     style: { color: C.gray }
   }, sub));
+  // ── Menú lateral de subsecciones (reutiliza el patrón de Operativa) ──
+  const hayDatos = !!(resumenBAS || pendientes || metas.length);
+  const SUBS_AN = [
+    { id: "resumen", l: "Metas por tienda" },
+    { id: "facturacion", l: "Facturación" },
+    { id: "anual", l: "Progreso anual" },
+    { id: "cargar", l: "Cargar archivos" }
+  ];
+  const subAnEff = subAn || (hayDatos ? "resumen" : "cargar");
+  const sidebar = h(SubMenuNav, { items: SUBS_AN.map(s => ({ id: s.id, label: s.l })), active: subAnEff, onSelect: setSubAn });
   return h("div", { className: "space-y-4" },
     h(Title, {
       eyebrow: "Análisis",
@@ -1389,12 +1400,10 @@ function Metas({
       kpi("Pendientes sin factura", pendTot != null ? pendTot.toLocaleString("es-UY") : "—",
         pendientes ? (pendUrg > 0 ? pendUrg + " urgentes (despachados sin factura)" : "Sin urgentes ✓") : "Cargá Fenicio para cruzar",
         pendUrg > 0 ? C.red : (pendientes ? C.green : C.ink))),
-    // ── Desglose por tienda (plegable) ──
-    h(Collapse, {
-      title: "Desglose por tienda",
-      subtitle: "Meta vs. real del mes · " + metasDeMes.length + " tiendas",
-      badge: pctMes != null ? h(Chip, { color: colMes, soft: C.soft }, pctMes + "%") : null
-    }, h("div", { className: "grid sm:grid-cols-2 xl:grid-cols-4 gap-3" },
+    // ── Menú lateral + contenido por subsección ──
+    h("div", { className: "flex flex-col lg:flex-row gap-6 lg:gap-8 items-start" }, sidebar, h("div", { className: "flex-1 min-w-0 space-y-4" },
+    // ── Metas por tienda ──
+    subAnEff === "resumen" && h("div", { className: "space-y-3" }, h("div", { className: "grid sm:grid-cols-2 xl:grid-cols-4 gap-3" },
       metasDeMes.map(m => {
         const pct = m.meta > 0 ? Math.round((m.real || 0) / m.meta * 100) : null;
         const col = colMeta(pct);
@@ -1414,24 +1423,16 @@ function Metas({
             h("span", null, "Meta: ", fmtUSD(m.meta))),
           m.tienda === "MercadoLibre" && h("div", { className: "text-[10px] mt-1", style: { color: C.gray } }, "Actualización manual (no está en BAS)"));
       }))),
-    // ── Progreso anual (plegable) ──
-    (metas.length > 0 || resumenBAS) && h(Collapse, {
-      title: "Progreso anual y mes a mes",
-      subtitle: "Objetivo " + new Date().getFullYear() + " · $100.000.000"
-    }, h(ProgresoAnual, {
+    // ── Progreso anual ──
+    subAnEff === "anual" && (metas.length > 0 || resumenBAS) && h("div", { className: "space-y-3" }, h(ProgresoAnual, {
       metas: metas,
       porMesNeto: resumenBAS ? resumenBAS.porMesNeto : null,
       fmtUSD: fmtUSD,
       colMeta: colMeta,
       fmtM: fmtM
     })),
-    // ── Cargar archivos y analizar (plegable; abierto si todavía no se analizó) ──
-    h(Collapse, {
-      title: "Cargar archivos y analizar",
-      subtitle: "BAS (obligatorio) · Fenicio y WMS (opcionales)",
-      defaultOpen: !resumenBAS,
-      badge: archivoBAS ? h(Chip, { color: C.green, soft: C.greenS }, "BAS ✓") : null
-    }, h("p", { className: "text-xs mb-3", style: { color: C.gray } },
+    // ── Cargar archivos y analizar ──
+    subAnEff === "cargar" && h("div", { className: "space-y-3" }, h("p", { className: "text-xs mb-3", style: { color: C.gray } },
         "Subí el archivo de facturación del ERP (BAS): la app calcula el total facturado de TimeOut, Tienda Nacional y Classico y actualiza las barras. MercadoLibre se actualiza manualmente."),
       h("div", { className: "space-y-3" },
         h("div", { className: "rounded-2xl border p-4 space-y-2", style: { borderColor: C.line } },
@@ -1477,12 +1478,8 @@ function Metas({
           className: "text-sm font-bold text-white px-6 py-2.5 rounded-xl disabled:opacity-40",
           style: { background: C.blue }
         }, procesando ? "Analizando..." : "Analizar"))),
-    // ── Facturación por período (con filtro de fecha) — plegable, no es lo del día a día ──
-    resumenBAS && h(Collapse, {
-      title: "Facturado por período (BAS)",
-      subtitle: "Total facturado por tienda y rango de fechas · 3 tiendas del BAS (sin MercadoLibre)",
-      defaultOpen: false
-    }, h(Facturado, { resumenBAS, fmtUSD, fmtM })),
+    // ── Facturado por período (BAS) — dentro de Progreso anual ──
+    subAnEff === "anual" && resumenBAS && h("div", { className: "space-y-3" }, h(Facturado, { resumenBAS, fmtUSD, fmtM })),
     // Avisos de datos sólo cuando algo no cuadra (no en el flujo normal)
     resumenBAS && resumenBAS.sucSinMapa && resumenBAS.sucSinMapa.length > 0 && h("div", {
       className: "rounded-xl px-4 py-2 text-xs font-semibold",
@@ -1492,8 +1489,10 @@ function Metas({
       className: "rounded-xl px-4 py-2 text-xs font-semibold",
       style: { background: C.redS, color: C.red }
     }, "⚠ No encontré la columna TotGravado (BA) ni la de IVA en el BAS: la facturación quedó CON IVA. Columnas: ", (resumenBAS.basCols || []).join(", "), "."),
-    // ── Pedidos (siempre visible, paginado) ──
-    pendientes && h(ResultadoCruce, { pendientes: pendientes }),
+    // ── Facturación: pedidos (paginado) ──
+    subAnEff === "facturacion" && (pendientes
+      ? h(ResultadoCruce, { pendientes: pendientes })
+      : h("div", { className: "bg-white rounded-2xl border p-6 text-sm text-center", style: { borderColor: C.line, color: C.gray } }, "Cargá el BAS y el reporte de Fenicio en “Cargar archivos” para ver los pedidos a facturar.")))),
     // ── Modal edición de meta ──
     formMeta && h("div", {
       className: "fixed inset-0 z-50 flex items-center justify-center p-4",
