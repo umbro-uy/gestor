@@ -1089,10 +1089,10 @@ function Metas({
     const colPers = findCol(sF, [/personalizada/i]);
     // Método de pago "Pago Después" (Fenicio): no reversan el pago y a veces no necesitan factura/seña.
     // Se separan para revisarlos caso a caso en vez de marcarlos siempre como "falta factura".
-    const colFormaPago = findCol(sF, [/forma.*pago/i, /medio.*pago/i, /m[eé]todo.*pago/i, /tipo.*pago/i]);
-    const esPagoDespues = r => colFormaPago
-      ? /pago\s*despu[eé]s|despu[eé]s\s*de|contra\s*entrega/i.test(String(r[colFormaPago] || ""))
-      : Object.values(r).some(v => /pago\s*despu[eé]s/i.test(String(v || "")));
+    // Buscamos el texto en CUALQUIER columna del reporte (no solo en una "forma de pago"), porque la
+    // etiqueta puede venir en distintas columnas según el export de Fenicio.
+    const RE_PAGODESP = /pago\s*(despu[eé]s|posterior|diferid)|paga[rs]?\s*despu[eé]s|contra\s*entrega|pago\s*contra/i;
+    const esPagoDespues = r => Object.values(r).some(v => RE_PAGODESP.test(String(v || "")));
     const tieneCuponInfo = !!(colCupon || colMontoCup);
     const hayCupon = r => {
       const c = String(r[colCupon] || "").trim();
