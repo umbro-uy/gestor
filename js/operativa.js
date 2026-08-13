@@ -50,6 +50,7 @@ function Operativa({ yo, activo, syncTick }) {
   const [page, setPage] = useState(0);
   const [soloCC, setSoloCC] = useState("todos"); // todos | cc | nocc
   const [ccCol, setCcCol] = useState("");
+  const [deptoCol, setDeptoCol] = useState(""); // nombre de la columna "Departamento" detectada en Fenicio
   const [comentarios, setComentarios] = useState({}); // pedido -> { comentario, accionado, comentario_fecha } (persistido)
   const [persistOK, setPersistOK] = useState(null); // null=sin chequear, true=tabla ok, false=falta crear tabla
   const [ultimaSync, setUltimaSync] = useState(null); // hora de la última lectura del seguimiento compartido
@@ -77,6 +78,9 @@ function Operativa({ yo, activo, syncTick }) {
   // Vista por TIENDA (selector grande arriba) y subsección (menú lateral).
   const TIENDAS_OP = ["todas", "TimeOut", "Tienda Nacional", "Classico"];
   const [tiendaVista, setTiendaVista] = useState("todas");
+  // Región del destino: la promesa de entrega no es igual en todo el país. Montevideo (área metropolitana)
+  // podría bajar a 1 día hábil; el interior no. Se clasifica por el departamento del pedido.
+  const [regionVista, setRegionVista] = useState("todas"); // todas | montevideo | interior
   const [subOper, setSubOper] = useState("resumen"); // resumen (incluye listado) | tiempos | cargar · calendario va siempre arriba
   const [filtroDia, setFiltroDia] = useState(""); // día (YYYY-MM-DD) elegido en el calendario para filtrar la tabla
   const POR_HOJA = 50;
@@ -209,6 +213,14 @@ function Operativa({ yo, activo, syncTick }) {
   const ENTREGADOS = ["Pedido entregado", "Pedido entregado  a cliente"];
   // Deriva días hábiles y banderas (atrasado/critico/etc.) a partir del snapshot de un pedido.
   // Se usa tanto al cruzar como al recargar el seguimiento persistido, así el conteo de días se mantiene al día.
+  // Región del destino a partir del departamento (Fenicio). Montevideo = área metropolitana; el resto,
+  // Interior. Sin departamento → null (queda fuera de los cortes por región). Los C&C se cuentan por la
+  // tienda de retiro: si Fenicio no trae departamento del retiro, quedan sin región (solo en "Todas").
+  const regionDe = depto => {
+    const d = String(depto || "").toLowerCase().trim();
+    if (!d) return null;
+    return /montevideo|montevide|\bmvd\b/.test(d) ? "montevideo" : "interior";
+  };
   const calcDeriv = row => {
     const estadoFen = row.estadoFen || "-";
     const estadoWMS = row.estadoWMS || "-";
@@ -270,7 +282,7 @@ function Operativa({ yo, activo, syncTick }) {
     // Tiempo de entrega: días corridos compra → entrega real (fecha de entrega de Fenicio). Mide la experiencia del cliente.
     let leadtimeEntrega = null;
     if (row.fechaEntrega && String(row.fechaEntrega).trim() && row.fechaEntrega !== "-") { const a = parseFecha(row.fecha), b = parseFecha(row.fechaEntrega); if (a && b && b >= a) leadtimeEntrega = Math.round((b - a) / 86400000); }
-    return { ...row, dias, diasEstado, diasDesp, diasTransito, fenEntregado, wmsEntregado, entregado, cancelado, cancelDiscrep, despachadoWMS, atrasado, critico, inconsistente, posibleNoDespacho, estancado, enTransito, transitoLargo, listoRetiro, clickCollect, pickup, sinStock, ccDepo9, leadtime, leadtimeEntrega };
+    return { ...row, dias, diasEstado, diasDesp, diasTransito, fenEntregado, wmsEntregado, entregado, cancelado, cancelDiscrep, despachadoWMS, atrasado, critico, inconsistente, posibleNoDespacho, estancado, enTransito, transitoLargo, listoRetiro, clickCollect, pickup, sinStock, ccDepo9, leadtime, leadtimeEntrega, region: regionDe(row.departamento) };
   };
   // Carga el seguimiento ya analizado (con comentarios) al entrar a la pestaña, para que el análisis quede fijo.
   // opts.soloSiMasNuevo: usado cuando YA crucé archivos en esta sesión — solo pisa mi cruce si otro
@@ -381,6 +393,9 @@ function Operativa({ yo, activo, syncTick }) {
     // Se prueban varios nombres habituales de la columna de fecha de entrega de Fenicio.
     const colFechEntFen = findCol(sF, [/fecha.*entreg/i, /entreg.*fecha/i, /fecha.*recib/i, /recib.*fecha/i, /fecha.*finaliz/i, /finaliz.*fecha/i, /fecha.*complet/i]) || "";
     const colImp = findCol(sF, [/importe.*total.*pedido/i, /importe.*pedido/i]) || findCol(sF, [/importe/i]) || "Importe total pedido";
+    // Departamento del destino (Fenicio) para separar Montevideo (área metropolitana) del Interior.
+    const colDepto = findCol(sF, [/departamento/i, /provincia/i, /^depto/i]) || "";
+    setDeptoCol(colDepto || "");
     const sW = rowsB[0] || {};
     const colVenta = findCol(sW, [/^venta$/i, /venta/i]) || "Venta";
     const colEstEnc = findCol(sW, [/estado.*encuentra/i]) || "Estado Encuentra";
@@ -464,6 +479,7 @@ function Operativa({ yo, activo, syncTick }) {
         formaEntrega,
         fechaEntrega,
         importe,
+        departamento: colDepto ? String(r[colDepto] || "").trim() : "",
         pcn: pcnVentas.has(pedido),
         sinWMS: !wms
       }));
@@ -607,20 +623,29 @@ function Operativa({ yo, activo, syncTick }) {
         // Índice = días hábiles (0..HCAP); el último índice acumula todo lo que supera HCAP.
         const HCAP = 20;
         const histDe = arr => { const h = new Array(HCAP + 2).fill(0); (arr || []).forEach(d => { h[d < 0 ? 0 : d > HCAP ? HCAP + 1 : d]++; }); return h; };
+        // Acumula los tiempos (entrega/pendiente/despacho) de un pedido en un sub-bucket (para segmentar por región).
+        const emptyBk = () => ({ dhEnt: [], dhPend: [], dhDesp: [] });
+        const acumTiempos = (dest, r) => {
+          if (r.entregado) { const dhE = r.fechaEntrega && String(r.fechaEntrega).trim() && r.fechaEntrega !== "-" ? diasHabEntre(r.fecha, r.fechaEntrega) : null; if (dhE != null) dest.dhEnt.push(dhE); }
+          else dest.dhPend.push(r.dias != null ? r.dias : 0);
+          if (r.fechaDespacho && r.fechaDespacho !== "-") { const dhD = diasHabEntre(r.fecha, r.fechaDespacho); if (dhD != null) dest.dhDesp.push(dhD); }
+        };
+        const histTriple = src => ({ histEnt: histDe(src.dhEnt), histPend: histDe(src.dhPend), histDesp: histDe(src.dhDesp) });
         efectivos.forEach(r => {
           const t = r.tienda || "-";
-          const b = porTienda[t] || (porTienda[t] = { tienda: t, total: 0, entregadosRaw: 0, evalN: 0, enPlazo: 0, lt: [], ltE: [], dhEnt: [], dhPend: [], dhDesp: [] });
+          const b = porTienda[t] || (porTienda[t] = { tienda: t, total: 0, entregadosRaw: 0, evalN: 0, enPlazo: 0, lt: [], ltE: [], dhEnt: [], dhPend: [], dhDesp: [], reg: { montevideo: emptyBk(), interior: emptyBk() } });
           b.total++;
           if (r.entregado) b.entregadosRaw++;
           const pe = promEval(r);
           if (pe != null) { b.evalN++; promEvalTot++; if (pe) { b.enPlazo++; promEnPlazoTot++; } }
           if (r.leadtime != null) b.lt.push(r.leadtime);
           if (r.leadtimeEntrega != null) b.ltE.push(r.leadtimeEntrega);
-          if (r.entregado) { const dhE = r.fechaEntrega && String(r.fechaEntrega).trim() && r.fechaEntrega !== "-" ? diasHabEntre(r.fecha, r.fechaEntrega) : null; if (dhE != null) b.dhEnt.push(dhE); }
-          else b.dhPend.push(r.dias != null ? r.dias : 0);
-          if (r.fechaDespacho && r.fechaDespacho !== "-") { const dhD = diasHabEntre(r.fecha, r.fechaDespacho); if (dhD != null) b.dhDesp.push(dhD); }
+          acumTiempos(b, r);
+          if (r.region === "montevideo" || r.region === "interior") acumTiempos(b.reg[r.region], r);
         });
-        const cumplPorTienda = Object.values(porTienda).map(b => ({ tienda: b.tienda, total: b.total, entregados: b.entregadosRaw, evalN: b.evalN, enPlazo: b.enPlazo, pct: b.evalN ? Math.round(b.enPlazo / b.evalN * 100) : null, despachoP90: percentil(b.lt, PCTL), entregaP90: percentil(b.ltE, PCTL), histEnt: histDe(b.dhEnt), histPend: histDe(b.dhPend), histDesp: histDe(b.dhDesp) })).filter(x => x.total > 0).sort((a, b) => (a.pct == null ? 999 : a.pct) - (b.pct == null ? 999 : b.pct));
+        const cumplPorTienda = Object.values(porTienda).map(b => ({ tienda: b.tienda, total: b.total, entregados: b.entregadosRaw, evalN: b.evalN, enPlazo: b.enPlazo, pct: b.evalN ? Math.round(b.enPlazo / b.evalN * 100) : null, despachoP90: percentil(b.lt, PCTL), entregaP90: percentil(b.ltE, PCTL), histEnt: histDe(b.dhEnt), histPend: histDe(b.dhPend), histDesp: histDe(b.dhDesp), reg: { montevideo: histTriple(b.reg.montevideo), interior: histTriple(b.reg.interior) } })).filter(x => x.total > 0).sort((a, b) => (a.pct == null ? 999 : a.pct) - (b.pct == null ? 999 : b.pct));
+        const concatReg = key => Object.values(porTienda).reduce((acc, b) => { acc.dhEnt.push(...b.reg[key].dhEnt); acc.dhPend.push(...b.reg[key].dhPend); acc.dhDesp.push(...b.reg[key].dhDesp); return acc; }, emptyBk());
+        const histByReg = { montevideo: histTriple(concatReg("montevideo")), interior: histTriple(concatReg("interior")) };
         const histEntrega = histDe([].concat(...Object.values(porTienda).map(b => b.dhEnt)));
         const histPendGlob = histDe([].concat(...Object.values(porTienda).map(b => b.dhPend)));
         const histDespGlob = histDe([].concat(...Object.values(porTienda).map(b => b.dhDesp)));
@@ -695,7 +720,7 @@ function Operativa({ yo, activo, syncTick }) {
           leadtime_entrega: percentil(ltE, PCTL),
           // El calendario y los desgloses van TAMBIÉN adentro de "serie" (columna jsonb que ya existe
           // en la tabla): así se comparten sin necesidad de correr ninguna migración.
-          serie: { ...(serie || {}), calendario: calArr, maduros, promesaDH: promesaDH, desgloses: { cumplPorTienda, stockTiendas, histEntrega, histPend: histPendGlob, histDesp: histDespGlob } },
+          serie: { ...(serie || {}), calendario: calArr, maduros, promesaDH: promesaDH, desgloses: { cumplPorTienda, stockTiendas, histEntrega, histPend: histPendGlob, histDesp: histDespGlob, histByReg } },
           calendario: calArr,
           actualizado: new Date().toISOString()
         };
@@ -822,10 +847,16 @@ function Operativa({ yo, activo, syncTick }) {
   const volEntreg = porTiendaVista ? (ctv ? (ctv.entregados || 0) : entregadosVista.length) : (operSnap ? (operSnap.entregados || 0) : entregadosArr.length);
   // ── Histogramas VIGENTES (de la vista actual): en vivo si cruzamos en esta sesión, del snapshot si no ──
   // Con ellos recalculamos en pantalla el cumplimiento para la promesa elegida (promesaDH), sin re-cruzar.
-  const histsLive = cruceEnSesion.current ? histsLiveDe(resVista) : null;
-  const histEntV = histsLive ? histsLive.histEnt : (porTiendaVista ? (ctv && ctv.histEnt) : (desgSnap && desgSnap.histEntrega)) || null;
-  const histPendV = histsLive ? histsLive.histPend : (porTiendaVista ? (ctv && ctv.histPend) : (desgSnap && desgSnap.histPend)) || null;
-  const histDespV = histsLive ? histsLive.histDesp : (porTiendaVista ? (ctv && ctv.histDesp) : (desgSnap && desgSnap.histDesp)) || null;
+  // También respetan la REGIÓN elegida (Montevideo / Interior), porque la promesa no es igual en todo el país.
+  const porRegion = regionVista !== "todas";
+  const resVistaReg = porRegion ? (resVista || []).filter(r => r.region === regionVista) : resVista;
+  const histsLive = cruceEnSesion.current ? histsLiveDe(resVistaReg) : null;
+  // Base del snapshot (tienda elegida o global) y, si hay corte por región, su sub-histograma de esa región.
+  const snapBase = porTiendaVista ? ctv : (desgSnap ? { histEnt: desgSnap.histEntrega, histPend: desgSnap.histPend, histDesp: desgSnap.histDesp, reg: desgSnap.histByReg } : null);
+  const snapReg = snapBase ? (porRegion ? (snapBase.reg && snapBase.reg[regionVista]) || null : snapBase) : null;
+  const histEntV = histsLive ? histsLive.histEnt : (snapReg && snapReg.histEnt) || null;
+  const histPendV = histsLive ? histsLive.histPend : (snapReg && snapReg.histPend) || null;
+  const histDespV = histsLive ? histsLive.histDesp : (snapReg && snapReg.histDesp) || null;
   // Cumplimiento de la promesa (recalculado con promesaDH). Cae al valor guardado si no hay histogramas (snap viejo).
   const cumplV = histEntV ? cumplHist(histEntV, histPendV, promesaDH) : null;
   const volTasa = cumplV && cumplV.pct != null ? cumplV.pct : (porTiendaVista ? (ctv ? ctv.pct : 0) : (operSnap ? (operSnap.tasa_cumpl || 0) : tasaCumpl));
@@ -1086,21 +1117,32 @@ function Operativa({ yo, activo, syncTick }) {
   // en pantalla: sirve para ver si la operación está lista para bajarla (5 → 3) antes de comprometerse.
   const fmtDH = v => v == null ? "—" : ((v > HCAP_V ? HCAP_V + "+" : v) + " d");
   const fmtDias = v => v == null ? "—" : ((v > HCAP_V ? HCAP_V + "+" : v) + " días");
-  const tiemposPorTienda = (cruceEnSesion.current && resultado)
-    ? (() => { const byT = {}; (resultado || []).forEach(r => { if (r.cancelado) return; const t = r.tienda || "-"; (byT[t] || (byT[t] = [])).push(r); }); return Object.keys(byT).map(t => Object.assign({ tienda: t, total: byT[t].length }, histsLiveDe(byT[t]))); })()
-    : (desgSnap && desgSnap.cumplPorTienda ? desgSnap.cumplPorTienda : []).map(t => ({ tienda: t.tienda, total: t.total, histEnt: t.histEnt, histPend: t.histPend, histDesp: t.histDesp }));
-  const conHist = tiemposPorTienda.some(t => t.histEnt);
+  const tiemposPorTienda = ((cruceEnSesion.current && resultado)
+    ? (() => { const byT = {}; (resultado || []).forEach(r => { if (r.cancelado) return; if (porRegion && r.region !== regionVista) return; const t = r.tienda || "-"; (byT[t] || (byT[t] = [])).push(r); }); return Object.keys(byT).map(t => Object.assign({ tienda: t, total: byT[t].length }, histsLiveDe(byT[t]))); })()
+    : (desgSnap && desgSnap.cumplPorTienda ? desgSnap.cumplPorTienda : []).map(t => { const src = porRegion ? (t.reg && t.reg[regionVista]) : t; return { tienda: t.tienda, total: porRegion ? (src ? histTotal(src.histEnt) + histTotal(src.histPend) : 0) : t.total, histEnt: src && src.histEnt, histPend: src && src.histPend, histDesp: src && src.histDesp }; }))
+    .filter(t => t.histEnt && (histTotal(t.histEnt) || histTotal(t.histPend) || histTotal(t.histDesp)));
+  const conHist = tiemposPorTienda.length > 0;
   const promesaStep = ceEl("div", { className: "flex items-center gap-2" },
     ceEl("span", { className: "text-[11px] font-bold uppercase", style: { color: C.gray } }, "Promesa"),
     ceEl("button", { onClick: () => setPromesa(promesaDH - 1), disabled: promesaDH <= 1, className: "w-7 h-7 rounded-lg font-black disabled:opacity-40", style: { background: C.soft, color: C.blue } }, "−"),
     ceEl("span", { className: "text-sm font-black fraunces tabular-nums", style: { color: C.ink, minWidth: 70, textAlign: "center" } }, promesaDH + " días háb."),
     ceEl("button", { onClick: () => setPromesa(promesaDH + 1), disabled: promesaDH >= 15, className: "w-7 h-7 rounded-lg font-black disabled:opacity-40", style: { background: C.soft, color: C.blue } }, "+"));
-  const distPanel = (distEnt.n > 0 || conHist) ? ceEl("div", { className: "bg-white rounded-2xl border p-4 space-y-4", style: { borderColor: C.line } },
+  // Corte por REGIÓN: hay datos si detectamos la columna Departamento (cruce actual) o si el snapshot los trae.
+  const hayRegion = !!deptoCol || !!(desgSnap && desgSnap.histByReg);
+  const regionToggle = ceEl("div", { className: "flex items-center gap-1" },
+    ceEl("span", { className: "text-[11px] font-bold uppercase mr-1", style: { color: C.gray } }, "Región"),
+    [["todas", "Todas"], ["montevideo", "Montevideo"], ["interior", "Interior"]].map(([id, l]) => ceEl("button", {
+      key: id, onClick: () => setRegionVista(id),
+      className: "px-3 py-1.5 rounded-lg text-xs font-bold transition-colors",
+      style: { background: regionVista === id ? C.blue : "#EEF1F5", color: regionVista === id ? "#fff" : C.ink }
+    }, l)));
+  const distPanel = (distEnt.n > 0 || conHist || (hayRegion && porRegion)) ? ceEl("div", { className: "bg-white rounded-2xl border p-4 space-y-4", style: { borderColor: C.line } },
     ceEl("div", { className: "flex items-center justify-between flex-wrap gap-2" },
       ceEl("div", null,
         ceEl("span", { className: "text-sm font-black fraunces", style: { color: C.ink } }, "Promesa de entrega y tiempos"),
-        ceEl("span", { className: "text-[11px] ml-2", style: { color: C.gray } }, (porTiendaVista ? tiendaVista + " · " : "") + distEnt.n + " entregas con fecha")),
-      promesaStep),
+        ceEl("span", { className: "text-[11px] ml-2", style: { color: C.gray } }, (porTiendaVista ? tiendaVista + " · " : "") + (porRegion ? (regionVista === "montevideo" ? "Montevideo · " : "Interior · ") : "") + distEnt.n + " entregas con fecha")),
+      ceEl("div", { className: "flex items-center gap-3 flex-wrap" }, hayRegion && regionToggle, promesaStep)),
+    hayRegion && porRegion && distEnt.n === 0 && ceEl("div", { className: "text-[11px] rounded-lg px-3 py-2", style: { background: C.amberS, color: C.amber } }, "No hay entregas con fecha para " + (regionVista === "montevideo" ? "Montevideo" : "Interior") + " en lo cargado. Si recién actualizás la app, volvé a cruzar los archivos para poblar el corte por región."),
     ceEl("p", { className: "text-[11px]", style: { color: C.gray } }, "Mido el tiempo entre la COMPRA y la ENTREGA al cliente, en días hábiles. Abajo, de todo lo entregado, qué % llegó dentro de cada plazo (acumulado). Cambiá la promesa con − / + para simular: si al bajar a ≤3 días caés muy por debajo del 90%, todavía no conviene bajarla."),
     distEnt.n > 0 && ceEl("div", { className: "space-y-2" }, distEnt.tramos.map(t => {
       const esProm = t.d === promesaDH;
