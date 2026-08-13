@@ -1007,7 +1007,7 @@ function Operativa({ yo, activo, syncTick }) {
     if (tipo === "cumpl" || tipo === "entrega") {
       // Los tiempos de entrega y el cumplimiento por tienda ahora viven en el panel de Resumen (fusionados
       // con la promesa editable). Este desglose quedó solo para las solicitudes de stock a tiendas.
-      return distPanel || caja("Tiempos", "Los tiempos de entrega y el cumplimiento por tienda están en Resumen.", [], []);
+      return distPanel || caja("Tiempos", "Los tiempos de entrega y el cumplimiento por tienda están en la subsección “Tiempos y despacho”.", [], []);
     }
     const filas = (desgSnap.stockTiendas || []).map(t => ce("tr", { key: t.depo, style: { borderTop: "1px solid " + C.line, background: t.depo === "9" ? "#F6F8FB" : undefined } },
       td(t.nombre + " (" + t.depo + ")", { className: "px-3 py-1.5 font-semibold" }), td(t.conf),
@@ -1397,7 +1397,6 @@ function Operativa({ yo, activo, syncTick }) {
     probableCancel.length > 0 && /*#__PURE__*/React.createElement(AccionCard, { label: "Cancelado (probable)", value: probableCancel.length, color: "#64748B", tab: "probcancel", sub: "Sin Fenicio + WMS procesado — verificar" }),
     enTransitoArr.length > 0 && /*#__PURE__*/React.createElement(AccionCard, { label: "En tránsito", value: enTransitoArr.length, color: "#0EA5E9", tab: "transito", sub: "Despachados, en camino" + (transitoLargoN ? " · " + transitoLargoN + " hace +2 días háb." : "") })),
   usarSnap && atrasados.length !== nAtrasados && /*#__PURE__*/React.createElement("div", { className: "text-[11px] -mt-1", style: { color: C.gray } }, "Cifras del último cruce compartido (coinciden con Resumen). Volvé a subir los archivos y cruzar para actualizar el detalle."),
-  distPanel,
   !porTiendaVista && /*#__PURE__*/React.createElement("div", { className: "text-[11px] font-bold uppercase tracking-widest", style: { color: C.blue } }, "Cumplimiento del mes"),
   !porTiendaVista && /*#__PURE__*/React.createElement(ProgresoMes, null),
   /*#__PURE__*/React.createElement("div", { className: "grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3" },
@@ -1408,7 +1407,7 @@ function Operativa({ yo, activo, syncTick }) {
     /*#__PURE__*/React.createElement(MetricCard, { label: "Tiempo de entrega", value: fmtDias(volEnt), color: C.ink, sub: "típico (mediana)" }),
     /*#__PURE__*/React.createElement(MetricCard, { label: "Sin WMS", value: operSnap ? (operSnap.sin_wms || 0) : sinWMS.length, color: (operSnap ? operSnap.sin_wms : sinWMS.length) ? C.amber : C.gray, tab: sinWMS.length ? "sinwms" : null })),
   subOper === "resumen" && kpiPanel && DesglosePanel({ tipo: kpiPanel })),
-  subOper === "tiempos" && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", { className: "text-[11px]", style: { color: C.gray } }, "Tiempo de despacho de STOCK desde cada tienda al depósito central (confirmado → procesado). Los tiempos de entrega al cliente y el cumplimiento de la promesa están arriba, en Resumen."), distPanel, DesglosePanel({ tipo: "stock" })),
+  subOper === "tiempos" && /*#__PURE__*/React.createElement(React.Fragment, null, distPanel, /*#__PURE__*/React.createElement("div", { className: "text-[11px]", style: { color: C.gray } }, "Abajo: tiempo de despacho de STOCK desde cada tienda al depósito central (confirmado → procesado)."), DesglosePanel({ tipo: "stock" })),
   leadtimeEntProm == null && entregaDiag && /*#__PURE__*/React.createElement("div", { className: "rounded-xl px-4 py-3 text-xs", style: { background: C.amberS, color: C.amber } },
     /*#__PURE__*/React.createElement("b", null, "Tiempo de entrega sin datos. "),
     entregaDiag.col ? ("Detecté la columna “" + entregaDiag.col + "” pero ningún pedido tiene una fecha de entrega válida (" + entregaDiag.conEntrega + " de " + entregaDiag.total + "). ") : "No encontré una columna de fecha de entrega en tu Fenicio. ",
