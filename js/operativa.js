@@ -488,7 +488,8 @@ function Operativa({ yo, activo, syncTick }) {
     // Diagnóstico de la fecha de entrega: cuántos pedidos quedaron con tiempo de entrega calculado
     // y qué columnas trae Fenicio (para identificar la correcta si no se detectó).
     setEntregaDiag({ col: colFechEntFen, cols: Object.keys(sF), conEntrega: res.filter(r => r.leadtimeEntrega != null).length, total: res.length });
-    setDeptoDiag({ col: colDepto, cols: Object.keys(sF), nMvd: res.filter(r => r.region === "montevideo").length, nInt: res.filter(r => r.region === "interior").length, nSin: res.filter(r => !r.region).length, total: res.length });
+    const deptoInfo = { col: colDepto, cols: Object.keys(sF), nMvd: res.filter(r => r.region === "montevideo").length, nInt: res.filter(r => r.region === "interior").length, nSin: res.filter(r => !r.region).length, total: res.length };
+    setDeptoDiag(deptoInfo);
     const matchCount = res.filter(r => !r.sinWMS).length;
     if (res.length === 0) {
       alert("No se pudo leer el N° de pedido del reporte de Fenicio.\n\nColumna buscada: \"" + colNro + "\".\nColumnas encontradas: " + Object.keys(sF).join(", "));
@@ -722,7 +723,7 @@ function Operativa({ yo, activo, syncTick }) {
           leadtime_entrega: percentil(ltE, PCTL),
           // El calendario y los desgloses van TAMBIÉN adentro de "serie" (columna jsonb que ya existe
           // en la tabla): así se comparten sin necesidad de correr ninguna migración.
-          serie: { ...(serie || {}), calendario: calArr, maduros, promesaDH: promesaDH, desgloses: { cumplPorTienda, stockTiendas, histEntrega, histPend: histPendGlob, histDesp: histDespGlob, histByReg } },
+          serie: { ...(serie || {}), calendario: calArr, maduros, promesaDH: promesaDH, deptoInfo, desgloses: { cumplPorTienda, stockTiendas, histEntrega, histPend: histPendGlob, histDesp: histDespGlob, histByReg } },
           calendario: calArr,
           actualizado: new Date().toISOString()
         };
@@ -1130,7 +1131,10 @@ function Operativa({ yo, activo, syncTick }) {
     ceEl("span", { className: "text-sm font-black fraunces tabular-nums", style: { color: C.ink, minWidth: 70, textAlign: "center" } }, promesaDH + " días háb."),
     ceEl("button", { onClick: () => setPromesa(promesaDH + 1), disabled: promesaDH >= 15, className: "w-7 h-7 rounded-lg font-black disabled:opacity-40", style: { background: C.soft, color: C.blue } }, "+"));
   // Corte por REGIÓN: hay datos si detectamos la columna Departamento (cruce actual) o si el snapshot los trae.
-  const hayRegion = !!deptoCol || !!deptoDiag || !!(desgSnap && desgSnap.histByReg);
+  // Diagnóstico del corte por región: el de esta sesión (deptoDiag) o el guardado en el snapshot (para
+  // que se vea sin volver a cruzar). Así el cartel explica qué pasa aunque estés mirando lo compartido.
+  const deptoDiagEff = deptoDiag || (operSnap && operSnap.serie && operSnap.serie.deptoInfo) || null;
+  const hayRegion = !!deptoCol || !!deptoDiagEff || !!(desgSnap && desgSnap.histByReg);
   const regionToggle = ceEl("div", { className: "flex items-center gap-1" },
     ceEl("span", { className: "text-[11px] font-bold uppercase mr-1", style: { color: C.gray } }, "Región"),
     [["todas", "Todas"], ["montevideo", "Montevideo"], ["interior", "Interior"]].map(([id, l]) => ceEl("button", {
@@ -1145,11 +1149,11 @@ function Operativa({ yo, activo, syncTick }) {
         ceEl("span", { className: "text-[11px] ml-2", style: { color: C.gray } }, (porTiendaVista ? tiendaVista + " · " : "") + (porRegion ? (regionVista === "montevideo" ? "Montevideo · " : "Interior · ") : "") + distEnt.n + " entregas con fecha")),
       ceEl("div", { className: "flex items-center gap-3 flex-wrap" }, hayRegion && regionToggle, promesaStep)),
     porRegion && distEnt.n === 0 && ceEl("div", { className: "text-[11px] rounded-lg px-3 py-2", style: { background: C.amberS, color: C.amber } },
-      deptoDiag && !deptoDiag.col
-        ? ceEl("span", null, "No encontré una columna de Departamento en tu Fenicio, así que no puedo separar Montevideo/Interior. Columnas de tu Fenicio: ", ceEl("b", null, (deptoDiag.cols || []).join(" · ")), ". Decime cuál trae el departamento del pedido y la conecto.")
-        : deptoDiag && deptoDiag.col
-          ? ("Detecté la columna “" + deptoDiag.col + "” pero quedaron " + deptoDiag.nMvd + " Montevideo y " + deptoDiag.nInt + " Interior (" + deptoDiag.nSin + " sin departamento, de " + deptoDiag.total + "). Si no coincide, revisá que esa columna traiga el departamento o decime cuál es.")
-          : "No hay entregas con fecha para " + (regionVista === "montevideo" ? "Montevideo" : "Interior") + " en lo cargado. Si recién actualizás la app, volvé a cruzar los archivos para poblar el corte por región."),
+      deptoDiagEff && !deptoDiagEff.col
+        ? ceEl("span", null, "No encontré una columna de Departamento en tu Fenicio, así que no puedo separar Montevideo/Interior. Columnas de tu Fenicio: ", ceEl("b", null, (deptoDiagEff.cols || []).join(" · ")), ". Decime cuál trae el departamento del pedido y la conecto.")
+        : deptoDiagEff && deptoDiagEff.col
+          ? ("Detecté la columna “" + deptoDiagEff.col + "” pero quedaron " + deptoDiagEff.nMvd + " Montevideo y " + deptoDiagEff.nInt + " Interior (" + deptoDiagEff.nSin + " sin departamento, de " + deptoDiagEff.total + "). Si no coincide, revisá que esa columna traiga el departamento o decime cuál es.")
+          : "No hay entregas con fecha para " + (regionVista === "montevideo" ? "Montevideo" : "Interior") + " en lo cargado. Volvé a cruzar los archivos (botón Cruzar en “Cargar archivos”) para poblar el corte por región."),
     ceEl("p", { className: "text-[11px]", style: { color: C.gray } }, "Mido el tiempo entre la COMPRA y la ENTREGA al cliente, en días hábiles. Abajo, de todo lo entregado, qué % llegó dentro de cada plazo (acumulado). Cambiá la promesa con − / + para simular: si al bajar a ≤3 días caés muy por debajo del 90%, todavía no conviene bajarla."),
     distEnt.n > 0 && ceEl("div", { className: "space-y-2" }, distEnt.tramos.map(t => {
       const esProm = t.d === promesaDH;
