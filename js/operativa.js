@@ -243,7 +243,7 @@ function Operativa({ yo, activo, syncTick }) {
     const cancelDiscrep = canceladoWMS !== canceladoFen;
     const despachadoWMS = String(estadoWMS).toLowerCase().includes("despach");
     const movidoWMS = despachadoWMS || String(estadoWMS).toLowerCase().includes("recib");
-    const listoRetiro = /listo.*retir|recibid/i.test(estadoFen) || /listo.*retir/i.test(estadoWMS) || /recibid[oa]?\s*(en\s*)?tienda/i.test(estadoWMS);
+    const listoRetiro = /listo.*retir/i.test(estadoFen) || /listo.*retir/i.test(estadoWMS) || /recibid[oa]?\s*(en\s*)?tienda/i.test(estadoWMS);
     // Fenicio "Listo para retirar": el despacho/entrega de nosotros ya se cumplió y ahora depende del
     // cliente ir a retirarlo → NO es atraso (aunque lleve días en ese estado).
     const fenListoRetiro = /listo.*retir/i.test(estadoFen);
@@ -274,7 +274,7 @@ function Operativa({ yo, activo, syncTick }) {
     // si ya se entregó, canceló, despachó, está en tránsito/recibido o es PCN (personalizado), se gestionó.
     // "Listo para enviar"/"pronto para despacho" = el pedido YA está preparado → tiene stock, no es Depo 0.
     const listoEnviar = /listo.*env[ií]|pronto.*despach|en\s*env[ií]o/i.test(estadoFen) || /pronto.*despach|env[ií]o\s*pronto/i.test(estadoWMS);
-    const movidoODespachado = movidoWMS || listoRetiro || listoEnviar || /despach|tr[aá]nsito|camino|recib/i.test(estadoFen) || /tr[aá]nsito|camino/i.test(estadoWMS);
+    const movidoODespachado = movidoWMS || listoRetiro || listoEnviar || /despach|tr[aá]nsito|camino/i.test(estadoFen) || /tr[aá]nsito|camino/i.test(estadoWMS);
     const sinStock = depo === "0" && !entregado && !cancelado && !movidoODespachado && !row.pcn;
     const ccDepo9 = clickCollect && depo === "9";  // C&C no debería pedirse a depo 9
     // Tiempo a despacho: días corridos compra → "Fecha despacho" del WMS (dato real; la entrega no se registra)
