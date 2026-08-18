@@ -244,7 +244,10 @@ function Operativa({ yo, activo, syncTick }) {
     const cancelDiscrep = canceladoWMS !== canceladoFen;
     const despachadoWMS = String(estadoWMS).toLowerCase().includes("despach");
     const movidoWMS = despachadoWMS || String(estadoWMS).toLowerCase().includes("recib");
-    const listoRetiro = /listo.*retir|recibid/i.test(estadoFen) || /listo.*retir/i.test(estadoWMS) || /recibid[oa]?\s*(en\s*)?tienda/i.test(estadoWMS);
+    // OJO: en Fenicio "Pedido recibido" es un estado TEMPRANO (el pedido recién ingresó; sus fechas vienen
+    // en 0000-00-00), NO "retirado/recibido por el cliente". Por eso NO se toma "recibido" del estado
+    // Fenicio como listo/movido. El "recibido en tienda" real (C&C entregado) es del WMS.
+    const listoRetiro = /listo.*retir/i.test(estadoFen) || /listo.*retir/i.test(estadoWMS) || /recibid[oa]?\s*(en\s*)?tienda/i.test(estadoWMS);
     // Fenicio "Listo para retirar": el despacho/entrega de nosotros ya se cumplió y ahora depende del
     // cliente ir a retirarlo → NO es atraso (aunque lleve días en ese estado).
     const fenListoRetiro = /listo.*retir/i.test(estadoFen);
@@ -275,8 +278,9 @@ function Operativa({ yo, activo, syncTick }) {
     // si ya se entregó, canceló, despachó, está en tránsito/recibido o es PCN (personalizado), se gestionó.
     // "Listo para enviar"/"pronto para despacho" = el pedido YA está preparado → tiene stock, no es Depo 0.
     const listoEnviar = /listo.*env[ií]|pronto.*despach|en\s*env[ií]o/i.test(estadoFen) || /pronto.*despach|env[ií]o\s*pronto/i.test(estadoWMS);
-    const movidoODespachado = movidoWMS || listoRetiro || listoEnviar || /despach|tr[aá]nsito|camino|recib/i.test(estadoFen) || /tr[aá]nsito|camino/i.test(estadoWMS);
-    const sinStock = depo === "0" && !entregado && !cancelado && !movidoODespachado && !row.pcn;
+    const movidoODespachado = movidoWMS || listoRetiro || listoEnviar || /despach|tr[aá]nsito|camino/i.test(estadoFen) || /tr[aá]nsito|camino/i.test(estadoWMS);
+    // Depo 0 = algún artículo sin stock (fila guardada en "0" o cualquier ítem del pedido en "0").
+    const sinStock = (depo === "0" || row.depo0Any) && !entregado && !cancelado && !movidoODespachado && !row.pcn;
     const ccDepo9 = clickCollect && depo === "9";  // C&C no debería pedirse a depo 9
     // Tiempo a despacho: días corridos compra → "Fecha despacho" del WMS (dato real; la entrega no se registra)
     let leadtime = null;
@@ -405,7 +409,8 @@ function Operativa({ yo, activo, syncTick }) {
     const colFechListo = findCol(sF, [/fecha.*listo.*retir/i, /listo.*retir.*fecha/i]) || "";
     const colImp = findCol(sF, [/importe.*total.*pedido/i, /importe.*pedido/i]) || findCol(sF, [/importe/i]) || "Importe total pedido";
     // Departamento del destino (Fenicio) para separar Montevideo (área metropolitana) del Interior.
-    const colDepto = findCol(sF, [/departamento/i, /provincia/i, /depto/i, /dpto/i, /estado.*prov/i]) || "";
+    // Preferimos el departamento de ENTREGA (destino) sobre el de facturación.
+    const colDepto = findCol(sF, [/departamento.*entrega/i, /departamento.*env[ií]/i]) || findCol(sF, [/departamento/i, /provincia/i, /depto/i, /dpto/i, /estado.*prov/i]) || "";
     setDeptoCol(colDepto || "");
     const sW = rowsB[0] || {};
     const colVenta = findCol(sW, [/^venta$/i, /venta/i]) || "Venta";
@@ -446,10 +451,15 @@ function Operativa({ yo, activo, syncTick }) {
 
     const wmsF = filtroTienda === "todas" ? rowsB : rowsB.filter(r => String(r[colCanal] || "").toLowerCase().includes(filtroTienda.toLowerCase()));
     const wmsMap = {};
+    // Encuentra trae 1 fila por ARTÍCULO: un pedido puede tener ítems en varios depósitos (ej. [9,9,0]).
+    // Si ALGÚN artículo quedó en Depo 0 (sin stock), el pedido necesita acción manual aunque la fila que
+    // guardemos sea de otro depósito. Por eso marcamos aparte los pedidos con algún ítem en Depo 0.
+    const anyDepo0 = {};
     const ORDEN_EST = ["Items Pedidos", "Items Confirmados", "Items Clasificados  (Orden Liberada)", "Pedido en  envio pronto para despacho", "Pedido Despachado", "Pedido recibido  en tienda", "Pedido entregado  a cliente", "Cancelado"];
     wmsF.forEach(r => {
       const k = String(r[colVenta] || "").trim();
       if (!k) return;
+      if (String(r[colDep] || "").replace(/\.0+$/, "").trim() === "0") anyDepo0[k] = true;
       if (!wmsMap[k]) wmsMap[k] = r;else {
         const ni = ORDEN_EST.findIndex(s => r[colEstEnc] === s);
         const ai = ORDEN_EST.findIndex(s => wmsMap[k][colEstEnc] === s);
@@ -470,6 +480,7 @@ function Operativa({ yo, activo, syncTick }) {
       const estadoWMS = wms ? wms[colEstEnc] || "-" : "No encontrado en WMS";
       const estadoEco = wms ? wms[colEstEco] || "-" : "-";
       const deposito = wms ? String(wms[colDep] || "-").replace(/\.0+$/, "").trim() : "-";
+      const depo0Any = !!anyDepo0[pedido]; // algún artículo del pedido quedó en Depo 0 (aunque la fila guardada sea de otro depósito)
       const fechaDespacho = wms ? wms[colFechDesp] || "-" : "-";
       const formaEntrega = wms ? String(wms[colForma] || "") : "";
       // Fecha de entrega real desde Fenicio (no del WMS). Vacío si Fenicio no la trae.
@@ -493,6 +504,7 @@ function Operativa({ yo, activo, syncTick }) {
         fechaListo,
         importe,
         departamento: colDepto ? String(r[colDepto] || "").trim() : "",
+        depo0Any,
         pcn: pcnVentas.has(pedido),
         sinWMS: !wms
       }));
