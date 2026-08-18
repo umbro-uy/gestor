@@ -649,7 +649,7 @@ function Operativa({ yo, activo, syncTick }) {
         const acumTiempos = (dest, r) => {
           if (r.cumplido) { const dhE = r.fechaCumplido && String(r.fechaCumplido).trim() && r.fechaCumplido !== "-" ? diasHabEntre(r.fecha, r.fechaCumplido) : null; if (dhE != null) dest.dhEnt.push(dhE); }
           else dest.dhPend.push(r.dias != null ? r.dias : 0);
-          if (r.fechaDespacho && r.fechaDespacho !== "-") { const dhD = diasHabEntre(r.fecha, r.fechaDespacho); if (dhD != null) dest.dhDesp.push(dhD); }
+          if (!r.clickCollect && r.fechaDespacho && r.fechaDespacho !== "-") { const dhD = diasHabEntre(r.fecha, r.fechaDespacho); if (dhD != null) dest.dhDesp.push(dhD); } // C&C: los prepara/retira la sucursal → sin despacho nuestro
         };
         const histTriple = src => ({ histEnt: histDe(src.dhEnt), histPend: histDe(src.dhPend), histDesp: histDe(src.dhDesp) });
         efectivos.forEach(r => {
@@ -825,7 +825,7 @@ function Operativa({ yo, activo, syncTick }) {
       if (r.cancelado) return; // los cancelados no cuentan (igual que en el cruce, que usa "efectivos")
       if (r.cumplido) { const e = r.fechaCumplido && String(r.fechaCumplido).trim() && r.fechaCumplido !== "-" ? diasHabEntre(r.fecha, r.fechaCumplido) : null; if (e != null) dhEnt.push(e); }
       else dhPend.push(r.dias != null ? r.dias : 0);
-      if (r.fechaDespacho && r.fechaDespacho !== "-") { const d = diasHabEntre(r.fecha, r.fechaDespacho); if (d != null) dhDesp.push(d); }
+      if (!r.clickCollect && r.fechaDespacho && r.fechaDespacho !== "-") { const d = diasHabEntre(r.fecha, r.fechaDespacho); if (d != null) dhDesp.push(d); } // C&C fuera del despacho (los maneja la sucursal)
     });
     return { histEnt: histBuild(dhEnt), histPend: histBuild(dhPend), histDesp: histBuild(dhDesp) };
   };
@@ -1202,7 +1202,7 @@ function Operativa({ yo, activo, syncTick }) {
             ceEl("td", { className: "px-3 py-1.5 font-black", style: { color: cpc } }, cp.pct == null ? "—" : cp.pct + "%"),
             ceEl("td", { className: "px-3 py-1.5" }, t.total));
         })))),
-      ceEl("p", { className: "text-[10px] mt-1", style: { color: C.gray } }, "Entrega/Despacho típico = la mitad de los pedidos llega antes de ese plazo (mediana). Cumple = de los pedidos ya juzgables, el % entregado o listo para retirar dentro de la promesa; los recién comprados que aún están en plazo no cuentan y un cumplimiento tarde cuenta como incumplido.")) )
+      ceEl("p", { className: "text-[10px] mt-1", style: { color: C.gray } }, "Entrega/Despacho típico = la mitad de los pedidos llega antes de ese plazo (mediana). El DESPACHO excluye los Click & Collect (los prepara y entrega la sucursal, no es logística nuestra). Cumple = de los pedidos ya juzgables, el % entregado o listo para retirar dentro de la promesa; los recién comprados que aún están en plazo no cuentan y un cumplimiento tarde cuenta como incumplido.")) )
     : null;
   // ── Calendario UNIFICADO (las 3 tiendas) — se muestra siempre, arriba de todo ──
   const calendarEl = calData.length > 0 ? ceEl("div", { className: "bg-white rounded-2xl border p-3", style: { borderColor: C.line } },
