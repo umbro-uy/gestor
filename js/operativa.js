@@ -52,6 +52,7 @@ function Operativa({ yo, activo, syncTick }) {
   const [ccCol, setCcCol] = useState("");
   const [deptoCol, setDeptoCol] = useState(""); // nombre de la columna "Departamento" detectada en Fenicio
   const [deptoDiag, setDeptoDiag] = useState(null); // diagnóstico del corte por región (columna y conteos)
+  const [depoDiag, setDepoDiag] = useState(null); // diagnóstico de Depo 0 (valores de la columna Depósito)
   const [comentarios, setComentarios] = useState({}); // pedido -> { comentario, accionado, comentario_fecha } (persistido)
   const [persistOK, setPersistOK] = useState(null); // null=sin chequear, true=tabla ok, false=falta crear tabla
   const [ultimaSync, setUltimaSync] = useState(null); // hora de la última lectura del seguimiento compartido
@@ -243,7 +244,7 @@ function Operativa({ yo, activo, syncTick }) {
     const cancelDiscrep = canceladoWMS !== canceladoFen;
     const despachadoWMS = String(estadoWMS).toLowerCase().includes("despach");
     const movidoWMS = despachadoWMS || String(estadoWMS).toLowerCase().includes("recib");
-    const listoRetiro = /listo.*retir/i.test(estadoFen) || /listo.*retir/i.test(estadoWMS) || /recibid[oa]?\s*(en\s*)?tienda/i.test(estadoWMS);
+    const listoRetiro = /listo.*retir|recibid/i.test(estadoFen) || /listo.*retir/i.test(estadoWMS) || /recibid[oa]?\s*(en\s*)?tienda/i.test(estadoWMS);
     // Fenicio "Listo para retirar": el despacho/entrega de nosotros ya se cumplió y ahora depende del
     // cliente ir a retirarlo → NO es atraso (aunque lleve días en ese estado).
     const fenListoRetiro = /listo.*retir/i.test(estadoFen);
@@ -274,7 +275,7 @@ function Operativa({ yo, activo, syncTick }) {
     // si ya se entregó, canceló, despachó, está en tránsito/recibido o es PCN (personalizado), se gestionó.
     // "Listo para enviar"/"pronto para despacho" = el pedido YA está preparado → tiene stock, no es Depo 0.
     const listoEnviar = /listo.*env[ií]|pronto.*despach|en\s*env[ií]o/i.test(estadoFen) || /pronto.*despach|env[ií]o\s*pronto/i.test(estadoWMS);
-    const movidoODespachado = movidoWMS || listoRetiro || listoEnviar || /despach|tr[aá]nsito|camino/i.test(estadoFen) || /tr[aá]nsito|camino/i.test(estadoWMS);
+    const movidoODespachado = movidoWMS || listoRetiro || listoEnviar || /despach|tr[aá]nsito|camino|recib/i.test(estadoFen) || /tr[aá]nsito|camino/i.test(estadoWMS);
     const sinStock = depo === "0" && !entregado && !cancelado && !movidoODespachado && !row.pcn;
     const ccDepo9 = clickCollect && depo === "9";  // C&C no debería pedirse a depo 9
     // Tiempo a despacho: días corridos compra → "Fecha despacho" del WMS (dato real; la entrega no se registra)
@@ -283,7 +284,13 @@ function Operativa({ yo, activo, syncTick }) {
     // Tiempo de entrega: días corridos compra → entrega real (fecha de entrega de Fenicio). Mide la experiencia del cliente.
     let leadtimeEntrega = null;
     if (row.fechaEntrega && String(row.fechaEntrega).trim() && row.fechaEntrega !== "-") { const a = parseFecha(row.fecha), b = parseFecha(row.fechaEntrega); if (a && b && b >= a) leadtimeEntrega = Math.round((b - a) / 86400000); }
-    return { ...row, dias, diasEstado, diasDesp, diasTransito, fenEntregado, wmsEntregado, entregado, cancelado, cancelDiscrep, despachadoWMS, atrasado, critico, inconsistente, posibleNoDespacho, estancado, enTransito, transitoLargo, listoRetiro, clickCollect, pickup, sinStock, ccDepo9, leadtime, leadtimeEntrega, region: regionDe(row.departamento) };
+    // CUMPLIDO (para la promesa de entrega) = entregado O listo para retirar (en C&C ya hicimos nuestra
+    // parte aunque el cliente no lo haya retirado). La fecha del cumplimiento es la de entrega si existe;
+    // si no, la de "Listo para retirar". Es la MISMA definición que usa el calendario de cumplimiento.
+    const tieneFechaEnt = row.fechaEntrega && String(row.fechaEntrega).trim() && row.fechaEntrega !== "-";
+    const cumplido = entregado || listoRetiro;
+    const fechaCumplido = tieneFechaEnt ? row.fechaEntrega : (listoRetiro && row.fechaListo && String(row.fechaListo).trim() && row.fechaListo !== "-" ? row.fechaListo : "");
+    return { ...row, dias, diasEstado, diasDesp, diasTransito, fenEntregado, wmsEntregado, entregado, cumplido, fechaCumplido, cancelado, cancelDiscrep, despachadoWMS, atrasado, critico, inconsistente, posibleNoDespacho, estancado, enTransito, transitoLargo, listoRetiro, clickCollect, pickup, sinStock, ccDepo9, leadtime, leadtimeEntrega, region: regionDe(row.departamento) };
   };
   // Carga el seguimiento ya analizado (con comentarios) al entrar a la pestaña, para que el análisis quede fijo.
   // opts.soloSiMasNuevo: usado cuando YA crucé archivos en esta sesión — solo pisa mi cruce si otro
@@ -393,6 +400,9 @@ function Operativa({ yo, activo, syncTick }) {
     // Fecha de entrega REAL = la de Fenicio (estado "Pedido entregado"), no la del WMS (expedición manual, poco confiable)
     // Se prueban varios nombres habituales de la columna de fecha de entrega de Fenicio.
     const colFechEntFen = findCol(sF, [/fecha.*entreg/i, /entreg.*fecha/i, /fecha.*recib/i, /recib.*fecha/i, /fecha.*finaliz/i, /finaliz.*fecha/i, /fecha.*complet/i]) || "";
+    // Fecha en que el pedido quedó "Listo para retirar" (Fenicio): para C&C, la promesa se cumple cuando
+    // está listo para retirar (nuestra parte), aunque el cliente todavía no lo haya retirado.
+    const colFechListo = findCol(sF, [/fecha.*listo.*retir/i, /listo.*retir.*fecha/i]) || "";
     const colImp = findCol(sF, [/importe.*total.*pedido/i, /importe.*pedido/i]) || findCol(sF, [/importe/i]) || "Importe total pedido";
     // Departamento del destino (Fenicio) para separar Montevideo (área metropolitana) del Interior.
     const colDepto = findCol(sF, [/departamento/i, /provincia/i, /depto/i, /dpto/i, /estado.*prov/i]) || "";
@@ -464,6 +474,7 @@ function Operativa({ yo, activo, syncTick }) {
       const formaEntrega = wms ? String(wms[colForma] || "") : "";
       // Fecha de entrega real desde Fenicio (no del WMS). Vacío si Fenicio no la trae.
       const fechaEntrega = colFechEntFen ? String(r[colFechEntFen] || "") : "";
+      const fechaListo = colFechListo ? String(r[colFechListo] || "") : "";
       if (filtroFecha.desde && fecha && fecha < filtroFecha.desde) return;
       if (filtroFecha.hasta && fecha && fecha > filtroFecha.hasta) return;
       res.push(calcDeriv({
@@ -479,6 +490,7 @@ function Operativa({ yo, activo, syncTick }) {
         fechaEstado: wms ? fechaUltMovWMS(wms) : "",
         formaEntrega,
         fechaEntrega,
+        fechaListo,
         importe,
         departamento: colDepto ? String(r[colDepto] || "").trim() : "",
         pcn: pcnVentas.has(pedido),
@@ -490,6 +502,12 @@ function Operativa({ yo, activo, syncTick }) {
     setEntregaDiag({ col: colFechEntFen, cols: Object.keys(sF), conEntrega: res.filter(r => r.leadtimeEntrega != null).length, total: res.length });
     const deptoInfo = { col: colDepto, cols: Object.keys(sF), nMvd: res.filter(r => r.region === "montevideo").length, nInt: res.filter(r => r.region === "interior").length, nSin: res.filter(r => !r.region).length, total: res.length };
     setDeptoDiag(deptoInfo);
+    // Diagnóstico de Depo 0: distribución de valores de la columna "Depósito" del Encuentra, para entender
+    // por qué Depo 0 puede dar 0 (el valor real no es exactamente "0", o esos pedidos ya se movieron).
+    const depoVals = {};
+    res.forEach(r => { const d = (r.deposito == null || String(r.deposito).trim() === "") ? "(vacío)" : String(r.deposito).replace(/\.0+$/, "").trim(); depoVals[d] = (depoVals[d] || 0) + 1; });
+    const depoInfo = { vals: depoVals, nSinStock: res.filter(r => r.sinStock).length, colDep: colDep, total: res.length };
+    setDepoDiag(depoInfo);
     const matchCount = res.filter(r => !r.sinWMS).length;
     if (res.length === 0) {
       alert("No se pudo leer el N° de pedido del reporte de Fenicio.\n\nColumna buscada: \"" + colNro + "\".\nColumnas encontradas: " + Object.keys(sF).join(", "));
@@ -610,8 +628,8 @@ function Operativa({ yo, activo, syncTick }) {
         // dentro de PROMESA_DH días háb.), no el crudo entregados/total: entregado tarde = incumplido,
         // recién comprado aún en plazo = no evaluable (fuera).
         const promEval = r => {
-          if (r.entregado) {
-            const dhE = r.fechaEntrega && String(r.fechaEntrega).trim() && r.fechaEntrega !== "-" ? diasHabEntre(r.fecha, r.fechaEntrega) : null;
+          if (r.cumplido) {
+            const dhE = r.fechaCumplido && String(r.fechaCumplido).trim() && r.fechaCumplido !== "-" ? diasHabEntre(r.fecha, r.fechaCumplido) : null;
             return dhE == null ? null : (dhE <= PROMESA_DH);   // null = entregado sin fecha (no evaluable)
           }
           return (r.dias != null ? r.dias : 0) > PROMESA_DH ? false : null;  // vencido sin entregar = incumple; en plazo = fuera
@@ -629,9 +647,9 @@ function Operativa({ yo, activo, syncTick }) {
         // Acumula los tiempos (entrega/pendiente/despacho) de un pedido en un sub-bucket (para segmentar por región).
         const emptyBk = () => ({ dhEnt: [], dhPend: [], dhDesp: [] });
         const acumTiempos = (dest, r) => {
-          if (r.entregado) { const dhE = r.fechaEntrega && String(r.fechaEntrega).trim() && r.fechaEntrega !== "-" ? diasHabEntre(r.fecha, r.fechaEntrega) : null; if (dhE != null) dest.dhEnt.push(dhE); }
+          if (r.cumplido) { const dhE = r.fechaCumplido && String(r.fechaCumplido).trim() && r.fechaCumplido !== "-" ? diasHabEntre(r.fecha, r.fechaCumplido) : null; if (dhE != null) dest.dhEnt.push(dhE); }
           else dest.dhPend.push(r.dias != null ? r.dias : 0);
-          if (r.fechaDespacho && r.fechaDespacho !== "-") { const dhD = diasHabEntre(r.fecha, r.fechaDespacho); if (dhD != null) dest.dhDesp.push(dhD); }
+          if (!r.clickCollect && r.fechaDespacho && r.fechaDespacho !== "-") { const dhD = diasHabEntre(r.fecha, r.fechaDespacho); if (dhD != null) dest.dhDesp.push(dhD); } // C&C: los prepara/retira la sucursal → sin despacho nuestro
         };
         const histTriple = src => ({ histEnt: histDe(src.dhEnt), histPend: histDe(src.dhPend), histDesp: histDe(src.dhDesp) });
         efectivos.forEach(r => {
@@ -695,13 +713,13 @@ function Operativa({ yo, activo, syncTick }) {
           const delMes = efectivos.filter(r => { const d = parseFecha(r.fecha); return d && (d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0")) === mk; });
           let evalTotal = 0, enPlazo = 0; const dhEntMes = [], dhPendMes = [];
           delMes.forEach(r => {
-            if (r.entregado) {
-              const dhE = r.fechaEntrega && String(r.fechaEntrega).trim() && r.fechaEntrega !== "-" ? diasHabEntre(r.fecha, r.fechaEntrega) : null;
-              if (dhE == null) return; // entregado sin fecha de entrega: no se puede juzgar
+            if (r.cumplido) {
+              const dhE = r.fechaCumplido && String(r.fechaCumplido).trim() && r.fechaCumplido !== "-" ? diasHabEntre(r.fecha, r.fechaCumplido) : null;
+              if (dhE == null) return; // cumplido sin fecha (entrega/listo): no se puede juzgar
               evalTotal++; if (dhE <= PROMESA_DH) enPlazo++; dhEntMes.push(dhE);
             } else {
               dhPendMes.push(r.dias != null ? r.dias : 0);
-              if ((r.dias != null ? r.dias : 0) > PROMESA_DH) evalTotal++; // promesa vencida sin entregar = incumplida
+              if ((r.dias != null ? r.dias : 0) > PROMESA_DH) evalTotal++; // promesa vencida sin cumplir = incumplida
             }
           });
           // Guardamos también los histogramas del mes para poder recalcular el % con otra promesa en pantalla.
@@ -723,7 +741,7 @@ function Operativa({ yo, activo, syncTick }) {
           leadtime_entrega: percentil(ltE, PCTL),
           // El calendario y los desgloses van TAMBIÉN adentro de "serie" (columna jsonb que ya existe
           // en la tabla): así se comparten sin necesidad de correr ninguna migración.
-          serie: { ...(serie || {}), calendario: calArr, maduros, promesaDH: promesaDH, deptoInfo, desgloses: { cumplPorTienda, stockTiendas, histEntrega, histPend: histPendGlob, histDesp: histDespGlob, histByReg } },
+          serie: { ...(serie || {}), calendario: calArr, maduros, promesaDH: promesaDH, deptoInfo, depoInfo, desgloses: { cumplPorTienda, stockTiendas, histEntrega, histPend: histPendGlob, histDesp: histDespGlob, histByReg } },
           calendario: calArr,
           actualizado: new Date().toISOString()
         };
@@ -805,9 +823,9 @@ function Operativa({ yo, activo, syncTick }) {
     const dhEnt = [], dhPend = [], dhDesp = [];
     (rows || []).forEach(r => {
       if (r.cancelado) return; // los cancelados no cuentan (igual que en el cruce, que usa "efectivos")
-      if (r.entregado) { const e = r.fechaEntrega && String(r.fechaEntrega).trim() && r.fechaEntrega !== "-" ? diasHabEntre(r.fecha, r.fechaEntrega) : null; if (e != null) dhEnt.push(e); }
+      if (r.cumplido) { const e = r.fechaCumplido && String(r.fechaCumplido).trim() && r.fechaCumplido !== "-" ? diasHabEntre(r.fecha, r.fechaCumplido) : null; if (e != null) dhEnt.push(e); }
       else dhPend.push(r.dias != null ? r.dias : 0);
-      if (r.fechaDespacho && r.fechaDespacho !== "-") { const d = diasHabEntre(r.fecha, r.fechaDespacho); if (d != null) dhDesp.push(d); }
+      if (!r.clickCollect && r.fechaDespacho && r.fechaDespacho !== "-") { const d = diasHabEntre(r.fecha, r.fechaDespacho); if (d != null) dhDesp.push(d); } // C&C fuera del despacho (los maneja la sucursal)
     });
     return { histEnt: histBuild(dhEnt), histPend: histBuild(dhPend), histDesp: histBuild(dhDesp) };
   };
@@ -1134,6 +1152,11 @@ function Operativa({ yo, activo, syncTick }) {
   // Diagnóstico del corte por región: el de esta sesión (deptoDiag) o el guardado en el snapshot (para
   // que se vea sin volver a cruzar). Así el cartel explica qué pasa aunque estés mirando lo compartido.
   const deptoDiagEff = deptoDiag || (operSnap && operSnap.serie && operSnap.serie.deptoInfo) || null;
+  const depoDiagEff = depoDiag || (operSnap && operSnap.serie && operSnap.serie.depoInfo) || null;
+  // Texto del diagnóstico de Depo 0: qué valores tiene la columna Depósito (para ver por qué da 0).
+  const depoMsg = depoDiagEff
+    ? ("No hay pedidos en Depo 0 (sin stock). Valores de tu columna “" + (depoDiagEff.colDep || "Depósito") + "”: " + Object.entries(depoDiagEff.vals || {}).sort((a, b) => b[1] - a[1]).slice(0, 12).map(([k, n]) => k + " (" + n + ")").join(" · ") + ". Si tus Depo 0 traen otro valor (ej. “0 - Sin stock”), decímelo y ajusto la detección.")
+    : "No hay pedidos en Depo 0 (sin stock).";
   const hayRegion = !!deptoCol || !!deptoDiagEff || !!(desgSnap && desgSnap.histByReg);
   const regionToggle = ceEl("div", { className: "flex items-center gap-1" },
     ceEl("span", { className: "text-[11px] font-bold uppercase mr-1", style: { color: C.gray } }, "Región"),
@@ -1146,7 +1169,7 @@ function Operativa({ yo, activo, syncTick }) {
     ceEl("div", { className: "flex items-center justify-between flex-wrap gap-2" },
       ceEl("div", null,
         ceEl("span", { className: "text-sm font-black fraunces", style: { color: C.ink } }, "Promesa de entrega y tiempos"),
-        ceEl("span", { className: "text-[11px] ml-2", style: { color: C.gray } }, (porTiendaVista ? tiendaVista + " · " : "") + (porRegion ? (regionVista === "montevideo" ? "Montevideo · " : "Interior · ") : "") + distEnt.n + " entregas con fecha")),
+        ceEl("span", { className: "text-[11px] ml-2", style: { color: C.gray } }, (porTiendaVista ? tiendaVista + " · " : "") + (porRegion ? (regionVista === "montevideo" ? "Montevideo · " : "Interior · ") : "") + distEnt.n + " cumplidos con fecha")),
       ceEl("div", { className: "flex items-center gap-3 flex-wrap" }, hayRegion && regionToggle, promesaStep)),
     porRegion && distEnt.n === 0 && ceEl("div", { className: "text-[11px] rounded-lg px-3 py-2", style: { background: C.amberS, color: C.amber } },
       deptoDiagEff && !deptoDiagEff.col
@@ -1154,7 +1177,7 @@ function Operativa({ yo, activo, syncTick }) {
         : deptoDiagEff && deptoDiagEff.col
           ? ("Detecté la columna “" + deptoDiagEff.col + "” pero quedaron " + deptoDiagEff.nMvd + " Montevideo y " + deptoDiagEff.nInt + " Interior (" + deptoDiagEff.nSin + " sin departamento, de " + deptoDiagEff.total + "). Si no coincide, revisá que esa columna traiga el departamento o decime cuál es.")
           : "No hay entregas con fecha para " + (regionVista === "montevideo" ? "Montevideo" : "Interior") + " en lo cargado. Volvé a cruzar los archivos (botón Cruzar en “Cargar archivos”) para poblar el corte por región."),
-    ceEl("p", { className: "text-[11px]", style: { color: C.gray } }, "Mido el tiempo entre la COMPRA y la ENTREGA al cliente, en días hábiles. Abajo, de todo lo entregado, qué % llegó dentro de cada plazo (acumulado). Cambiá la promesa con − / + para simular: si al bajar a ≤3 días caés muy por debajo del 90%, todavía no conviene bajarla."),
+    ceEl("p", { className: "text-[11px]", style: { color: C.gray } }, "Cuenta como cumplido un pedido ENTREGADO o LISTO PARA RETIRAR (en C&C ya hicimos nuestra parte), y mide los días hábiles entre la COMPRA y ese momento. Abajo, qué % se cumplió dentro de cada plazo (acumulado). Cambiá la promesa con − / + para simular: si al bajar a ≤3 días caés muy por debajo del 90%, todavía no conviene bajarla. Los recién comprados que aún están en plazo no cuentan (todavía no se pueden juzgar); por eso este % puede ser más alto que el del calendario, que sí incluye lo reciente sin cumplir."),
     distEnt.n > 0 && ceEl("div", { className: "space-y-2" }, distEnt.tramos.map(t => {
       const esProm = t.d === promesaDH;
       const col = t.pct == null ? C.gray : t.pct >= 90 ? C.green : t.pct >= 70 ? C.amber : C.red;
@@ -1179,7 +1202,7 @@ function Operativa({ yo, activo, syncTick }) {
             ceEl("td", { className: "px-3 py-1.5 font-black", style: { color: cpc } }, cp.pct == null ? "—" : cp.pct + "%"),
             ceEl("td", { className: "px-3 py-1.5" }, t.total));
         })))),
-      ceEl("p", { className: "text-[10px] mt-1", style: { color: C.gray } }, "Entrega/Despacho típico = la mitad de los pedidos llega antes de ese plazo (mediana). Cumple = de los pedidos ya juzgables, el % entregado dentro de la promesa; los recién comprados que aún están en plazo no cuentan y un entregado tarde cuenta como incumplido.")) )
+      ceEl("p", { className: "text-[10px] mt-1", style: { color: C.gray } }, "Entrega/Despacho típico = la mitad de los pedidos llega antes de ese plazo (mediana). El DESPACHO excluye los Click & Collect (los prepara y entrega la sucursal, no es logística nuestra). Cumple = de los pedidos ya juzgables, el % entregado o listo para retirar dentro de la promesa; los recién comprados que aún están en plazo no cuentan y un cumplimiento tarde cuenta como incumplido.")) )
     : null;
   // ── Calendario UNIFICADO (las 3 tiendas) — se muestra siempre, arriba de todo ──
   const calendarEl = calData.length > 0 ? ceEl("div", { className: "bg-white rounded-2xl border p-3", style: { borderColor: C.line } },
@@ -1446,7 +1469,7 @@ function Operativa({ yo, activo, syncTick }) {
       /*#__PURE__*/React.createElement("button", { onClick: () => setPage(p => Math.max(0, p - 1)), disabled: pageSafe <= 0, className: "text-xs font-bold px-3 py-1.5 rounded-lg disabled:opacity-40", style: { background: "#EEF1F5", color: C.gray } }, "← Anterior"),
       /*#__PURE__*/React.createElement("span", { className: "text-xs font-bold", style: { color: C.gray } }, "Hoja " + (pageSafe + 1) + " / " + totalPaginas),
       /*#__PURE__*/React.createElement("button", { onClick: () => setPage(p => Math.min(totalPaginas - 1, p + 1)), disabled: pageSafe >= totalPaginas - 1, className: "text-xs font-bold px-3 py-1.5 rounded-lg disabled:opacity-40", style: { background: "#EEF1F5", color: C.gray } }, "Siguiente →"))),
-  vistaRows.length > 0 ? Tabla({ rows: pageRows }) : Vacio({ msg: vistaTab === "criticos" ? "No hay pedidos críticos (+10 días hábiles)." : vistaTab === "nodespacho" ? "No hay pedidos despachados en WMS que sigan sin entregar en Fenicio." : vistaTab === "estancados" ? "No hay pedidos estancados (+2 días hábiles sin avanzar en el WMS)." : vistaTab === "inconsistencias" ? "Todos los estados coinciden." : vistaTab === "depo0" ? "No hay pedidos en Depo 0 (sin stock)." : vistaTab === "probcancel" ? "No hay cancelados probables (pedidos que dejaron de venir en Fenicio con el WMS ya procesado)." : vistaTab === "transito" ? "No hay pedidos en tránsito." : vistaTab === "atrasados" ? "No hay pedidos atrasados para este periodo." : "No hay pedidos en esta vista." }),
+  vistaRows.length > 0 ? Tabla({ rows: pageRows }) : Vacio({ msg: vistaTab === "criticos" ? "No hay pedidos críticos (+10 días hábiles)." : vistaTab === "nodespacho" ? "No hay pedidos despachados en WMS que sigan sin entregar en Fenicio." : vistaTab === "estancados" ? "No hay pedidos estancados (+2 días hábiles sin avanzar en el WMS)." : vistaTab === "inconsistencias" ? "Todos los estados coinciden." : vistaTab === "depo0" ? depoMsg : vistaTab === "probcancel" ? "No hay cancelados probables (pedidos que dejaron de venir en Fenicio con el WMS ya procesado)." : vistaTab === "transito" ? "No hay pedidos en tránsito." : vistaTab === "atrasados" ? "No hay pedidos atrasados para este periodo." : "No hay pedidos en esta vista." }),
   totalPaginas > 1 && /*#__PURE__*/React.createElement("div", { className: "flex items-center justify-center gap-3 pt-1" },
     /*#__PURE__*/React.createElement("button", { onClick: () => setPage(p => Math.max(0, p - 1)), disabled: pageSafe <= 0, className: "text-xs font-bold px-3 py-1.5 rounded-lg disabled:opacity-40", style: { background: "#EEF1F5", color: C.gray } }, "← Anterior"),
     /*#__PURE__*/React.createElement("span", { className: "text-xs font-bold", style: { color: C.gray } }, "Hoja " + (pageSafe + 1) + " / " + totalPaginas),
