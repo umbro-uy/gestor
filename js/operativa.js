@@ -527,7 +527,7 @@ function Operativa({ yo, activo, syncTick }) {
       alert("Se leyeron " + res.length + " pedidos de Fenicio pero ninguno coincidió con la columna \"" + colVenta + "\" del Monitor de Encuentra.\n\nVerificá que el N° de pedido de Fenicio corresponda a la columna Venta del Monitor.");
     }
     // ── Enriquecer cada pedido con su comentario/accionado persistido (no se pierden al recruzar) ──
-    const relevante = r => r.atrasado || r.critico || r.posibleNoDespacho || r.estancado || r.inconsistente || r.enTransito;
+    const relevante = r => r.atrasado || r.critico || r.posibleNoDespacho || r.estancado || r.inconsistente || r.enTransito || r.sinStock;
     const merged = res.map(r => {
       const c = comentarios[r.pedido] || {};
       return { ...r, historial: c.historial || [], accionado: !!c.accionado };
@@ -580,7 +580,7 @@ function Operativa({ yo, activo, syncTick }) {
         const payload = aSeguir.map(r => ({
           pedido: r.pedido, tienda: r.tienda, fecha: r.fecha,
           estado_fen: r.estadoFen, estado_wms: r.estadoWMS, estado_eco: r.estadoEco,
-          deposito: r.deposito, fecha_despacho: r.fechaDespacho, importe: String(r.importe),
+          deposito: (r.depo0Any ? "0" : r.deposito), fecha_despacho: r.fechaDespacho, importe: String(r.importe),
           forma_entrega: r.formaEntrega || "", fecha_entrega: r.fechaEntrega || "",
           fecha_estado: r.fechaEstado || "",
           dias: r.dias, click_collect: !!r.clickCollect, sin_wms: !!r.sinWMS
@@ -1476,7 +1476,7 @@ function Operativa({ yo, activo, syncTick }) {
     /*#__PURE__*/React.createElement("button", { onClick: () => exportarOper(vistaRows, "operativa-" + vistaTab), className: "text-xs font-bold px-3 py-2 rounded-xl", style: { background: C.soft, color: C.blue } }, "⬇ Exportar vista"),
     /*#__PURE__*/React.createElement("button", { onClick: () => alertarTienda(vistaRows, vistaTab), className: "text-xs font-bold px-3 py-2 rounded-xl text-white", style: { background: C.amber } }, "✉ Alertar por mail")),
   /*#__PURE__*/React.createElement("div", { className: "flex items-center justify-between flex-wrap gap-2 px-1" },
-    /*#__PURE__*/React.createElement("div", { className: "text-[11px]", style: { color: C.gray } }, /*#__PURE__*/React.createElement("b", { style: { color: C.ink } }, ({ atrasados: "Atrasados", criticos: "Críticos", nodespacho: "Validar despacho", estancados: "Estancados", depo0: "Depo 0", sinwms: "Sin WMS", todos: "Todos" }[vistaTab] || "Atrasados")), " · " + vistaRows.length + " pedido(s)" + (ccCol ? " · C&C por columna “" + ccCol + "”" : " · C&C por estado “Listo para retirar”")),
+    /*#__PURE__*/React.createElement("div", { className: "text-[11px]", style: { color: C.gray } }, /*#__PURE__*/React.createElement("b", { style: { color: C.ink } }, ({ atrasados: "Atrasados", criticos: "Críticos", nodespacho: "Validar despacho", estancados: "Estancados", depo0: "Depo 0", sinwms: "Sin WMS", todos: "Todos", transito: "En tránsito", probcancel: "Cancelado (probable)", canceldiscrep: "Cancel. a alinear" }[vistaTab] || "Atrasados")), " · " + vistaRows.length + " pedido(s)" + (vistaTab === "depo0" ? " · algún artículo cayó en Depo 0 (sin stock) — validar mercadería" : "")),
     totalPaginas > 1 && /*#__PURE__*/React.createElement("div", { className: "flex items-center gap-2" },
       /*#__PURE__*/React.createElement("button", { onClick: () => setPage(p => Math.max(0, p - 1)), disabled: pageSafe <= 0, className: "text-xs font-bold px-3 py-1.5 rounded-lg disabled:opacity-40", style: { background: "#EEF1F5", color: C.gray } }, "← Anterior"),
       /*#__PURE__*/React.createElement("span", { className: "text-xs font-bold", style: { color: C.gray } }, "Hoja " + (pageSafe + 1) + " / " + totalPaginas),
