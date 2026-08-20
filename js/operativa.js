@@ -683,6 +683,27 @@ function Operativa({ yo, activo, syncTick }) {
         const histPendGlob = histDe([].concat(...Object.values(porTienda).map(b => b.dhPend)));
         const histDespGlob = histDe([].concat(...Object.values(porTienda).map(b => b.dhDesp)));
         const tasaCumplProm = promEvalTot ? Math.round(promEnPlazoTot / promEvalTot * 100) : 0;
+        // ── HISTÓRICO MENSUAL de logística (cumplimiento + volumen), por región. Se ACUMULA en el snapshot:
+        // cargar meses viejos una sola vez los deja guardados; los cruces siguientes solo pisan los meses
+        // que traen (upsert por mes) y conservan el resto. No cambia nada de lo actual: es info que se suma.
+        const mesDe = r => { const d = parseFecha(r.fecha); return d ? d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") : null; };
+        const scopesReg = { todas: () => true, montevideo: r => r.region === "montevideo", interior: r => r.region === "interior" };
+        const mesesAcum = {};
+        efectivos.forEach(r => {
+          const m = mesDe(r); if (!m) return;
+          const mm = mesesAcum[m] || (mesesAcum[m] = {});
+          ["todas", "montevideo", "interior"].forEach(sc => {
+            if (!scopesReg[sc](r)) return;
+            const b = mm[sc] || (mm[sc] = { total: 0, entregados: 0, dhEnt: [], dhPend: [] });
+            b.total++;
+            if (r.entregado) b.entregados++;
+            if (r.cumplido) { const dhE = r.fechaCumplido && String(r.fechaCumplido).trim() && r.fechaCumplido !== "-" ? diasHabEntre(r.fecha, r.fechaCumplido) : null; if (dhE != null) b.dhEnt.push(dhE); }
+            else b.dhPend.push(r.dias != null ? r.dias : 0);
+          });
+        });
+        const mesesCross = {};
+        Object.keys(mesesAcum).forEach(m => { mesesCross[m] = {}; Object.keys(mesesAcum[m]).forEach(sc => { const b = mesesAcum[m][sc]; mesesCross[m][sc] = { total: b.total, entregados: b.entregados, histEnt: histDe(b.dhEnt), histPend: histDe(b.dhPend) }; }); });
+        const serieMeses = { ...((operSnap && operSnap.serie && operSnap.serie.serieMeses) || {}), ...mesesCross };
         // Solicitud de stock a TIENDAS (Deposito pedido ≠ 9/0): tiempo confirmado → procesado en central.
         // +2 días hábiles sin procesar = la tienda no envió la mercadería o se extravió.
         const colFConf = findCol(sW, [/^fecha\s*confirmad/i]);
@@ -753,7 +774,7 @@ function Operativa({ yo, activo, syncTick }) {
           leadtime_entrega: percentil(ltE, PCTL),
           // El calendario y los desgloses van TAMBIÉN adentro de "serie" (columna jsonb que ya existe
           // en la tabla): así se comparten sin necesidad de correr ninguna migración.
-          serie: { ...(serie || {}), calendario: calArr, maduros, promesaDH: promesaDH, deptoInfo, depoInfo, desgloses: { cumplPorTienda, stockTiendas, histEntrega, histPend: histPendGlob, histDesp: histDespGlob, histByReg } },
+          serie: { ...(serie || {}), calendario: calArr, maduros, promesaDH: promesaDH, deptoInfo, depoInfo, serieMeses, desgloses: { cumplPorTienda, stockTiendas, histEntrega, histPend: histPendGlob, histDesp: histDespGlob, histByReg } },
           calendario: calArr,
           actualizado: new Date().toISOString()
         };
@@ -899,6 +920,15 @@ function Operativa({ yo, activo, syncTick }) {
   // Distribución acumulada del tiempo de entrega (para el panel "¿listos para bajar la promesa?"), en vivo con promesaDH.
   const distTramos = Array.from(new Set([2, 3, 5, 7, promesaDH])).filter(d => d >= 1).sort((a, b) => a - b);
   const distEnt = { n: histEntV ? histTotal(histEntV) : 0, tramos: distTramos.map(d => ({ d, pct: histEntV ? histPctWithin(histEntV, d) : null })) };
+  // ── Evolución MENSUAL (histórico acumulado en el snapshot): volumen + cumplimiento por mes, respetando
+  // la región elegida. El cumplimiento se recalcula con la promesa actual (promesaDH). Solo lectura.
+  const serieMesesSnap = (operSnap && operSnap.serie && operSnap.serie.serieMeses) || null;
+  const evolMeses = serieMesesSnap ? Object.keys(serieMesesSnap).sort().map(m => {
+    const b = serieMesesSnap[m] && serieMesesSnap[m][regionVista];
+    if (!b) return { mes: m, total: 0, entregados: 0, pct: null };
+    const c = cumplHist(b.histEnt, b.histPend, promesaDH);
+    return { mes: m, total: b.total || 0, entregados: b.entregados || 0, pct: c.pct };
+  }) : [];
   const cumplShown = serieSnap ? serieSnap.cumpl : cumplCur;
   const despShown = serieSnap ? serieSnap.despachoP90 : despCur;
   const entShown = serieSnap ? serieSnap.entregaP90 : entCur;
@@ -1143,7 +1173,7 @@ function Operativa({ yo, activo, syncTick }) {
   }, t === "todas" ? "Todas" : t)));
   // El Listado de pedidos vive DENTRO de "Resumen" (ver cuántos atrasados y CUÁLES en la misma vista).
   // El Calendario NO va en el menú: se muestra siempre arriba, unificando las 3 tiendas.
-  const SUBS = [{ id: "resumen", l: "Resumen · KPIs" }, { id: "tiempos", l: "Tiempos y despacho" }, { id: "cargar", l: "Cargar archivos" }];
+  const SUBS = [{ id: "resumen", l: "Resumen · KPIs" }, { id: "tiempos", l: "Tiempos y despacho" }, { id: "evolucion", l: "Evolución mensual" }, { id: "cargar", l: "Cargar archivos" }];
   const sidebar = ceEl(SubMenuNav, { items: SUBS.map(s => ({ id: s.id, label: s.l })), active: subOper, onSelect: setSubOper });
   // ── Panel SIEMPRE visible: promesa de entrega editable + tiempos por tienda (fusión de ambos paneles) ──
   // Mide COMPRA → ENTREGA al cliente en días hábiles. La promesa se cambia con − / + y todo se recalcula
@@ -1217,6 +1247,31 @@ function Operativa({ yo, activo, syncTick }) {
       ceEl("p", { className: "text-[10px] mt-1", style: { color: C.gray } }, "Entrega/Despacho típico = la mitad de los pedidos llega antes de ese plazo (mediana). El DESPACHO excluye los Click & Collect (los prepara y entrega la sucursal, no es logística nuestra). Cumple = de los pedidos ya juzgables, el % entregado o listo para retirar dentro de la promesa; los recién comprados que aún están en plazo no cuentan y un cumplimiento tarde cuenta como incumplido.")) )
     : null;
   // ── Calendario UNIFICADO (las 3 tiendas) — se muestra siempre, arriba de todo ──
+  // ── Panel de EVOLUCIÓN mensual (histórico acumulado) ──
+  const evolPanel = ceEl("div", { className: "bg-white rounded-2xl border p-4 space-y-3", style: { borderColor: C.line } },
+    ceEl("div", { className: "flex items-center justify-between flex-wrap gap-2" },
+      ceEl("div", null,
+        ceEl("span", { className: "text-sm font-black fraunces", style: { color: C.ink } }, "Evolución mensual"),
+        ceEl("span", { className: "text-[11px] ml-2", style: { color: C.gray } }, "Cumplimiento (≤" + promesaDH + " días háb.) y volumen, mes a mes" + (porRegion ? " · " + (regionVista === "montevideo" ? "Montevideo" : "Interior") : ""))),
+      hayRegion && regionToggle),
+    evolMeses.length === 0
+      ? ceEl("div", { className: "text-[11px] rounded-lg px-3 py-2", style: { background: "#F6F8FB", color: C.gray } }, "Todavía no hay histórico. Cargá los meses (incluidos los anteriores) en “Cargar archivos” y cruzá: cada mes queda guardado y se acumula. No hace falta volver a subir los meses viejos.")
+      : ceEl("div", { className: "overflow-auto" }, ceEl("table", { className: "w-full", style: { fontSize: 12 } },
+          ceEl("thead", null, ceEl("tr", null, ["Mes", "Pedidos", "Δ vol.", "Cumplimiento", "Δ cumpl."].map(h => ceEl("th", { key: h, className: "px-3 py-2 text-left font-bold uppercase", style: { color: C.gray, fontSize: 10, whiteSpace: "nowrap" } }, h)))),
+          ceEl("tbody", null, evolMeses.map((mrow, i) => {
+            const prev = i > 0 ? evolMeses[i - 1] : null;
+            const dVol = prev ? mrow.total - prev.total : null;
+            const dPct = prev && prev.pct != null && mrow.pct != null ? mrow.pct - prev.pct : null;
+            const colDelta = v => v == null ? C.gray : v > 0 ? C.green : v < 0 ? C.red : C.gray;
+            const pctCol = mrow.pct == null ? C.gray : mrow.pct >= 90 ? C.green : mrow.pct >= 70 ? C.amber : C.red;
+            return ceEl("tr", { key: mrow.mes, style: { borderTop: "1px solid " + C.line } },
+              ceEl("td", { className: "px-3 py-1.5 font-semibold" }, fmtMesYM(mrow.mes)),
+              ceEl("td", { className: "px-3 py-1.5 tabular-nums" }, (mrow.total || 0).toLocaleString("es-UY")),
+              ceEl("td", { className: "px-3 py-1.5 tabular-nums font-bold", style: { color: colDelta(dVol) } }, dVol == null ? "—" : (dVol > 0 ? "▲ +" : dVol < 0 ? "▼ " : "= ") + dVol),
+              ceEl("td", { className: "px-3 py-1.5 font-black tabular-nums", style: { color: pctCol } }, mrow.pct == null ? "—" : mrow.pct + "%"),
+              ceEl("td", { className: "px-3 py-1.5 tabular-nums font-bold", style: { color: colDelta(dPct) } }, dPct == null ? "—" : (dPct > 0 ? "▲ +" : dPct < 0 ? "▼ " : "= ") + dPct + " pts"));
+          })))),
+    ceEl("p", { className: "text-[10px]", style: { color: C.gray } }, "Se acumula solo: cargá los meses anteriores una vez y quedan guardados para el equipo. Δ = variación vs el mes anterior de la lista. El cumplimiento se recalcula con la promesa actual (≤" + promesaDH + " días háb.)."));
   const calendarEl = calData.length > 0 ? ceEl("div", { className: "bg-white rounded-2xl border p-3", style: { borderColor: C.line } },
     ceEl("div", { className: "flex items-center justify-between flex-wrap gap-2 mb-2" },
       ceEl("div", null,
@@ -1454,6 +1509,7 @@ function Operativa({ yo, activo, syncTick }) {
     /*#__PURE__*/React.createElement(MetricCard, { label: "Sin WMS", value: operSnap ? (operSnap.sin_wms || 0) : sinWMS.length, color: (operSnap ? operSnap.sin_wms : sinWMS.length) ? C.amber : C.gray, tab: sinWMS.length ? "sinwms" : null })),
   subOper === "resumen" && kpiPanel && DesglosePanel({ tipo: kpiPanel })),
   subOper === "tiempos" && /*#__PURE__*/React.createElement(React.Fragment, null, distPanel, /*#__PURE__*/React.createElement("div", { className: "text-[11px]", style: { color: C.gray } }, "Abajo: tiempo de despacho de STOCK desde cada tienda al depósito central (confirmado → procesado)."), DesglosePanel({ tipo: "stock" })),
+  subOper === "evolucion" && evolPanel,
   leadtimeEntProm == null && entregaDiag && /*#__PURE__*/React.createElement("div", { className: "rounded-xl px-4 py-3 text-xs", style: { background: C.amberS, color: C.amber } },
     /*#__PURE__*/React.createElement("b", null, "Tiempo de entrega sin datos. "),
     entregaDiag.col ? ("Detecté la columna “" + entregaDiag.col + "” pero ningún pedido tiene una fecha de entrega válida (" + entregaDiag.conEntrega + " de " + entregaDiag.total + "). ") : "No encontré una columna de fecha de entrega en tu Fenicio. ",
