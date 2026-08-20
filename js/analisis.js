@@ -15,7 +15,8 @@ function ResultadoCruce({
     factDuplicadas,
     pedDuplicados,
     porTienda,
-    tieneCuponInfo
+    tieneCuponInfo,
+    fenCols
   } = pendientes;
   const sumImporte = arr => arr.reduce((a, r) => a + (r.importe || 0), 0);
   const exportarXLSX = (rows, nombre) => {
@@ -357,9 +358,9 @@ function ResultadoCruce({
   }, "Siguiente ›"))), arr.length === 0 && /*#__PURE__*/React.createElement("div", {
     className: "px-4 py-6 text-sm text-center",
     style: {
-      color: tabAct === "pcnManual" ? C.gray : C.green
+      color: tabAct === "pcnManual" || tabAct === "pagoDespues" ? C.gray : C.green
     }
-  }, filtroTienda ? "Sin pedidos de " + filtroTienda + " en esta categoría." : tabAct === "pcnManual" ? "Los pedidos PCN (prendas personalizadas) se detectan desde el Monitor WMS (columna \"Articulo\", prefijo PCN). Si esto está vacío, cargá el Monitor Ecommerce o no hay PCN sin facturar." : "✓ Sin casos en esta categoría.")));
+  }, filtroTienda ? "Sin pedidos de " + filtroTienda + " en esta categoría." : tabAct === "pcnManual" ? "Los pedidos PCN (prendas personalizadas) se detectan desde el Monitor WMS (columna \"Articulo\", prefijo PCN). Si esto está vacío, cargá el Monitor Ecommerce o no hay PCN sin facturar." : tabAct === "pagoDespues" ? "No encontré el método de pago \"Pago Después\" en tu reporte de Fenicio, así que no puedo separarlos. Para detectarlos, el export tiene que traer una columna con el medio de pago (buscamos el texto \"Pago Después\" en cualquier columna). Columnas de tu reporte actual: " + ((fenCols || []).join(" · ") || "—") + ". Agregá el medio de pago al export (o decime en qué columna/valor figura) y los separo." : "✓ Sin casos en esta categoría.")));
 }
 
 /* ── MesesAnio: componente separado para poder usar useState ── */
@@ -1304,7 +1305,7 @@ function Metas({
     porTienda.forEach(pt => { const o = pendXTienda[pt.tienda] || { count: 0, monto: 0 }; pt.pendCount = o.count; pt.pendMonto = o.monto; });
 
     const totalPedidos = Object.keys(fenPed).length + Object.keys(pcnXVenta).filter(v => !fenPed[v]).length;
-    const pend = { grupos, factDuplicadas, pedDuplicados, totalPedidos, porTienda, tieneCuponInfo };
+    const pend = { grupos, factDuplicadas, pedDuplicados, totalPedidos, porTienda, tieneCuponInfo, fenCols: Object.keys(sF) };
     setPendientes(pend);
     guardarSnapshot({ pendientes: pend });
     if (esAdmin) {
