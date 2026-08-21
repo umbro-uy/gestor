@@ -806,7 +806,9 @@ function Operativa({ yo, activo, syncTick }) {
   // no a la mezcla de todo lo cargado. Si hay un solo mes, el filtro es transparente.
   const mesDeR = r => { const d = parseFecha(r.fecha); return d ? d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") : null; };
   const serieMesesSnapEarly = (operSnap && operSnap.serie && operSnap.serie.serieMeses) || null;
-  const mesesDispPromesa = resultado ? Array.from(new Set(resultado.map(mesDeR).filter(Boolean))).sort() : (serieMesesSnapEarly ? Object.keys(serieMesesSnapEarly).sort() : []);
+  // Meses disponibles = los del cruce actual UNIÓN los del histórico guardado (serieMeses). Así se pueden
+  // elegir meses que no están en el último cruce: la promesa de esos meses sale del histórico.
+  const mesesDispPromesa = Array.from(new Set([...(resultado ? resultado.map(mesDeR).filter(Boolean) : []), ...(serieMesesSnapEarly ? Object.keys(serieMesesSnapEarly) : [])])).sort();
   const mesVistaEff = (mesVista && mesesDispPromesa.includes(mesVista)) ? mesVista : (mesesDispPromesa.length ? mesesDispPromesa[mesesDispPromesa.length - 1] : "");
   const resVista = !resultado ? null : resultado.filter(r => (!porTiendaVista || (r.tienda || "") === tiendaVista) && (!mesVistaEff || mesDeR(r) === mesVistaEff));
   const atrasados = resVista ? resVista.filter(r => r.atrasado && !esCancEf(r)) : [];
@@ -915,7 +917,9 @@ function Operativa({ yo, activo, syncTick }) {
   const porRegion = regionVista !== "todas";
   // Vista acotada también por región (para el panel de promesa). El mes ya viene aplicado en resVista.
   const resVistaScope = porRegion ? (resVista || []).filter(r => r.region === regionVista) : (resVista || []);
-  const histsLive = cruceEnSesion.current ? histsLiveDe(resVistaScope) : null;
+  // En vivo solo si el mes elegido está en el cruce actual; si es un mes histórico (sin filas cargadas),
+  // usamos el snapshot mensual (serieMeses) en vez de un histograma vacío.
+  const histsLive = cruceEnSesion.current && resVistaScope.length ? histsLiveDe(resVistaScope) : null;
   // Base del snapshot: si hay histórico mensual, del mes elegido; si no, el desglose global del último cruce.
   const mesSnap = serieMesesSnapEarly && mesVistaEff ? serieMesesSnapEarly[mesVistaEff] : null;
   const mesSnapReg = mesSnap ? mesSnap[regionVista] : null;
