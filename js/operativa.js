@@ -83,6 +83,9 @@ function Operativa({ yo, activo, syncTick }) {
   // Región del destino: la promesa de entrega no es igual en todo el país. Montevideo (área metropolitana)
   // podría bajar a 1 día hábil; el interior no. Se clasifica por el departamento del pedido.
   const [regionVista, setRegionVista] = useState("todas"); // todas | montevideo | interior
+  // Mes al que se acota el panel de promesa/tiempos (cuando se cargan varios meses juntos). "" = automático
+  // (el mes más reciente con datos). Así la "foto" es de un mes real y no una mezcla de todo lo cargado.
+  const [mesVista, setMesVista] = useState("");
   const [subOper, setSubOper] = useState("resumen"); // resumen (incluye listado) | tiempos | cargar · calendario va siempre arriba
   const [filtroDia, setFiltroDia] = useState(""); // día (YYYY-MM-DD) elegido en el calendario para filtrar la tabla
   const POR_HOJA = 50;
@@ -903,11 +906,20 @@ function Operativa({ yo, activo, syncTick }) {
   // Con ellos recalculamos en pantalla el cumplimiento para la promesa elegida (promesaDH), sin re-cruzar.
   // También respetan la REGIÓN elegida (Montevideo / Interior), porque la promesa no es igual en todo el país.
   const porRegion = regionVista !== "todas";
-  const resVistaReg = porRegion ? (resVista || []).filter(r => r.region === regionVista) : resVista;
-  const histsLive = cruceEnSesion.current ? histsLiveDe(resVistaReg) : null;
-  // Base del snapshot (tienda elegida o global) y, si hay corte por región, su sub-histograma de esa región.
-  const snapBase = porTiendaVista ? ctv : (desgSnap ? { histEnt: desgSnap.histEntrega, histPend: desgSnap.histPend, histDesp: desgSnap.histDesp, reg: desgSnap.histByReg } : null);
-  const snapReg = snapBase ? (porRegion ? (snapBase.reg && snapBase.reg[regionVista]) || null : snapBase) : null;
+  const serieMesesSnapEarly = (operSnap && operSnap.serie && operSnap.serie.serieMeses) || null;
+  // Mes al que se acota la foto de promesa/tiempos. Meses disponibles en lo cargado; por defecto, el más reciente.
+  const mesDeR = r => { const d = parseFecha(r.fecha); return d ? d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") : null; };
+  const mesesDispPromesa = resVista ? Array.from(new Set(resVista.map(mesDeR).filter(Boolean))).sort() : (serieMesesSnapEarly ? Object.keys(serieMesesSnapEarly).sort() : []);
+  const mesVistaEff = (mesVista && mesesDispPromesa.includes(mesVista)) ? mesVista : (mesesDispPromesa.length ? mesesDispPromesa[mesesDispPromesa.length - 1] : "");
+  // Vista acotada por región Y por mes (para que la foto sea de un mes real y no la mezcla de todo lo cargado).
+  const resVistaScope = (resVista || []).filter(r => (!porRegion || r.region === regionVista) && (!mesVistaEff || mesDeR(r) === mesVistaEff));
+  const histsLive = cruceEnSesion.current ? histsLiveDe(resVistaScope) : null;
+  // Base del snapshot: si hay histórico mensual, del mes elegido; si no, el desglose global del último cruce.
+  const mesSnap = serieMesesSnapEarly && mesVistaEff ? serieMesesSnapEarly[mesVistaEff] : null;
+  const mesSnapReg = mesSnap ? mesSnap[regionVista] : null;
+  const snapBase = mesSnapReg ? { histEnt: mesSnapReg.histEnt, histPend: mesSnapReg.histPend, histDesp: null }
+    : (porTiendaVista ? ctv : (desgSnap ? { histEnt: desgSnap.histEntrega, histPend: desgSnap.histPend, histDesp: desgSnap.histDesp, reg: desgSnap.histByReg } : null));
+  const snapReg = mesSnapReg ? snapBase : (snapBase ? (porRegion ? (snapBase.reg && snapBase.reg[regionVista]) || null : snapBase) : null);
   const histEntV = histsLive ? histsLive.histEnt : (snapReg && snapReg.histEnt) || null;
   const histPendV = histsLive ? histsLive.histPend : (snapReg && snapReg.histPend) || null;
   const histDespV = histsLive ? histsLive.histDesp : (snapReg && snapReg.histDesp) || null;
@@ -922,7 +934,7 @@ function Operativa({ yo, activo, syncTick }) {
   const distEnt = { n: histEntV ? histTotal(histEntV) : 0, tramos: distTramos.map(d => ({ d, pct: histEntV ? histPctWithin(histEntV, d) : null })) };
   // ── Evolución MENSUAL (histórico acumulado en el snapshot): volumen + cumplimiento por mes, respetando
   // la región elegida. El cumplimiento se recalcula con la promesa actual (promesaDH). Solo lectura.
-  const serieMesesSnap = (operSnap && operSnap.serie && operSnap.serie.serieMeses) || null;
+  const serieMesesSnap = serieMesesSnapEarly;
   const evolMeses = serieMesesSnap ? Object.keys(serieMesesSnap).sort().map(m => {
     const b = serieMesesSnap[m] && serieMesesSnap[m][regionVista];
     if (!b) return { mes: m, total: 0, entregados: 0, pct: null };
@@ -1181,7 +1193,7 @@ function Operativa({ yo, activo, syncTick }) {
   const fmtDH = v => v == null ? "—" : ((v > HCAP_V ? HCAP_V + "+" : v) + " d");
   const fmtDias = v => v == null ? "—" : ((v > HCAP_V ? HCAP_V + "+" : v) + " días");
   const tiemposPorTienda = ((cruceEnSesion.current && resultado)
-    ? (() => { const byT = {}; (resultado || []).forEach(r => { if (r.cancelado) return; if (porRegion && r.region !== regionVista) return; const t = r.tienda || "-"; (byT[t] || (byT[t] = [])).push(r); }); return Object.keys(byT).map(t => Object.assign({ tienda: t, total: byT[t].length }, histsLiveDe(byT[t]))); })()
+    ? (() => { const byT = {}; (resultado || []).forEach(r => { if (r.cancelado) return; if (porRegion && r.region !== regionVista) return; if (mesVistaEff && mesDeR(r) !== mesVistaEff) return; const t = r.tienda || "-"; (byT[t] || (byT[t] = [])).push(r); }); return Object.keys(byT).map(t => Object.assign({ tienda: t, total: byT[t].length }, histsLiveDe(byT[t]))); })()
     : (desgSnap && desgSnap.cumplPorTienda ? desgSnap.cumplPorTienda : []).map(t => { const src = porRegion ? (t.reg && t.reg[regionVista]) : t; return { tienda: t.tienda, total: porRegion ? (src ? histTotal(src.histEnt) + histTotal(src.histPend) : 0) : t.total, histEnt: src && src.histEnt, histPend: src && src.histPend, histDesp: src && src.histDesp }; }))
     .filter(t => t.histEnt && (histTotal(t.histEnt) || histTotal(t.histPend) || histTotal(t.histDesp)));
   const conHist = tiemposPorTienda.length > 0;
@@ -1207,12 +1219,16 @@ function Operativa({ yo, activo, syncTick }) {
       className: "px-3 py-1.5 rounded-lg text-xs font-bold transition-colors",
       style: { background: regionVista === id ? C.blue : "#EEF1F5", color: regionVista === id ? "#fff" : C.ink }
     }, l)));
+  // Selector de MES (solo si hay más de un mes cargado): acota la foto a un mes real, no a la mezcla de todo.
+  const mesSelectorPromesa = mesesDispPromesa.length > 1 ? ceEl("div", { className: "flex items-center gap-1" },
+    ceEl("span", { className: "text-[11px] font-bold uppercase mr-1", style: { color: C.gray } }, "Mes"),
+    ceEl("select", { value: mesVistaEff, onChange: e => setMesVista(e.target.value), className: "px-2 py-1.5 rounded-lg border text-xs font-bold bg-white", style: { borderColor: C.line, color: C.ink } }, mesesDispPromesa.map(m => ceEl("option", { key: m, value: m }, fmtMesYM(m))))) : null;
   const distPanel = (distEnt.n > 0 || conHist || (hayRegion && porRegion)) ? ceEl("div", { className: "bg-white rounded-2xl border p-4 space-y-4", style: { borderColor: C.line } },
     ceEl("div", { className: "flex items-center justify-between flex-wrap gap-2" },
       ceEl("div", null,
         ceEl("span", { className: "text-sm font-black fraunces", style: { color: C.ink } }, "Promesa de entrega y tiempos"),
-        ceEl("span", { className: "text-[11px] ml-2", style: { color: C.gray } }, (porTiendaVista ? tiendaVista + " · " : "") + (porRegion ? (regionVista === "montevideo" ? "Montevideo · " : "Interior · ") : "") + distEnt.n + " cumplidos con fecha")),
-      ceEl("div", { className: "flex items-center gap-3 flex-wrap" }, hayRegion && regionToggle, promesaStep)),
+        ceEl("span", { className: "text-[11px] ml-2", style: { color: C.gray } }, (mesVistaEff ? fmtMesYM(mesVistaEff) + " · " : "") + (porTiendaVista ? tiendaVista + " · " : "") + (porRegion ? (regionVista === "montevideo" ? "Montevideo · " : "Interior · ") : "") + distEnt.n + " cumplidos con fecha")),
+      ceEl("div", { className: "flex items-center gap-3 flex-wrap" }, mesSelectorPromesa, hayRegion && regionToggle, promesaStep)),
     porRegion && distEnt.n === 0 && ceEl("div", { className: "text-[11px] rounded-lg px-3 py-2", style: { background: C.amberS, color: C.amber } },
       deptoDiagEff && !deptoDiagEff.col
         ? ceEl("span", null, "No encontré una columna de Departamento en tu Fenicio, así que no puedo separar Montevideo/Interior. Columnas de tu Fenicio: ", ceEl("b", null, (deptoDiagEff.cols || []).join(" · ")), ". Decime cuál trae el departamento del pedido y la conecto.")
