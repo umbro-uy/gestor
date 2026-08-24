@@ -1176,7 +1176,7 @@ function Metas({
         }
         const art = String(r[colArt] || "").trim();
         if (k && art.toUpperCase().startsWith("PCN")) {
-          if (!pcnXVenta[k]) pcnXVenta[k] = { arts: [], estadoEnc: String(r[colEstEnc]||""), estadoEco: String(r[colEstEco]||""), importe: Number(r[colImpW]||0), deposito: String(r[colDep]||""), fecha: String(r[colFechW]||"").slice(0,10) };
+          if (!pcnXVenta[k]) pcnXVenta[k] = { arts: [], estadoEnc: String(r[colEstEnc]||""), estadoEco: String(r[colEstEco]||""), importe: num(r[colImpW]), deposito: String(r[colDep]||""), fecha: String(r[colFechW]||"").slice(0,10) };
           if (!pcnXVenta[k].arts.includes(art)) pcnXVenta[k].arts.push(art);
         }
       });
@@ -1187,7 +1187,7 @@ function Metas({
     rowsFen.forEach(r => {
       const nro = String(r[colNro] || "").trim();
       if (!nro) return;
-      if (!fenPed[nro]) fenPed[nro] = { nro, fecha: String(r[colFechF]||"").slice(0,10), estadoFen: String(r[colEstF]||""), estadoPago: String(r[colEstPago]||""), estadoPago2: colEstPago2 ? String(r[colEstPago2]||"") : "", importe: Number(r[colImp]||0), tienda: r._tiendaFen || "", cupon: colCupon ? String(r[colCupon]||"").trim() : "", montoCupon: colMontoCup ? num(r[colMontoCup]) : 0, conCupon: hayCupon(r), pagoDespues: esPagoDespues(r), personalizada: colPers ? /^s[ií]$/i.test(String(r[colPers]||"").trim()) : false, lineas: 0, pcn: false, skusPcn: [] };
+      if (!fenPed[nro]) fenPed[nro] = { nro, fecha: String(r[colFechF]||"").slice(0,10), estadoFen: String(r[colEstF]||""), estadoPago: String(r[colEstPago]||""), estadoPago2: colEstPago2 ? String(r[colEstPago2]||"") : "", importe: num(r[colImp]), tienda: r._tiendaFen || "", cupon: colCupon ? String(r[colCupon]||"").trim() : "", montoCupon: colMontoCup ? num(r[colMontoCup]) : 0, conCupon: hayCupon(r), pagoDespues: esPagoDespues(r), personalizada: colPers ? /^s[ií]$/i.test(String(r[colPers]||"").trim()) : false, lineas: 0, pcn: false, skusPcn: [] };
       fenPed[nro].lineas++;
     });
     // Marcar como PCN los pedidos de Fenicio que el WMS identifica con artículo personalizado
