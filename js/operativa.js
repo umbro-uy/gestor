@@ -932,7 +932,11 @@ function Operativa({ yo, activo, syncTick }) {
   const nCriticos = usarSnap ? (operSnap.criticos || 0) : criticos.length;
   const nNoDespacho = usarSnap ? (operSnap.no_despacho || 0) : noDespacho.length;
   const nEstancados = usarSnap ? (operSnap.estancados || 0) : estancados.length;
-  const nDepo0 = usarSnap ? (operSnap.depo0 || 0) : sinStockArr.length;
+  // Depo 0 SIEMPRE se cuenta en vivo (no del snapshot): así la tarjeta coincide exactamente con el
+  // listado clickeable. A diferencia de atrasados/críticos, "sin stock" no depende de los días
+  // transcurridos (es depósito 0 + estado), así que re-derivarlo no lo infla; y el snapshot es un
+  // escalar del ÚLTIMO cruce, mientras el seguimiento acumula depo 0 de varios cruces → daban distinto.
+  const nDepo0 = sinStockArr.length;
   const entregadosArr = resultado ? resultado.filter(r => r.entregado) : [];
   const tasaCumpl = resultado && resultado.length ? Math.round(entregadosArr.length / resultado.length * 100) : 0;
   // KPIs operativos por PERCENTIL (no promedio): el P90 refleja la experiencia de la gran mayoría
@@ -1193,42 +1197,9 @@ function Operativa({ yo, activo, syncTick }) {
       ["Origen", "Artículos", "Demorados (+2 días háb.)", "Procesado en", "Despachado en", "Sin procesar (vencidos ⚠)"], filas);
   };
   // Mini gráfico de evolución mensual para un KPI (barras por mes; resalta el último mes con dato)
-  // Barra de progreso del CUMPLIMIENTO del mes corriente, con la meta 90–95% marcada.
-  const ProgresoMes = () => {
-    const ce = React.createElement;
-    const META_MIN = 90, META_MAX = 95;
-    // El % PROTAGONISTA es el EXIGIBLE: pedidos del mes con la promesa (PROMESA_DH días hábiles) ya vencida.
-    // El % bruto del mes mezcla compras recientes que aún están en plazo (no son incumplimiento) y
-    // contra una meta de 90–95% siempre se vería artificialmente bajo.
-    // Recalculamos el % del mes con la promesa elegida (promesaDH) a partir de los histogramas guardados.
-    const exigRe = madurosSnap && madurosSnap.histEnt ? cumplHist(madurosSnap.histEnt, madurosSnap.histPend, promesaDH) : null;
-    const exig = madurosSnap;
-    const pctHead = exigRe && exigRe.pct != null ? exigRe.pct : (exig ? exig.pct : cumplShown);
-    const exigEnPlazo = exigRe ? exigRe.enPlazo : (exig ? exig.entregados : null);
-    const exigTotal = exigRe ? exigRe.evalN : (exig ? exig.total : null);
-    const col = pctHead == null ? C.gray : pctHead >= META_MIN ? C.green : pctHead >= 70 ? C.amber : C.red;
-    const pctFill = Math.max(0, Math.min(100, pctHead || 0));
-    return ce("div", { className: "bg-white rounded-2xl border p-4", style: { borderColor: C.line } },
-      ce("div", { className: "flex items-baseline justify-between mb-2 flex-wrap gap-1" },
-        ce("span", { className: "text-[11px] font-bold uppercase tracking-wide", style: { color: C.gray } },
-          "Cumplimiento de ", ce("span", { style: { color: C.ink } }, fmtMesLargo(mesShownKey)),
-          exig ? " — entregados dentro de la promesa (≤" + promesaDH + " días háb.)" : ""),
-        ce("span", { className: "text-3xl font-black fraunces tabular-nums", style: { color: col } }, pctHead != null ? pctHead + "%" : "—")),
-      ce("div", { style: { position: "relative", height: 18, borderRadius: 9, background: "#EEF1F5", overflow: "hidden" } },
-        ce("div", { title: "Meta 90–95%", style: { position: "absolute", left: META_MIN + "%", width: (META_MAX - META_MIN) + "%", top: 0, bottom: 0, background: "rgba(14,138,95,0.22)" } }),
-        ce("div", { style: { position: "absolute", left: 0, top: 0, bottom: 0, width: pctFill + "%", background: col, borderRadius: 9, transition: "width .3s" } })),
-      ce("div", { style: { position: "relative", height: 13, marginTop: 2 } },
-        ce("span", { style: { position: "absolute", left: META_MIN + "%", transform: "translateX(-50%)", fontSize: 9, color: C.gray } }, "90%"),
-        ce("span", { style: { position: "absolute", left: META_MAX + "%", transform: "translateX(-50%)", fontSize: 9, color: C.gray } }, "95%")),
-      ce("div", { className: "text-[11px] mt-1", style: { color: C.gray } },
-        exig
-          ? exigEnPlazo + " de " + exigTotal + " cumplieron la promesa (entregado en ≤" + promesaDH + " días háb.; el entregado tarde cuenta como incumplido) · meta 90–95%"
-          : cumplShown != null
-            ? entregMesShown + " de " + totalMesShown + " entregados · meta 90–95%"
-            : "Cargá archivos para ver el cumplimiento del mes · meta 90–95%"),
-      !exig && cumplShown != null && ce("div", { className: "text-[11px] mt-0.5 font-semibold", style: { color: C.amber } },
-        "⚠ Este % mezcla compras recientes aún en plazo. Volvé a cruzar los archivos con la app actualizada para ver el % exigible (promesa de " + promesaDH + " dh vencida)."));
-  };
+  // (El panel "Cumplimiento del mes" se quitó de Resumen · KPIs: confundía porque no se puede filtrar
+  //  y no coincidía con el cumplimiento de "Tiempos y despacho" —que sí se filtra por mes/región—.
+  //  La medición de la promesa vive ahí, en distPanel.)
   const TabBtn = ({
     id,
     label,
@@ -1635,8 +1606,6 @@ function Operativa({ yo, activo, syncTick }) {
     probableCancel.length > 0 && /*#__PURE__*/React.createElement(AccionCard, { label: "Cancelado (probable)", value: probableCancel.length, color: "#64748B", tab: "probcancel", sub: "Sin Fenicio + WMS procesado — verificar" }),
     enTransitoArr.length > 0 && /*#__PURE__*/React.createElement(AccionCard, { label: "En tránsito", value: enTransitoArr.length, color: "#0EA5E9", tab: "transito", sub: "Despachados, en camino" + (transitoLargoN ? " · " + transitoLargoN + " hace +2 días háb." : "") })),
   usarSnap && atrasados.length !== nAtrasados && /*#__PURE__*/React.createElement("div", { className: "text-[11px] -mt-1", style: { color: C.gray } }, "Cifras del último cruce compartido (coinciden con Resumen). Volvé a subir los archivos y cruzar para actualizar el detalle."),
-  !porTiendaVista && /*#__PURE__*/React.createElement("div", { className: "text-[11px] font-bold uppercase tracking-widest", style: { color: C.blue } }, "Cumplimiento del mes"),
-  !porTiendaVista && /*#__PURE__*/React.createElement(ProgresoMes, null),
   /*#__PURE__*/React.createElement("div", { className: "grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3" },
     /*#__PURE__*/React.createElement(MetricCard, { label: "Total pedidos", value: volTotal, color: C.blue, tab: "todos" }),
     /*#__PURE__*/React.createElement(MetricCard, { label: "Entregados", value: volEntreg, color: C.green }),
