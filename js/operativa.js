@@ -88,6 +88,10 @@ function Operativa({ yo, activo, syncTick }) {
   const [mesVista, setMesVista] = useState("");
   const [subOper, setSubOper] = useState("resumen"); // resumen (incluye listado) | tiempos | cargar · calendario va siempre arriba
   const [filtroDia, setFiltroDia] = useState(""); // día (YYYY-MM-DD) elegido en el calendario para filtrar la tabla
+  // Import de HISTÓRICO logístico desde el "reporte de ventas" completo de Fenicio (para reconstruir la
+  // evolución mensual mes a mes sin depender del demorasweb, que es un reporte de demoras incompleto).
+  const [cargandoHist, setCargandoHist] = useState(false);
+  const [histResumen, setHistResumen] = useState(null); // diagnóstico del último import (meses, región, etc.)
   const POR_HOJA = 50;
   const leerFenicio = tienda => e => {
     const file = e && e.target && e.target.files ? e.target.files[0] : null;
@@ -389,6 +393,94 @@ function Operativa({ yo, activo, syncTick }) {
     setResultado(prev => (prev || []).map(r => r.pedido === pedido ? { ...r, historial: [...(r.historial || []), entry] } : r));
     try { await supa.from("operativa_seguimiento").upsert({ pedido, historial: nuevo, comentario: t, comentario_fecha: entry.f }, { onConflict: "pedido" }); } catch (_) {}
     supresRealtime.current = Date.now();
+  };
+  // ── Importar HISTÓRICO logístico desde el "reporte de ventas" COMPLETO de Fenicio ──────────────
+  // El demorasweb es un reporte de DEMORAS (incompleto); no sirve para reconstruir todos los meses. El
+  // "reporte de ventas" trae TODOS los pedidos con su fecha de compra y de entrega → con él se arma el
+  // histórico mes a mes de verdad (cumplimiento de la promesa + volumen, por región). Se cargan los
+  // meses viejos UNA vez y quedan guardados (se hace upsert por mes en el snapshot); no se toca nada
+  // del cruce actual (accionables/listado) — es sólo info que se SUMA a la evolución mensual.
+  const leerHistorico = e => {
+    const file = e && e.target && e.target.files ? e.target.files[0] : null;
+    if (!file) return;
+    setCargandoHist(true);
+    const reader = new FileReader();
+    reader.onload = async ev => {
+      try {
+        const wb = XLSX.read(ev.target.result, { type: "binary" });
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        // Fenicio a veces exporta el .xls como HTML: limpiamos etiquetas/entidades por las dudas (inocuo en xls real).
+        const clean = v => String(v == null ? "" : v).replace(/<[^>]*>/g, "").replace(/&nbsp;/gi, " ").replace(/&amp;/gi, "&").replace(/&lt;/gi, "<").replace(/&gt;/gi, ">").replace(/&#?\w+;/g, "").trim();
+        const data = XLSX.utils.sheet_to_json(ws, { header: 1, raw: false, defval: "" }).map(r => (r || []).map(clean));
+        let hIdx = -1;
+        for (let i = 0; i < Math.min(10, data.length); i++) {
+          if ((data[i] || []).some(c => String(c || "").toLowerCase().includes("pedido"))) { hIdx = i; break; }
+        }
+        if (hIdx < 0) { alert("⚠ Histórico: el archivo no parece un reporte de ventas de Fenicio (no encuentro la fila de encabezados)."); setCargandoHist(false); return; }
+        const headers = data[hIdx].map(String);
+        const rows = data.slice(hIdx + 1).map(r => { const o = {}; headers.forEach((h, i) => o[h] = r[i] || ""); return o; });
+        const findCol = (keys, patterns) => keys.find(k => patterns.some(p => p.test(k))) || "";
+        const colNro = findCol(headers, [/nro\.?\s*ped/i, /ped.*nro/i, /n[uú]mero.*ped/i, /^pedido$/i]) || headers[0];
+        // Fecha de COMPRA (para agrupar por mes y arrancar los días hábiles). Preferimos "Fecha pago".
+        const colFechPago = findCol(headers, [/fecha.*pago/i, /fecha.*comien/i, /comienzo/i, /fecha.*compra/i]) || findCol(headers, [/^fecha\s*pedido$/i, /^fecha$/i]);
+        const colEstEnt = findCol(headers, [/estado.*entrega/i, /entrega.*estado/i]) || findCol(headers, [/^estado$/i]);
+        const colEstPago = findCol(headers, [/^estado$/i]); // "Cancelada" aparece acá (el estado de entrega no lo dice)
+        const colFechEnt = findCol(headers, [/fecha.*(pedido\s*)?entregad/i, /entregad.*fecha/i, /fecha.*entrega/i]);
+        const colFechListo = findCol(headers, [/fecha.*listo.*retir/i, /listo.*retir.*fecha/i]);
+        const colDepto = findCol(headers, [/departamento.*entrega/i, /departamento.*env[ií]/i]) || findCol(headers, [/departamento/i, /provincia/i, /depto/i, /dpto/i]);
+        const fechaOk = s => { const d = parseFecha(s); return d && d.getFullYear() >= 2015 ? d : null; };
+        const HCAP = 20;
+        const histDe = arr => { const h = new Array(HCAP + 2).fill(0); (arr || []).forEach(d => { h[d < 0 ? 0 : d > HCAP ? HCAP + 1 : d]++; }); return h; };
+        const mesDe = d => d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0");
+        const acum = {}; // { "YYYY-MM": { todas|montevideo|interior: { total, entregados, dhEnt:[], dhPend:[] } } }
+        let nPed = 0, nConMes = 0, nCancel = 0, nRegion = 0;
+        rows.forEach(r => {
+          const pedido = String(r[colNro] || "").trim();
+          if (!/^\d+$/.test(pedido)) return; // sólo filas de pedido reales
+          nPed++;
+          const fCompra = fechaOk(r[colFechPago]);
+          if (!fCompra) return; // sin fecha de compra válida no se puede ubicar en el histórico
+          const estEnt = String(r[colEstEnt] || "");
+          const cancelado = /cancel|anul/i.test(estEnt) || /cancel|anul/i.test(String(r[colEstPago] || ""));
+          if (cancelado) { nCancel++; return; } // los cancelados no son incumplimiento de entrega → afuera
+          nConMes++;
+          const entregado = /entregad/i.test(estEnt);
+          const listoRetiro = /listo.*retir/i.test(estEnt);
+          const cumplido = entregado || listoRetiro;
+          const fCumpl = cumplido ? (fechaOk(r[colFechEnt]) || fechaOk(r[colFechListo])) : null;
+          const region = colDepto ? regionDe(r[colDepto]) : null;
+          if (region) nRegion++;
+          const m = mesDe(fCompra);
+          const mm = acum[m] || (acum[m] = {});
+          const scopes = region ? ["todas", region] : ["todas"];
+          scopes.forEach(sc => {
+            const b = mm[sc] || (mm[sc] = { total: 0, entregados: 0, dhEnt: [], dhPend: [] });
+            b.total++;
+            if (entregado) b.entregados++;
+            if (cumplido && fCumpl) { const dh = diasHabEntre(fCompra, fCumpl); if (dh != null) b.dhEnt.push(dh); }
+            else if (!cumplido) { const dh = diasHab(fCompra); b.dhPend.push(dh != null ? dh : 0); }
+          });
+        });
+        const mesesNuevos = {};
+        Object.keys(acum).forEach(m => { mesesNuevos[m] = {}; Object.keys(acum[m]).forEach(sc => { const b = acum[m][sc]; mesesNuevos[m][sc] = { total: b.total, entregados: b.entregados, histEnt: histDe(b.dhEnt), histPend: histDe(b.dhPend) }; }); });
+        const mesesOrden = Object.keys(mesesNuevos).sort();
+        if (!mesesOrden.length) { alert("⚠ Histórico: no se encontraron pedidos con fecha de compra válida.\n\nColumnas del archivo: " + headers.join(", ")); setCargandoHist(false); return; }
+        // Traemos el snapshot MÁS FRESCO para no pisar lo que haya cargado el equipo; upsert por mes.
+        let os = operSnap;
+        try { const rr = await supa.from("operativa_snapshot").select("*").eq("id", "ultimo").maybeSingle(); if (rr.data) os = rr.data; } catch (_) {}
+        const seriePrev = (os && os.serie) || {};
+        const serieMesesMerged = { ...(seriePrev.serieMeses || {}), ...mesesNuevos }; // upsert por mes: el reporte completo pisa ese mes
+        const snap = { ...(os || {}), id: "ultimo", serie: { ...seriePrev, serieMeses: serieMesesMerged }, actualizado: new Date().toISOString() };
+        setOperSnap(snap); // que la Evolución mensual se refresque al instante con el histórico nuevo
+        let persistOKlocal = true;
+        try { const { error } = await supa.from("operativa_snapshot").upsert(snap, { onConflict: "id" }); if (error) persistOKlocal = false; } catch (_) { persistOKlocal = false; }
+        setHistResumen({ archivo: file.name, meses: mesesOrden, nPed, nConMes, nCancel, conRegion: nRegion > 0, nRegion, colDepto: colDepto || "", colFechEnt: colFechEnt || "", persistOK: persistOKlocal });
+      } catch (err) {
+        alert("Error al leer el histórico: " + err.message);
+      }
+      setCargandoHist(false);
+    };
+    reader.readAsBinaryString(file);
   };
   const cruzar = () => {
     if (!rowsA.length || !rowsB.length) {
@@ -1275,6 +1367,24 @@ function Operativa({ yo, activo, syncTick }) {
     : null;
   // ── Calendario UNIFICADO (las 3 tiendas) — se muestra siempre, arriba de todo ──
   // ── Panel de EVOLUCIÓN mensual (histórico acumulado) ──
+  // Cargador del HISTÓRICO logístico (reporte de ventas completo de Fenicio). Vive en "Cargar archivos"
+  // y sólo SUMA meses a la evolución mensual (no toca el cruce actual). Se cargan los meses viejos una vez.
+  const histLoaderPanel = ceEl("div", { className: "bg-white rounded-2xl border p-4 space-y-3", style: { borderColor: C.line, background: "#FBFAFF" } },
+    ceEl("div", null,
+      ceEl("div", { className: "text-sm font-bold", style: { color: C.ink } }, "Histórico logístico · reporte de ventas completo"),
+      ceEl("div", { className: "text-xs mt-0.5", style: { color: C.gray } }, "Subí el ", ceEl("b", null, "reporte de ventas"), " completo de Fenicio (.xls) — el que trae TODOS los pedidos con fecha de compra y de entrega. Reconstruye la evolución mes a mes (cumplimiento + volumen, por región). Cargá los meses anteriores una sola vez: quedan guardados y se acumulan. No cambia nada del cruce actual.")),
+    ceEl("label", { className: "flex items-center gap-2 p-3 rounded-xl border-2 border-dashed cursor-pointer", style: { borderColor: histResumen ? "#86EFAC" : C.line, background: histResumen ? C.greenS : "transparent" } },
+      ceEl("span", { style: { color: histResumen ? C.green : C.blue, display: "inline-flex" } }, histResumen ? Ic.ok : Ic.upload),
+      ceEl("span", { className: "text-sm font-semibold", style: { color: histResumen ? C.green : C.gray } }, cargandoHist ? "Leyendo el histórico..." : histResumen ? histResumen.archivo : "Subí el reporte de ventas (.xls)"),
+      ceEl("input", { type: "file", accept: ".xlsx,.xls,.csv", className: "hidden", onChange: leerHistorico })),
+    histResumen && ceEl("div", { className: "text-[11px] space-y-1.5 rounded-lg px-3 py-2", style: { background: C.greenS, color: C.ink } },
+      ceEl("div", { className: "font-bold" }, "✓ Histórico actualizado" + (histResumen.persistOK ? "" : " (⚠ no se pudo guardar para el equipo — revisá la conexión)")),
+      ceEl("div", null, histResumen.meses.length + " mes(es): ", histResumen.meses.map(fmtMesYM).join(" · ")),
+      ceEl("div", { style: { color: C.gray } }, histResumen.nConMes.toLocaleString("es-UY") + " pedidos con fecha válida" + (histResumen.nCancel ? " · " + histResumen.nCancel + " cancelados afuera" : "")),
+      histResumen.conRegion
+        ? ceEl("div", { style: { color: C.gray } }, "Región detectada (col. \"" + histResumen.colDepto + "\"): " + histResumen.nRegion.toLocaleString("es-UY") + " pedidos con Montevideo/Interior.")
+        : ceEl("div", { style: { color: C.amber } }, "⚠ Este reporte no trae el departamento de entrega, así que estos meses sólo suman al total (sin corte Montevideo/Interior). Si querés el corte por región, exportá el reporte incluyendo la columna de departamento.")),
+    ceEl("div", { className: "text-[10px]", style: { color: C.gray } }, "Mirá el resultado en la pestaña ", ceEl("b", null, "Evolución mensual"), "."));
   const evolPanel = ceEl("div", { className: "bg-white rounded-2xl border p-4 space-y-3", style: { borderColor: C.line } },
     ceEl("div", { className: "flex items-center justify-between flex-wrap gap-2" },
       ceEl("div", null,
@@ -1282,7 +1392,7 @@ function Operativa({ yo, activo, syncTick }) {
         ceEl("span", { className: "text-[11px] ml-2", style: { color: C.gray } }, "Cumplimiento (≤" + promesaDH + " días háb.) y volumen, mes a mes" + (porRegion ? " · " + (regionVista === "montevideo" ? "Montevideo" : "Interior") : ""))),
       hayRegion && regionToggle),
     evolMeses.length === 0
-      ? ceEl("div", { className: "text-[11px] rounded-lg px-3 py-2", style: { background: "#F6F8FB", color: C.gray } }, "Todavía no hay histórico. Cargá los meses (incluidos los anteriores) en “Cargar archivos” y cruzá: cada mes queda guardado y se acumula. No hace falta volver a subir los meses viejos.")
+      ? ceEl("div", { className: "text-[11px] rounded-lg px-3 py-2", style: { background: "#F6F8FB", color: C.gray } }, "Todavía no hay histórico. En “Cargar archivos” subí el reporte de ventas completo de Fenicio (sección “Histórico logístico”): reconstruye la evolución mes a mes de una. También se va acumulando con cada cruce normal. No hace falta volver a subir los meses viejos.")
       : ceEl("div", { className: "overflow-auto" }, ceEl("table", { className: "w-full", style: { fontSize: 12 } },
           ceEl("thead", null, ceEl("tr", null, ["Mes", "Pedidos", "Δ vol.", "Cumplimiento", "Δ cumpl."].map(h => ceEl("th", { key: h, className: "px-3 py-2 text-left font-bold uppercase", style: { color: C.gray, fontSize: 10, whiteSpace: "nowrap" } }, h)))),
           ceEl("tbody", null, evolMeses.map((mrow, i) => {
@@ -1512,7 +1622,7 @@ function Operativa({ yo, activo, syncTick }) {
     style: {
       background: C.blue
     }
-  }, !rowsA.length || !rowsB.length ? "Carga los dos archivos primero" : "Cruzar archivos")))), resultado && /*#__PURE__*/React.createElement("div", {
+  }, !rowsA.length || !rowsB.length ? "Carga los dos archivos primero" : "Cruzar archivos")), histLoaderPanel)), resultado && /*#__PURE__*/React.createElement("div", {
     className: "space-y-5"
   }, subOper === "resumen" && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", { className: "text-[11px] font-bold uppercase tracking-widest", style: { color: C.blue } }, "Acción rápida" + (porTiendaVista ? " · " + tiendaVista : "")),
   /*#__PURE__*/React.createElement("div", { className: "grid grid-cols-2 lg:grid-cols-5 gap-3" },
