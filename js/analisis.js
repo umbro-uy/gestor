@@ -1387,9 +1387,14 @@ function Metas({
       kpi("Pedidos del mes", pedidosMes != null ? pedidosMes.toLocaleString("es-UY") : "—",
         resumenBAS ? (facturasMes + " facturas únicas") : "Cargá el BAS para ver pedidos",
         C.ink),
-      kpi("Pendientes sin factura", pendTot != null ? pendTot.toLocaleString("es-UY") : "—",
-        pendientes ? (pendUrg > 0 ? pendUrg + " urgentes (despachados sin factura)" : "Sin urgentes ✓") : "Cargá Fenicio para cruzar",
-        pendUrg > 0 ? C.red : (pendientes ? C.green : C.ink))),
+      kpi("Pendientes sin factura", pendUrg != null ? pendUrg.toLocaleString("es-UY") : "—",
+        null,
+        pendUrg > 0 ? C.red : (pendientes ? C.green : C.ink),
+        pendientes
+          ? h("div", { className: "mt-1 space-y-0.5" },
+              h("div", { className: "text-xs font-semibold", style: { color: pendUrg > 0 ? C.red : C.green } }, pendUrg > 0 ? "a facturar ya · entregados o C&C sin factura" : "Nada urgente ✓"),
+              (pendTot - pendUrg) > 0 && h("div", { className: "text-[11px]", style: { color: C.gray } }, "+" + (pendTot - pendUrg).toLocaleString("es-UY") + " en proceso · aún no se facturan"))
+          : h("div", { className: "text-xs mt-1", style: { color: C.gray } }, "Cargá Fenicio para cruzar"))),
     // ── Menú lateral + contenido por subsección ──
     h("div", { className: "flex flex-col lg:flex-row gap-6 lg:gap-8 items-start" }, sidebar, h("div", { className: "flex-1 min-w-0 space-y-4" },
     // ── Metas por tienda ──
