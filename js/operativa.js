@@ -893,16 +893,18 @@ function Operativa({ yo, activo, syncTick }) {
   // Vista filtrada por la tienda elegida arriba. "todas" = todo (coincide con Resumen). Todos los KPIs
   // y listados de abajo se calculan sobre resVista → cada tienda ve sus propios números.
   const porTiendaVista = tiendaVista !== "todas";
-  // MES de la vista: cuando se cargan varios meses juntos (ej. todo el año para el histórico), toda la
-  // Operativa (acciones rápidas, listado, promesa) se acota a UN mes real (por defecto el más reciente),
-  // no a la mezcla de todo lo cargado. Si hay un solo mes, el filtro es transparente.
+  // MES de la vista: SOLO reencuadra la "foto" de la promesa/cumplimiento (Tiempos y despacho), NO las
+  // acciones rápidas ni el listado. Un pedido atrasado es viejo por definición (se compró hace días o
+  // semanas), así que filtrar las acciones por mes escondería justo lo que hay que accionar (ej.: hoy es
+  // septiembre y los atrasados son de agosto → con el filtro por mes no se veían). Las acciones y el
+  // listado muestran SIEMPRE todos los pedidos vivos; el mes sólo cambia la foto de la promesa.
   const mesDeR = r => { const d = parseFecha(r.fecha); return d ? d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") : null; };
   const serieMesesSnapEarly = (operSnap && operSnap.serie && operSnap.serie.serieMeses) || null;
   // Meses disponibles = los del cruce actual UNIÓN los del histórico guardado (serieMeses). Así se pueden
   // elegir meses que no están en el último cruce: la promesa de esos meses sale del histórico.
   const mesesDispPromesa = Array.from(new Set([...(resultado ? resultado.map(mesDeR).filter(Boolean) : []), ...(serieMesesSnapEarly ? Object.keys(serieMesesSnapEarly) : [])])).sort();
   const mesVistaEff = (mesVista && mesesDispPromesa.includes(mesVista)) ? mesVista : (mesesDispPromesa.length ? mesesDispPromesa[mesesDispPromesa.length - 1] : "");
-  const resVista = !resultado ? null : resultado.filter(r => (!porTiendaVista || (r.tienda || "") === tiendaVista) && (!mesVistaEff || mesDeR(r) === mesVistaEff));
+  const resVista = !resultado ? null : resultado.filter(r => (!porTiendaVista || (r.tienda || "") === tiendaVista));
   const atrasados = resVista ? resVista.filter(r => r.atrasado && !esCancEf(r)) : [];
   const criticos = resVista ? resVista.filter(r => r.critico && !esCancEf(r)) : [];
   const inconsistentes = resVista ? resVista.filter(r => r.inconsistente && !esCancEf(r)) : [];
@@ -1011,8 +1013,9 @@ function Operativa({ yo, activo, syncTick }) {
   // Con ellos recalculamos en pantalla el cumplimiento para la promesa elegida (promesaDH), sin re-cruzar.
   // También respetan la REGIÓN elegida (Montevideo / Interior), porque la promesa no es igual en todo el país.
   const porRegion = regionVista !== "todas";
-  // Vista acotada también por región (para el panel de promesa). El mes ya viene aplicado en resVista.
-  const resVistaScope = porRegion ? (resVista || []).filter(r => r.region === regionVista) : (resVista || []);
+  // Vista de la PROMESA/cumplimiento: acá SÍ se aplica el MES elegido (la "foto" del mes) y la región.
+  // (Las acciones rápidas y el listado NO se filtran por mes — ver nota más arriba.)
+  const resVistaScope = (resVista || []).filter(r => (!mesVistaEff || mesDeR(r) === mesVistaEff) && (!porRegion || r.region === regionVista));
   // En vivo solo si el mes elegido está en el cruce actual; si es un mes histórico (sin filas cargadas),
   // usamos el snapshot mensual (serieMeses) en vez de un histograma vacío.
   const histsLive = cruceEnSesion.current && resVistaScope.length ? histsLiveDe(resVistaScope) : null;
@@ -1252,11 +1255,7 @@ function Operativa({ yo, activo, syncTick }) {
       key: t, onClick: () => { setTiendaVista(t); setPage(0); },
       className: "px-4 py-2 rounded-xl text-sm font-black fraunces transition-colors",
       style: { background: tiendaVista === t ? C.blue : "#EEF1F5", color: tiendaVista === t ? "#fff" : C.ink }
-    }, t === "todas" ? "Todas" : t))),
-    // Selector de MES (solo si hay varios meses cargados): acota TODA la operativa al mes elegido.
-    mesesDispPromesa.length > 1 && ceEl("div", { className: "flex items-center gap-2" },
-      ceEl("span", { className: "text-[11px] font-bold uppercase", style: { color: C.gray } }, "Mes"),
-      ceEl("select", { value: mesVistaEff, onChange: e => { setMesVista(e.target.value); setPage(0); }, className: "px-3 py-2 rounded-xl border text-sm font-bold bg-white", style: { borderColor: C.line, color: C.ink } }, mesesDispPromesa.map(m => ceEl("option", { key: m, value: m }, fmtMesYM(m))))));
+    }, t === "todas" ? "Todas" : t))));
   // El Listado de pedidos vive DENTRO de "Resumen" (ver cuántos atrasados y CUÁLES en la misma vista).
   // El Calendario NO va en el menú: se muestra siempre arriba, unificando las 3 tiendas.
   const SUBS = [{ id: "resumen", l: "Resumen · KPIs" }, { id: "tiempos", l: "Tiempos y despacho" }, { id: "evolucion", l: "Evolución mensual" }, { id: "cargar", l: "Cargar archivos" }];
