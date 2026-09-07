@@ -1201,13 +1201,10 @@ function Metas({
       return { tienda: t, vendido: v.vendido, pedidosVend: v.pedidos, canceladoVend: v.cancelado, nCanc: v.canc, facturadoConIVA, facturadoSinIVA, nFac: f.nFac, ncdBA: f.ncdBA, falta };
     });
 
-    const hoy = new Date().toISOString().slice(0, 10);
-    // Criterio de facturación automática: SOLO se espera factura si el pedido ya fue procesado,
-    // es decir si llegó al menos a "Orden liberada" (o estados posteriores: pronto para despacho,
-    // despachado, en tránsito, recibido en tienda, listo para retirar, entregado). Antes de eso
-    // (pedido recibido / preparando / items pedidos / confirmados) el pedido NO se procesó, así que
-    // todavía no se factura y no debe contar como "sin factura".
-    const reLiberado = /clasificad|orden\s*liberad|liberad|pronto.*despach|despachad|tr[aá]nsito|camino|recibid[oa]?\s*(en\s*)?tienda|listo.*retir|entregad/i;
+    // Criterio de facturación automática: la factura se emite al DESPACHAR (ahí el pedido está procesado y
+    // sale). Recién en esos estados del WMS se espera factura: Despachado / En tránsito / Recibido en
+    // tienda / Entregado. Antes (items pedidos/confirmados, clasificados / orden liberada, preparando) el
+    // pedido todavía no se despachó, así que no se factura y no debe contar como "sin factura".
     const reDespEntr = /despachad|tr[aá]nsito|camino|recibid[oa]?\s*(en\s*)?tienda|entregad/i;
     const grupos = { facturado: [], facturaDup: [], pendienteOK: [], pcnManual: [], revisar: [], cancelado: [], canceladoConFactura: [], canceladoCupon: [], ccForzar: [], pagoDespues: [] };
 
@@ -1253,20 +1250,19 @@ function Metas({
         return;
       }
       // Sin factura:
-      // Solo se espera factura si el pedido fue PROCESADO (orden liberada o más). Si no, no se factura
-      // todavía — y esto vale TAMBIÉN para los PCN: un PCN en "Pedido recibido"/"Items pedidos" aún no se
-      // preparó, así que NO va a "facturar/forzar manual", va a "en proceso". (Antes se marcaba el PCN
-      // primero, sin importar el estado, y salían a facturar pedidos recién ingresados.)
-      const liberado = reLiberado.test(estadoFen) || reLiberado.test(estadoWMS);
-      if (!liberado) { grupos.pendienteOK.push({ ...base, razon: "Sin orden liberada — todavía no se procesó (no se factura)" }); return; }
+      // La factura se emite al DESPACHAR (ahí el pedido está procesado y sale). Nos guiamos por el ESTADO
+      // DEL WMS, que es lo que dispara la facturación: mientras el WMS siga en "items pedidos/confirmados",
+      // "clasificados / orden liberada" o "preparando", el pedido TODAVÍA NO se despachó → no se factura
+      // aún (aunque Fenicio muestre otra cosa, p.ej. un "entregado" de Fenicio con el WMS aún en orden
+      // liberada). Recién al despachar (Despachado / En tránsito / Recibido en tienda / Entregado) se espera.
+      const despachadoWMS = reDespEntr.test(estadoWMS);
+      if (!despachadoWMS) { grupos.pendienteOK.push({ ...base, razon: "Todavía no despachado — no se factura aún" }); return; }
       if (esPcn) { grupos.pcnManual.push({ ...base, razon: "Prenda personalizada (PCN) — facturar/forzar manualmente" }); return; }
       // Pago Después: no siempre falta factura (se factura al cobrar) → a revisar caso a caso, no a "Revisar".
       if (pagoDespues) { grupos.pagoDespues.push({ ...base, razon: "Método Pago Después sin factura — revisar caso a caso (suele facturarse al cobrar)" }); return; }
       // Click & Collect: no se autofacturan solos → hay que pedirle al WMS que fuerce la facturación.
       if (clickCollect) { grupos.ccForzar.push({ ...base, razon: "Click & Collect sin factura — pedir al WMS que fuerce la facturación automática" }); return; }
-      if (reDespEntr.test(estadoFen) || reDespEntr.test(estadoWMS)) { grupos.revisar.push({ ...base, razon: "Despachado/entregado SIN factura ⚠️" }); return; }
-      if (fecha >= hoy) { grupos.pendienteOK.push({ ...base, razon: "Orden liberada hoy — a facturar" }); return; }
-      grupos.revisar.push({ ...base, razon: "Orden liberada sin factura — verificar" });
+      grupos.revisar.push({ ...base, razon: "Despachado sin factura — emitir ⚠️" });
     });
 
     // Pedidos PCN presentes en el WMS pero ausentes del reporte de Fenicio
@@ -1282,8 +1278,8 @@ function Metas({
         return;
       }
       if (tieneF) { grupos.facturado.push(base); return; }
-      // Igual que arriba: si el PCN todavía no se procesó en el WMS (orden liberada), no se factura aún.
-      if (!reLiberado.test(estadoWMS)) { grupos.pendienteOK.push({ ...base, razon: "Sin orden liberada — todavía no se procesó (no se factura)" }); return; }
+      // Igual que arriba: si el PCN todavía no se despachó en el WMS, no se factura aún.
+      if (!reDespEntr.test(estadoWMS)) { grupos.pendienteOK.push({ ...base, razon: "Todavía no despachado — no se factura aún" }); return; }
       grupos.pcnManual.push({ ...base, razon: `Prenda personalizada (PCN) sin factura — forzar manualmente${info.arts.length ? " · " + info.arts.length + " art." : ""}` });
     });
 
