@@ -1253,10 +1253,13 @@ function Metas({
         return;
       }
       // Sin factura:
-      if (esPcn) { grupos.pcnManual.push({ ...base, razon: "Prenda personalizada (PCN) — facturar/forzar manualmente" }); return; }
-      // Solo se espera factura si el pedido fue procesado (orden liberada o más). Si no, no se factura todavía.
+      // Solo se espera factura si el pedido fue PROCESADO (orden liberada o más). Si no, no se factura
+      // todavía — y esto vale TAMBIÉN para los PCN: un PCN en "Pedido recibido"/"Items pedidos" aún no se
+      // preparó, así que NO va a "facturar/forzar manual", va a "en proceso". (Antes se marcaba el PCN
+      // primero, sin importar el estado, y salían a facturar pedidos recién ingresados.)
       const liberado = reLiberado.test(estadoFen) || reLiberado.test(estadoWMS);
       if (!liberado) { grupos.pendienteOK.push({ ...base, razon: "Sin orden liberada — todavía no se procesó (no se factura)" }); return; }
+      if (esPcn) { grupos.pcnManual.push({ ...base, razon: "Prenda personalizada (PCN) — facturar/forzar manualmente" }); return; }
       // Pago Después: no siempre falta factura (se factura al cobrar) → a revisar caso a caso, no a "Revisar".
       if (pagoDespues) { grupos.pagoDespues.push({ ...base, razon: "Método Pago Después sin factura — revisar caso a caso (suele facturarse al cobrar)" }); return; }
       // Click & Collect: no se autofacturan solos → hay que pedirle al WMS que fuerce la facturación.
@@ -1279,6 +1282,8 @@ function Metas({
         return;
       }
       if (tieneF) { grupos.facturado.push(base); return; }
+      // Igual que arriba: si el PCN todavía no se procesó en el WMS (orden liberada), no se factura aún.
+      if (!reLiberado.test(estadoWMS)) { grupos.pendienteOK.push({ ...base, razon: "Sin orden liberada — todavía no se procesó (no se factura)" }); return; }
       grupos.pcnManual.push({ ...base, razon: `Prenda personalizada (PCN) sin factura — forzar manualmente${info.arts.length ? " · " + info.arts.length + " art." : ""}` });
     });
 
