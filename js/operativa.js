@@ -180,6 +180,11 @@ function Operativa({ yo, activo, syncTick }) {
     const d = new Date(str);
     return isNaN(d) ? null : d;
   };
+  // Feriados NO laborables (no se despacha): NO cuentan como día hábil, igual que un finde. Se listan por
+  // fecha "YYYY-MM-DD". 25/08/2026 = Declaratoria de la Independencia (feriado, sin despachos). Agregá acá
+  // los que hagan falta y se aplican a todos los cálculos de días hábiles (atrasos, promesa, tiempos).
+  const FERIADOS = new Set(["2026-08-25"]);
+  const esFeriado = d => FERIADOS.has(d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"));
   const diasHab = desde => {
     try {
       const d = parseFecha(desde);
@@ -193,7 +198,7 @@ function Operativa({ yo, activo, syncTick }) {
       while (cur < fin) {
         cur.setDate(cur.getDate() + 1);
         const g = cur.getDay();
-        if (g !== 0 && g !== 6) c++;
+        if (g !== 0 && g !== 6 && !esFeriado(cur)) c++;
       }
       return c;
     } catch {
@@ -212,7 +217,7 @@ function Operativa({ yo, activo, syncTick }) {
       while (cur < fin) {
         cur.setDate(cur.getDate() + 1);
         const g = cur.getDay();
-        if (g !== 0 && g !== 6) c++;
+        if (g !== 0 && g !== 6 && !esFeriado(cur)) c++;
       }
       return c;
     } catch {
@@ -222,13 +227,19 @@ function Operativa({ yo, activo, syncTick }) {
   const ENTREGADOS = ["Pedido entregado", "Pedido entregado  a cliente"];
   // Deriva días hábiles y banderas (atrasado/critico/etc.) a partir del snapshot de un pedido.
   // Se usa tanto al cruzar como al recargar el seguimiento persistido, así el conteo de días se mantiene al día.
-  // Región del destino a partir del departamento (Fenicio). Montevideo = área metropolitana; el resto,
-  // Interior. Sin departamento → null (queda fuera de los cortes por región). Los C&C se cuentan por la
-  // tienda de retiro: si Fenicio no trae departamento del retiro, quedan sin región (solo en "Todas").
-  const regionDe = depto => {
-    const d = String(depto || "").toLowerCase().trim();
+  // Región del destino. Montevideo = área metropolitana; el resto de URUGUAY = Interior; lo que NO es un
+  // departamento uruguayo (o viaja por un courier internacional, FedEx/DHL) = INTERNACIONAL, que se mide
+  // aparte y queda FUERA del cumplimiento de la promesa (los envíos internacionales tienen sus propios
+  // tiempos y hoy dan problemas). Sin departamento → null (solo en "Todas"). Los C&C se cuentan por la
+  // tienda de retiro: si Fenicio no trae departamento del retiro, quedan sin región.
+  const DEPTOS_UY = new Set(["montevideo", "canelones", "maldonado", "rocha", "treinta y tres", "cerro largo", "rivera", "artigas", "salto", "paysandu", "rio negro", "soriano", "colonia", "san jose", "flores", "florida", "durazno", "lavalleja", "tacuarembo"]);
+  const normDepto = s => String(s || "").toLowerCase().trim().replace(/[áàä]/g, "a").replace(/[éèë]/g, "e").replace(/[íìï]/g, "i").replace(/[óòö]/g, "o").replace(/[úùü]/g, "u");
+  const regionDe = (depto, intl) => {
+    if (intl) return "internacional"; // courier internacional (FedEx/DHL) manda, aunque el departamento parezca UY
+    const d = normDepto(depto);
     if (!d) return null;
-    return /montevideo|montevide|\bmvd\b/.test(d) ? "montevideo" : "interior";
+    if (/montevideo|montevide|\bmvd\b/.test(d)) return "montevideo";
+    return DEPTOS_UY.has(d) ? "interior" : "internacional";
   };
   const calcDeriv = row => {
     const estadoFen = row.estadoFen || "-";
@@ -301,7 +312,7 @@ function Operativa({ yo, activo, syncTick }) {
     const tieneFechaEnt = row.fechaEntrega && String(row.fechaEntrega).trim() && row.fechaEntrega !== "-";
     const cumplido = entregado || listoRetiro;
     const fechaCumplido = tieneFechaEnt ? row.fechaEntrega : (listoRetiro && row.fechaListo && String(row.fechaListo).trim() && row.fechaListo !== "-" ? row.fechaListo : "");
-    return { ...row, dias, diasEstado, diasDesp, diasTransito, fenEntregado, wmsEntregado, entregado, cumplido, fechaCumplido, cancelado, cancelDiscrep, despachadoWMS, atrasado, critico, inconsistente, posibleNoDespacho, estancado, enTransito, transitoLargo, listoRetiro, clickCollect, pickup, sinStock, ccDepo9, leadtime, leadtimeEntrega, region: regionDe(row.departamento) };
+    return { ...row, dias, diasEstado, diasDesp, diasTransito, fenEntregado, wmsEntregado, entregado, cumplido, fechaCumplido, cancelado, cancelDiscrep, despachadoWMS, atrasado, critico, inconsistente, posibleNoDespacho, estancado, enTransito, transitoLargo, listoRetiro, clickCollect, pickup, sinStock, ccDepo9, leadtime, leadtimeEntrega, envioIntl: !!row.envioIntl, region: regionDe(row.departamento, row.envioIntl) };
   };
   // Carga el seguimiento ya analizado (con comentarios) al entrar a la pestaña, para que el análisis quede fijo.
   // opts.soloSiMasNuevo: usado cuando YA crucé archivos en esta sesión — solo pisa mi cruce si otro
@@ -517,6 +528,10 @@ function Operativa({ yo, activo, syncTick }) {
     const colFechDesp = findCol(sW, [/^fecha\s*despacho$/i, /^fecha\s*despach/i, /fecha.*despach/i, /despach/i]) || "Fecha despacho";
     // Forma de entrega (Click & Collect / Pickup / Envío a domicilio) y fecha de entrega real (para lead time)
     const colForma = findCol(sW, [/forma.*entr/i, /m[eé]todo.*entr/i, /tipo.*entr/i, /modalidad/i]) || "Forma entrega";
+    // "Destino" del WMS: para los envíos internacionales trae el courier (FedEx / DHL). Sirve para marcar
+    // el pedido como INTERNACIONAL aunque el departamento parezca uruguayo.
+    const colDestinoW = findCol(sW, [/^destino$/i, /destino/i]) || "Destino";
+    const RE_INTL = /fedex|\bdhl\b|d\.h\.l|internacional|\bups\b|correo\s*intern/i;
     const colFechEntrega = findCol(sW, [/fecha.*entrega.*real/i, /fecha.*entrega/i]) || "Fecha entrega real";
     // Fechas de cada estado del WMS. La MÁS RECIENTE = cuándo entró al estado actual → sirve para medir
     // "días hábiles en el estado actual" (el atraso). Se detectan con patrones específicos para no
@@ -578,6 +593,8 @@ function Operativa({ yo, activo, syncTick }) {
       const depo0Any = !!anyDepo0[pedido]; // algún artículo del pedido quedó en Depo 0 (aunque la fila guardada sea de otro depósito)
       const fechaDespacho = wms ? wms[colFechDesp] || "-" : "-";
       const formaEntrega = wms ? String(wms[colForma] || "") : "";
+      // Internacional: el "Destino" del WMS trae el courier (FedEx / DHL) o la forma de entrega lo indica.
+      const envioIntl = wms ? (RE_INTL.test(String(wms[colDestinoW] || "")) || RE_INTL.test(formaEntrega)) : false;
       // Fecha de entrega real desde Fenicio (no del WMS). Vacío si Fenicio no la trae.
       const fechaEntrega = colFechEntFen ? String(r[colFechEntFen] || "") : "";
       const fechaListo = colFechListo ? String(r[colFechListo] || "") : "";
@@ -599,6 +616,7 @@ function Operativa({ yo, activo, syncTick }) {
         fechaListo,
         importe,
         departamento: colDepto ? String(r[colDepto] || "").trim() : "",
+        envioIntl,
         depo0Any,
         pcn: pcnVentas.has(pedido),
         sinWMS: !wms
@@ -713,6 +731,11 @@ function Operativa({ yo, activo, syncTick }) {
         // Los CANCELADOS quedan afuera de todos los cálculos de cumplimiento (serie del mes,
         // calendario, desgloses por tienda): un pedido cancelado no es un incumplimiento de entrega.
         const efectivos = finalRows.filter(r => !esCancEf(r));
+        // Los envíos INTERNACIONALES (FedEx/DHL) quedan FUERA del cumplimiento de la promesa (tienen sus
+        // propios tiempos y hoy dan problemas): se miden aparte. Siguen contando para el volumen y las
+        // acciones operativas; sólo se excluyen de la ecuación de la promesa por región (Mvd/Interior/Todas).
+        const efectivosProm = efectivos.filter(r => r.region !== "internacional");
+        const nIntl = efectivos.filter(r => r.region === "internacional").length;
         const lt = efectivos.filter(r => r.leadtime != null).map(r => r.leadtime);
         const ltE = efectivos.filter(r => r.leadtimeEntrega != null).map(r => r.leadtimeEntrega);
         // Resumen del mes corriente (para la barra de cumplimiento), calculado del cruce COMPLETO
@@ -759,7 +782,7 @@ function Operativa({ yo, activo, syncTick }) {
           if (!r.clickCollect && r.fechaDespacho && r.fechaDespacho !== "-") { const dhD = diasHabEntre(r.fecha, r.fechaDespacho); if (dhD != null) dest.dhDesp.push(dhD); } // C&C: los prepara/retira la sucursal → sin despacho nuestro
         };
         const histTriple = src => ({ histEnt: histDe(src.dhEnt), histPend: histDe(src.dhPend), histDesp: histDe(src.dhDesp) });
-        efectivos.forEach(r => {
+        efectivosProm.forEach(r => {
           const t = r.tienda || "-";
           const b = porTienda[t] || (porTienda[t] = { tienda: t, total: 0, entregadosRaw: 0, evalN: 0, enPlazo: 0, lt: [], ltE: [], dhEnt: [], dhPend: [], dhDesp: [], reg: { montevideo: emptyBk(), interior: emptyBk() } });
           b.total++;
@@ -784,7 +807,7 @@ function Operativa({ yo, activo, syncTick }) {
         const mesDe = r => { const d = parseFecha(r.fecha); return d ? d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") : null; };
         const scopesReg = { todas: () => true, montevideo: r => r.region === "montevideo", interior: r => r.region === "interior" };
         const mesesAcum = {};
-        efectivos.forEach(r => {
+        efectivosProm.forEach(r => {
           const m = mesDe(r); if (!m) return;
           const mm = mesesAcum[m] || (mesesAcum[m] = {});
           ["todas", "montevideo", "interior"].forEach(sc => {
@@ -838,7 +861,7 @@ function Operativa({ yo, activo, syncTick }) {
         // Cancelados afuera (no son incumplimiento de entrega).
         let maduros = null;
         if (mk) {
-          const delMes = efectivos.filter(r => { const d = parseFecha(r.fecha); return d && (d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0")) === mk; });
+          const delMes = efectivosProm.filter(r => { const d = parseFecha(r.fecha); return d && (d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0")) === mk; });
           let evalTotal = 0, enPlazo = 0; const dhEntMes = [], dhPendMes = [];
           delMes.forEach(r => {
             if (r.cumplido) {
@@ -869,7 +892,7 @@ function Operativa({ yo, activo, syncTick }) {
           leadtime_entrega: percentil(ltE, PCTL),
           // El calendario y los desgloses van TAMBIÉN adentro de "serie" (columna jsonb que ya existe
           // en la tabla): así se comparten sin necesidad de correr ninguna migración.
-          serie: { ...(serie || {}), calendario: calArr, maduros, promesaDH: promesaDH, deptoInfo, depoInfo, serieMeses, desgloses: { cumplPorTienda, stockTiendas, histEntrega, histPend: histPendGlob, histDesp: histDespGlob, histByReg } },
+          serie: { ...(serie || {}), calendario: calArr, maduros, internacionales: nIntl, promesaDH: promesaDH, deptoInfo, depoInfo, serieMeses, desgloses: { cumplPorTienda, stockTiendas, histEntrega, histPend: histPendGlob, histDesp: histDespGlob, histByReg } },
           calendario: calArr,
           actualizado: new Date().toISOString()
         };
@@ -1015,7 +1038,9 @@ function Operativa({ yo, activo, syncTick }) {
   const porRegion = regionVista !== "todas";
   // Vista de la PROMESA/cumplimiento: acá SÍ se aplica el MES elegido (la "foto" del mes) y la región.
   // (Las acciones rápidas y el listado NO se filtran por mes — ver nota más arriba.)
-  const resVistaScope = (resVista || []).filter(r => (!mesVistaEff || mesDeR(r) === mesVistaEff) && (!porRegion || r.region === regionVista));
+  // Los internacionales (FedEx/DHL) quedan fuera de la promesa: en "Todas" se excluyen; sólo se ven si se
+  // elige expresamente esa región. (Mvd/Interior ya los excluyen por definición.)
+  const resVistaScope = (resVista || []).filter(r => (!mesVistaEff || mesDeR(r) === mesVistaEff) && (porRegion ? r.region === regionVista : r.region !== "internacional"));
   // En vivo solo si el mes elegido está en el cruce actual; si es un mes histórico (sin filas cargadas),
   // usamos el snapshot mensual (serieMeses) en vez de un histograma vacío.
   const histsLive = cruceEnSesion.current && resVistaScope.length ? histsLiveDe(resVistaScope) : null;
@@ -1285,6 +1310,8 @@ function Operativa({ yo, activo, syncTick }) {
     ? ("No hay pedidos en Depo 0 (sin stock). Valores de tu columna “" + (depoDiagEff.colDep || "Depósito") + "”: " + Object.entries(depoDiagEff.vals || {}).sort((a, b) => b[1] - a[1]).slice(0, 12).map(([k, n]) => k + " (" + n + ")").join(" · ") + ". Si tus Depo 0 traen otro valor (ej. “0 - Sin stock”), decímelo y ajusto la detección.")
     : "No hay pedidos en Depo 0 (sin stock).";
   const hayRegion = !!deptoCol || !!deptoDiagEff || !!(desgSnap && desgSnap.histByReg);
+  // Envíos internacionales (FedEx/DHL): se miden aparte, no entran en la promesa de Mvd/Interior/Todas.
+  const nIntlShown = (operSnap && operSnap.serie && typeof operSnap.serie.internacionales === "number") ? operSnap.serie.internacionales : null;
   const regionToggle = ceEl("div", { className: "flex items-center gap-1" },
     ceEl("span", { className: "text-[11px] font-bold uppercase mr-1", style: { color: C.gray } }, "Región"),
     [["todas", "Todas"], ["montevideo", "Montevideo"], ["interior", "Interior"]].map(([id, l]) => ceEl("button", {
@@ -1302,6 +1329,7 @@ function Operativa({ yo, activo, syncTick }) {
         ceEl("span", { className: "text-sm font-black fraunces", style: { color: C.ink } }, "Promesa de entrega y tiempos"),
         ceEl("span", { className: "text-[11px] ml-2", style: { color: C.gray } }, (mesVistaEff ? fmtMesYM(mesVistaEff) + " · " : "") + (porTiendaVista ? tiendaVista + " · " : "") + (porRegion ? (regionVista === "montevideo" ? "Montevideo · " : "Interior · ") : "") + distEnt.n + " cumplidos con fecha")),
       ceEl("div", { className: "flex items-center gap-3 flex-wrap" }, mesSelectorPromesa, hayRegion && regionToggle, promesaStep)),
+    nIntlShown > 0 && !porRegion && ceEl("div", { className: "text-[11px] rounded-lg px-3 py-1.5", style: { background: "#F6F8FB", color: C.gray } }, "✈ " + nIntlShown + " envío(s) internacional(es) (FedEx/DHL) quedan FUERA de este cumplimiento — tienen sus propios tiempos y se miden aparte."),
     porRegion && distEnt.n === 0 && ceEl("div", { className: "text-[11px] rounded-lg px-3 py-2", style: { background: C.amberS, color: C.amber } },
       deptoDiagEff && !deptoDiagEff.col
         ? ceEl("span", null, "No encontré una columna de Departamento en tu Fenicio, así que no puedo separar Montevideo/Interior. Columnas de tu Fenicio: ", ceEl("b", null, (deptoDiagEff.cols || []).join(" · ")), ". Decime cuál trae el departamento del pedido y la conecto.")
