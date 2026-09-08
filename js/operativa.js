@@ -719,8 +719,21 @@ function Operativa({ yo, activo, syncTick }) {
           if (!enCruce.has(p) && !enWMSHoy(p)) return true; // desapareció de ambas planillas nuevas → resuelto
           return tiendasEnCruce.has(c.tienda) && !(c.historial && c.historial.length) && !c.accionado;
         }).map(([p]) => p);
-        for (let i = 0; i < aBorrar.length; i += 200) {
-          await supa.from("operativa_seguimiento").delete().in("pedido", aBorrar.slice(i, i + 200));
+        // Además, limpiar las filas VIEJAS que quedaron pegadas SIN comentario (la regla de arriba solo mira
+        // los pedidos comentados). Era la causa de que en Depo 0 aparecieran pedidos viejos ya resueltos:
+        // un Depo 0 de un cruce anterior que hoy ya está cancelado/despachado en el WMS seguía saliendo como
+        // "sin stock" al recargar (su fila guardada nunca se refrescaba ni se borraba). Traemos TODOS los
+        // pedidos guardados y borramos los que ya no correspondan: no están en el cruce actual (keepSet), no
+        // tienen nota/accionado, y o bien el WMS de hoy los da por resueltos (cancelado/entregado/despachado/
+        // recibido) o desaparecieron de ambas planillas.
+        const comentadoVivo = p => { const c = comentarios[p]; return !!(c && ((c.historial && c.historial.length) || c.accionado)); };
+        const resueltoWMS = p => { const w = wmsMap[String(p).trim()]; return w ? /cancel|anul|entregad|despach|recib/i.test(String(w[colEstEnc] || "")) : false; };
+        let persistidos = [];
+        try { const { data: pd } = await supa.from("operativa_seguimiento").select("pedido"); persistidos = (pd || []).map(x => String(x.pedido)); } catch (_) {}
+        const aBorrarStale = persistidos.filter(p => !keepSet.has(p) && !comentadoVivo(p) && (resueltoWMS(p) || (!enCruce.has(p) && !enWMSHoy(p))));
+        const aBorrarTodo = Array.from(new Set([...aBorrar, ...aBorrarStale]));
+        for (let i = 0; i < aBorrarTodo.length; i += 200) {
+          await supa.from("operativa_seguimiento").delete().in("pedido", aBorrarTodo.slice(i, i + 200));
         }
       } catch (_) {}
     })();
