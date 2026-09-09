@@ -1201,11 +1201,8 @@ function Metas({
       return { tienda: t, vendido: v.vendido, pedidosVend: v.pedidos, canceladoVend: v.cancelado, nCanc: v.canc, facturadoConIVA, facturadoSinIVA, nFac: f.nFac, ncdBA: f.ncdBA, falta };
     });
 
-    // Criterio de facturación automática: la factura se emite al DESPACHAR (ahí el pedido está procesado y
-    // sale). Recién en esos estados del WMS se espera factura: Despachado / En tránsito / Recibido en
-    // tienda / Entregado. Antes (items pedidos/confirmados, clasificados / orden liberada, preparando) el
-    // pedido todavía no se despachó, así que no se factura y no debe contar como "sin factura".
-    const reDespEntr = /despachad|tr[aá]nsito|camino|recibid[oa]?\s*(en\s*)?tienda|entregad/i;
+    // La clasificación de la rama "sin factura" vive centralizada y testeada en js/facturacion-reglas.js
+    // (FacturacionReglas.clasificarSinFactura) para que todas las reglas convivan y no se rompan entre sí.
     const grupos = { facturado: [], facturaDup: [], pendienteOK: [], pcnManual: [], revisar: [], cancelado: [], canceladoConFactura: [], canceladoCupon: [], ccForzar: [], pagoDespues: [] };
 
     Object.values(fenPed).forEach(p => {
@@ -1249,20 +1246,11 @@ function Metas({
         else grupos.facturado.push(base);
         return;
       }
-      // Sin factura:
-      // La factura se emite al DESPACHAR (ahí el pedido está procesado y sale). Nos guiamos por el ESTADO
-      // DEL WMS, que es lo que dispara la facturación: mientras el WMS siga en "items pedidos/confirmados",
-      // "clasificados / orden liberada" o "preparando", el pedido TODAVÍA NO se despachó → no se factura
-      // aún (aunque Fenicio muestre otra cosa, p.ej. un "entregado" de Fenicio con el WMS aún en orden
-      // liberada). Recién al despachar (Despachado / En tránsito / Recibido en tienda / Entregado) se espera.
-      const despachadoWMS = reDespEntr.test(estadoWMS);
-      if (!despachadoWMS) { grupos.pendienteOK.push({ ...base, razon: "Todavía no despachado — no se factura aún" }); return; }
-      if (esPcn) { grupos.pcnManual.push({ ...base, razon: "Prenda personalizada (PCN) — facturar/forzar manualmente" }); return; }
-      // Pago Después: no siempre falta factura (se factura al cobrar) → a revisar caso a caso, no a "Revisar".
-      if (pagoDespues) { grupos.pagoDespues.push({ ...base, razon: "Método Pago Después sin factura — revisar caso a caso (suele facturarse al cobrar)" }); return; }
-      // Click & Collect: no se autofacturan solos → hay que pedirle al WMS que fuerce la facturación.
-      if (clickCollect) { grupos.ccForzar.push({ ...base, razon: "Click & Collect sin factura — pedir al WMS que fuerce la facturación automática" }); return; }
-      grupos.revisar.push({ ...base, razon: "Despachado sin factura — emitir ⚠️" });
+      // Sin factura → reglas centralizadas (js/facturacion-reglas.js, testeadas en test/facturacion.mjs).
+      // Pago Después se separa SIEMPRE; el resto depende de si el WMS ya despachó. Ver ese archivo para el
+      // orden y el porqué de cada regla.
+      const cl = FacturacionReglas.clasificarSinFactura({ estadoWMS, esPcn, clickCollect, pagoDespues });
+      grupos[cl.grupo].push({ ...base, razon: cl.razon });
     });
 
     // Pedidos PCN presentes en el WMS pero ausentes del reporte de Fenicio
@@ -1278,9 +1266,11 @@ function Metas({
         return;
       }
       if (tieneF) { grupos.facturado.push(base); return; }
-      // Igual que arriba: si el PCN todavía no se despachó en el WMS, no se factura aún.
-      if (!reDespEntr.test(estadoWMS)) { grupos.pendienteOK.push({ ...base, razon: "Todavía no despachado — no se factura aún" }); return; }
-      grupos.pcnManual.push({ ...base, razon: `Prenda personalizada (PCN) sin factura — forzar manualmente${info.arts.length ? " · " + info.arts.length + " art." : ""}` });
+      // Mismas reglas que arriba (PCN sólo en WMS, sin Pago Después ni C&C). Si cae en pcnManual, sumamos
+      // la cantidad de artículos a la razón.
+      const clW = FacturacionReglas.clasificarSinFactura({ estadoWMS, esPcn: true, clickCollect: false, pagoDespues: false });
+      const razonW = clW.grupo === "pcnManual" ? `Prenda personalizada (PCN) sin factura — forzar manualmente${info.arts.length ? " · " + info.arts.length + " art." : ""}` : clW.razon;
+      grupos[clW.grupo].push({ ...base, razon: razonW });
     });
 
     // Pendientes sin factura POR TIENDA. Cuenta SOLO "revisar" (automática) para que coincida

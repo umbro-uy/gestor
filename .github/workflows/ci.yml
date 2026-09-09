@@ -26,6 +26,9 @@ jobs:
       - name: Lint (ESLint)
         run: npm run lint
 
+      - name: Reglas de facturación (Análisis)
+        run: npm run test:fac
+
       - name: Instalar Chromium para el smoke test
         run: npx playwright install --with-deps chromium
 

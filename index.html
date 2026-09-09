@@ -73,7 +73,7 @@ window.addEventListener("error",function(e){
 // "tomaran" sin importar cuántas veces se recargara). async=false mantiene el orden de ejecución.
 (function () {
   var V = Date.now();
-  var mods = ["core", "resumen", "tareas", "equipo", "objetivos", "analisis", "operativa", "app"];
+  var mods = ["core", "facturacion-reglas", "resumen", "tareas", "equipo", "objetivos", "analisis", "operativa", "app"];
   mods.forEach(function (f) {
     var s = document.createElement("script");
     s.src = "js/" + f + ".js?v=" + V;
