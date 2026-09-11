@@ -28,7 +28,7 @@ check("Pago Después + C&C procesado", g({ estadoWMS: "Pedido recibido  en tiend
 
 // 2) Sin procesar (items pedidos/confirmados) y sin Pago Después → en proceso, aunque sea PCN o C&C.
 for (const e of EN_PROCESO) check("Normal no procesado (" + e.trim() + ")", g({ estadoWMS: e }), "pendienteOK");
-check("PCN no procesado → en proceso", g({ estadoWMS: "Items Pedidos", esPcn: true }), "pendienteOK");
+check("PCN sin estado de Fenicio avanzado → en proceso", g({ estadoWMS: "Pedido Despachado", estadoFen: "Pedido recibido", esPcn: true }), "pendienteOK");
 check("C&C no procesado → en proceso", g({ estadoWMS: "Items Confirmados", clickCollect: true }), "pendienteOK");
 
 // 3) Orden liberada (procesado) SIN despachar → ya cuenta como pendiente de factura ("Revisar").
@@ -36,15 +36,19 @@ check("Orden liberada, sin despachar → revisar", g({ estadoWMS: "Items Clasifi
 check("Pronto para despacho → revisar", g({ estadoWMS: "Pedido en  envio pronto para despacho" }), "revisar");
 for (const e of PROCESADO) check("Procesado normal (" + e.trim() + ") → revisar", g({ estadoWMS: e }), "revisar");
 
-// 4) PCN procesado sin factura → pcnManual (aunque no esté despachado).
-check("PCN orden liberada → pcnManual", g({ estadoWMS: "Items Clasificados  (Orden Liberada) ", esPcn: true }), "pcnManual");
-check("PCN despachado → pcnManual", g({ estadoWMS: "Pedido Despachado", esPcn: true }), "pcnManual");
+// 4) PCN → se guía por FENICIO, no por el WMS (que queda congelado para los PCN).
+//    El caso real: Fenicio "entregado" pero WMS pegado en "Items Pedidos" → igual va a PCN.
+check("PCN Fenicio entregado, WMS congelado (Items Pedidos) → pcnManual", g({ estadoWMS: "Items Pedidos", estadoFen: "Pedido entregado", esPcn: true }), "pcnManual");
+check("PCN Fenicio en tránsito → pcnManual", g({ estadoWMS: "Items Pedidos", estadoFen: "Pedido en tránsito", esPcn: true }), "pcnManual");
+check("PCN Fenicio listo para retirar → pcnManual", g({ estadoWMS: "Items Confirmados", estadoFen: "Listo para retirar", esPcn: true }), "pcnManual");
+check("PCN Fenicio en preparación (recibido) → en proceso", g({ estadoWMS: "Items Clasificados  (Orden Liberada) ", estadoFen: "Pedido recibido", esPcn: true }), "pendienteOK");
+check("PCN Fenicio preparando → en proceso", g({ estadoWMS: "Pedido Despachado", estadoFen: "Preparando pedido", esPcn: true }), "pendienteOK");
 // 5) C&C procesado sin factura → ccForzar.
 check("C&C orden liberada → ccForzar", g({ estadoWMS: "Items Clasificados  (Orden Liberada) ", clickCollect: true }), "ccForzar");
 check("C&C recibido en tienda → ccForzar", g({ estadoWMS: "Pedido recibido  en tienda", clickCollect: true }), "ccForzar");
 
-// Precedencia PCN vs C&C (PCN primero) cuando ambos y procesado.
-check("PCN + C&C procesado → pcnManual (PCN primero)", g({ estadoWMS: "Items Clasificados  (Orden Liberada) ", esPcn: true, clickCollect: true }), "pcnManual");
+// Precedencia PCN vs C&C (PCN primero, guiado por Fenicio) cuando ambos.
+check("PCN + C&C, Fenicio entregado → pcnManual (PCN primero)", g({ estadoWMS: "Items Clasificados  (Orden Liberada) ", estadoFen: "Pedido entregado", esPcn: true, clickCollect: true }), "pcnManual");
 
 if (fallos) { console.error("\n" + fallos + " caso(s) de facturación FALLARON."); process.exit(1); }
 console.log("\nReglas de facturación OK.");
