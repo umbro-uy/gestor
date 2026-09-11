@@ -1247,8 +1247,8 @@ function Metas({
         return;
       }
       // Sin factura → reglas centralizadas (js/facturacion-reglas.js, testeadas en test/facturacion.mjs).
-      // Pago Después se separa SIEMPRE; el resto depende de si el WMS ya despachó. Ver ese archivo para el
-      // orden y el porqué de cada regla.
+      // Pago Después se separa SIEMPRE; el resto depende de si el WMS ya PROCESÓ (orden liberada; no hace
+      // falta despacho). Ver ese archivo para el orden y el porqué de cada regla.
       const cl = FacturacionReglas.clasificarSinFactura({ estadoWMS, esPcn, clickCollect, pagoDespues });
       grupos[cl.grupo].push({ ...base, razon: cl.razon });
     });
