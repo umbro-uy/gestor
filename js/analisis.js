@@ -1249,7 +1249,7 @@ function Metas({
       // Sin factura → reglas centralizadas (js/facturacion-reglas.js, testeadas en test/facturacion.mjs).
       // Pago Después se separa SIEMPRE; el resto depende de si el WMS ya PROCESÓ (orden liberada; no hace
       // falta despacho). Ver ese archivo para el orden y el porqué de cada regla.
-      const cl = FacturacionReglas.clasificarSinFactura({ estadoWMS, esPcn, clickCollect, pagoDespues });
+      const cl = FacturacionReglas.clasificarSinFactura({ estadoWMS, estadoFen, esPcn, clickCollect, pagoDespues });
       grupos[cl.grupo].push({ ...base, razon: cl.razon });
     });
 
@@ -1266,11 +1266,9 @@ function Metas({
         return;
       }
       if (tieneF) { grupos.facturado.push(base); return; }
-      // Mismas reglas que arriba (PCN sólo en WMS, sin Pago Después ni C&C). Si cae en pcnManual, sumamos
-      // la cantidad de artículos a la razón.
-      const clW = FacturacionReglas.clasificarSinFactura({ estadoWMS, esPcn: true, clickCollect: false, pagoDespues: false });
-      const razonW = clW.grupo === "pcnManual" ? `Prenda personalizada (PCN) sin factura — forzar manualmente${info.arts.length ? " · " + info.arts.length + " art." : ""}` : clW.razon;
-      grupos[clW.grupo].push({ ...base, razon: razonW });
+      // PCN que sólo están en el WMS (no vino su Fenicio): no tenemos el estado de Fenicio para guiarnos, así
+      // que los mostramos igual en su filtro "PCN" para no perderlos (son personalizados, facturación manual).
+      grupos.pcnManual.push({ ...base, razon: `Prenda personalizada (PCN) sin factura — forzar manualmente${info.arts.length ? " · " + info.arts.length + " art." : ""}` });
     });
 
     // Pendientes sin factura POR TIENDA. Cuenta SOLO "revisar" (automática) para que coincida

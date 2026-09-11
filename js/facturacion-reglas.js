@@ -16,7 +16,9 @@
 //      WMS llegó al menos a "Items clasificados / Orden liberada" (o cualquier estado posterior). NO hace
 //      falta que esté despachado. Mientras el WMS siga en "items pedidos" o "items confirmados" (o el pedido
 //      recién ingresó / se está preparando), todavía no se procesó → no se factura. Vale también para PCN/C&C.
-//   3) pcnManual → PCN (prenda personalizada) YA procesado sin factura → hay que facturar/forzar a mano.
+//   3) pcnManual → PCN (prenda personalizada). Se guía por FENICIO, no por el WMS (que queda congelado para
+//                  los PCN): si Fenicio ya lo da por salido (en tránsito / listo para retirar / entregado) →
+//                  su filtro "PCN". Si todavía se está haciendo → "en proceso".
 //   4) ccForzar  → Click & Collect YA procesado sin factura → forzar en el WMS.
 //   5) revisar   → procesado (orden liberada o más) sin factura de verdad → falta emitirla.
 (function (root) {
@@ -26,17 +28,27 @@
   // todavía NO se procesó. OJO: no hace falta el despacho; alcanza con la orden liberada.
   var RE_FACTURABLE = /clasificad|orden\s*liberad|liberad|pronto.*despach|despachad|tr[aá]nsito|camino|recibid[oa]?\s*(en\s*)?tienda|listo.*retir|entregad/i;
 
-  // c = { estadoWMS, esPcn, clickCollect, pagoDespues }  →  { grupo, razon }
+  // PCN (prendas personalizadas): el estado del WMS NO se actualiza para ellos (queda pegado en "Items
+  // pedidos" aunque ya se hayan entregado), así que para los PCN nos guiamos por el estado de FENICIO. Se
+  // los diferencia en su filtro "PCN" cuando Fenicio muestra que ya salió: en tránsito / listo para retirar /
+  // entregado. Antes de eso quedan en "en proceso" (todavía se está haciendo la prenda).
+  var RE_PCN_LISTO = /tr[aá]nsito|camino|retir|entregad/i;
+
+  // c = { estadoWMS, estadoFen, esPcn, clickCollect, pagoDespues }  →  { grupo, razon }
   function clasificarSinFactura(c) {
     c = c || {};
     if (c.pagoDespues) return { grupo: "pagoDespues", razon: "Método Pago Después sin factura — revisar caso a caso (suele facturarse al cobrar)" };
+    if (c.esPcn) {
+      // PCN → guiarse por FENICIO (el WMS queda congelado). Si ya salió (tránsito/retiro/entregado) → PCN.
+      if (RE_PCN_LISTO.test(String(c.estadoFen || ""))) return { grupo: "pcnManual", razon: "Prenda personalizada (PCN) — facturar/forzar manualmente" };
+      return { grupo: "pendienteOK", razon: "PCN (personalizada) en preparación — todavía no se factura" };
+    }
     if (!RE_FACTURABLE.test(String(c.estadoWMS || ""))) return { grupo: "pendienteOK", razon: "Todavía no procesado (sin orden liberada) — no se factura aún" };
-    if (c.esPcn) return { grupo: "pcnManual", razon: "Prenda personalizada (PCN) — facturar/forzar manualmente" };
     if (c.clickCollect) return { grupo: "ccForzar", razon: "Click & Collect sin factura — pedir al WMS que fuerce la facturación automática" };
     return { grupo: "revisar", razon: "Orden liberada sin factura — emitir ⚠️" };
   }
 
-  var api = { clasificarSinFactura: clasificarSinFactura, RE_FACTURABLE: RE_FACTURABLE };
+  var api = { clasificarSinFactura: clasificarSinFactura, RE_FACTURABLE: RE_FACTURABLE, RE_PCN_LISTO: RE_PCN_LISTO };
   if (typeof module !== "undefined" && module.exports) module.exports = api; // node (test)
   root.FacturacionReglas = api; // navegador (lo usa js/analisis.js)
 })(typeof window !== "undefined" ? window : globalThis);
