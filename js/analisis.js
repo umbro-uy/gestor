@@ -40,6 +40,50 @@ function ResultadoCruce({
       alert("Error al exportar: " + e.message);
     }
   };
+  // Una fila del export COMPLETO: todos los datos del cruce de un pedido, con su clasificación y el porqué,
+  // en columnas ordenadas para poder auditar a mano (qué vino de Fenicio, qué del WMS, si tiene factura, etc.).
+  const filaExport = (r, clasificacion) => ({
+    "Nro pedido": r.nro,
+    "Tienda": r.tienda || "—",
+    "Fecha compra": r.fecha,
+    "Clasificación": clasificacion,
+    "Motivo": r.razon || "",
+    "Estado entrega (Fenicio)": r.estadoFen || "",
+    "Estado (Fenicio)": r.estadoPago || "",
+    "Estado de pago (Fenicio)": r.estadoPago2 || "",
+    "Estado WMS (Encuentra)": r.estadoWMS || "",
+    "Importe": r.importe != null ? r.importe : "",
+    "PCN": r.pcn ? "Sí" : "",
+    "Click & Collect": r.clickCollect ? "Sí" : "",
+    "Pago Después": r.pagoDespues ? "Sí" : "",
+    "Con cupón": r.conCupon ? "Sí" : "",
+    "Cupón": r.cupon || "",
+    "SKUs PCN": r.skusPcn || "",
+    "N° facturas": r.nFact != null ? r.nFact : "",
+    "N° notas de crédito": r.nNCs != null ? r.nNCs : ""
+  });
+  // Export de TODO el cruce: cada pedido analizado (de cualquier categoría), una sola vez, sin filtros, para
+  // validar manualmente que la clasificación es correcta. Los `grupos` particionan todos los pedidos, así que
+  // recorrerlos todos = el cruce completo. Orden: primero lo accionable, después lo ya resuelto.
+  const ORDEN_EXPORT = [
+    ["revisar", "Falta factura (revisar)"],
+    ["ccForzar", "C&C a forzar"],
+    ["pagoDespues", "Pago Después"],
+    ["pcnManual", "PCN (manual)"],
+    ["facturaDup", "Facturado (posible duplicado)"],
+    ["pendienteOK", "En proceso (no se factura aún)"],
+    ["facturado", "Facturado"],
+    ["canceladoConFactura", "Cancelado c/factura"],
+    ["canceladoCupon", "Cancelado c/cupón (manual)"],
+    ["cancelado", "Cancelado"]
+  ];
+  const totalCruce = ORDEN_EXPORT.reduce((n, [k]) => n + ((grupos[k] || []).length), 0);
+  const exportarTodo = () => {
+    const filas = [];
+    ORDEN_EXPORT.forEach(([k, label]) => (grupos[k] || []).forEach(r => filas.push(filaExport(r, label))));
+    if (!filas.length) { alert("No hay pedidos para exportar. Cargá el BAS y el reporte de Fenicio y cruzá primero."); return; }
+    exportarXLSX(filas, "cruce-completo-" + new Date().toISOString().slice(0, 10));
+  };
   const fmtI = n => "$" + Math.round(n || 0).toLocaleString("es-UY");
   const TABS = [{
     id: "revisar",
@@ -220,7 +264,15 @@ function ResultadoCruce({
       background: C.soft,
       color: C.blue
     }
-  }, "↓ Exportar XLSX"))), /*#__PURE__*/React.createElement("div", {
+  }, "↓ Exportar XLSX"), totalCruce > 0 && /*#__PURE__*/React.createElement("button", {
+    onClick: exportarTodo,
+    title: "Exporta TODOS los pedidos analizados (todas las categorías, sin filtros) con su clasificación y motivo, para validar el cruce a mano",
+    className: "text-xs font-bold px-2.5 py-1 rounded-lg flex items-center gap-1",
+    style: {
+      background: C.blue,
+      color: "#fff"
+    }
+  }, "↓ Exportar TODO el cruce (", totalCruce, ")"))), /*#__PURE__*/React.createElement("div", {
     className: "overflow-x-auto"
   }, /*#__PURE__*/React.createElement("table", {
     className: "w-full",
