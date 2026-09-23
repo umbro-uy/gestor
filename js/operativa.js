@@ -719,9 +719,13 @@ function Operativa({ yo, activo, syncTick }) {
     setUltimaSync(new Date());
     setVistaTab("atrasados");
     setPage(0);
-    // Persistir los accionables + los retenidos marcados como "cancelado probable" (para que su estado
-    // quede guardado y no vuelvan a contar como atrasados al recargar la pestaña).
-    const aSeguir = merged.filter(relevante).concat(retenidos.filter(esProbCancel));
+    // Persistir los accionables + TODOS los retenidos (comentados/accionados que no vinieron en el cruce),
+    // re-guardándolos con su estado REFRESCADO contra el WMS de hoy. Clave: si un pedido que quedó guardado
+    // como accionable (p.ej. "Depo 0") HOY figura "Cancelado"/"Entregado"/"Despachado" en el WMS, al
+    // re-persistirlo con ese estado nuevo deja de recalcularse como Depo 0/atrasado al reabrir la pestaña
+    // (antes su estado viejo quedaba pegado para siempre porque el comentario lo protegía del borrado y sólo
+    // se re-guardaban los "cancelado probable"). Un cancelado no dispara alertas (esCancEf lo filtra).
+    const aSeguir = merged.filter(relevante).concat(retenidos);
     (async () => {
       try {
         const payload = aSeguir.map(r => ({
