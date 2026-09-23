@@ -147,17 +147,32 @@ function ResultadoCruce({
     arr: grupos.cancelado
   }];
   const pcnArr = grupos.pcnManual || [];
-  const [tabAct, setTabAct] = useState(grupos.revisar.length > 0 ? "revisar" : (grupos.canceladoConFactura || []).length > 0 ? "canceladoFactura" : (grupos.canceladoCupon || []).length > 0 ? "canceladoCupon" : (factDuplicadas || []).length > 0 ? "facturaDup" : pcnArr.length > 0 ? "pcnManual" : "facturado");
-  const tabActual = TABS.find(t => t.id === tabAct) || TABS[0];
+  const tabInicial = grupos.revisar.length > 0 ? "revisar" : (grupos.canceladoConFactura || []).length > 0 ? "canceladoFactura" : (grupos.canceladoCupon || []).length > 0 ? "canceladoCupon" : (factDuplicadas || []).length > 0 ? "facturaDup" : pcnArr.length > 0 ? "pcnManual" : "facturado";
+  // Selección ACUMULABLE de categorías: se pueden marcar varias tarjetas y la lista/export muestran la UNIÓN.
+  // Cada clic agrega o saca esa categoría. `soloTab` = la única seleccionada (o null si hay 0 o varias): se usa
+  // para conservar los estilos/columnas especiales de una sola categoría (p.ej. la tabla de duplicados).
+  const [tabsSel, setTabsSel] = useState([tabInicial]);
   const POR_PAGINA = 25;
   const [pagina, setPagina] = useState(0);
   // Filtro por tienda: se activa al clickear una fila de "Vendido vs. facturado por tienda".
   const [filtroTienda, setFiltroTienda] = useState(null);
-  const irTab = id => { setTabAct(id); setPagina(0); };
-  const filtrarTienda = t => { setFiltroTienda(f => f === t ? null : t); setTabAct("revisar"); setPagina(0); };
+  const toggleTab = id => { setTabsSel(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]); setPagina(0); };
+  const estaSel = id => tabsSel.includes(id);
+  const soloTab = tabsSel.length === 1 ? tabsSel[0] : null;
+  const filtrarTienda = t => { setFiltroTienda(f => f === t ? null : t); setPagina(0); };
   // La lista mostrada y los conteos de las solapas respetan el filtro de tienda.
   const arrDe = t => filtroTienda ? t.arr.filter(r => (r.tienda || "—") === filtroTienda) : t.arr;
-  const arr = filtroTienda ? tabActual.arr.filter(r => (r.tienda || "—") === filtroTienda) : tabActual.arr;
+  // Categorías seleccionadas y la UNIÓN de sus pedidos (sin repetir por Nº de pedido), guardando la etiqueta
+  // de categoría de cada uno para el export. Respeta el filtro de tienda.
+  const tabsSeleccionadas = TABS.filter(t => tabsSel.includes(t.id));
+  const catPorNro = new Map();
+  const arr = (() => {
+    const out = [], vis = new Set();
+    tabsSeleccionadas.forEach(t => { const lbl = t.l.replace("⚠ ", ""); arrDe(t).forEach(r => { const k = String(r.nro); if (!vis.has(k)) { vis.add(k); catPorNro.set(k, lbl); out.push(r); } }); });
+    return out;
+  })();
+  const tituloSel = tabsSeleccionadas.length === 1 ? tabsSeleccionadas[0].l.replace("⚠ ", "") : tabsSeleccionadas.length === 0 ? "Sin categoría seleccionada" : tabsSeleccionadas.length + " categorías seleccionadas";
+  const colorSel = tabsSeleccionadas.length === 1 ? tabsSeleccionadas[0].c : C.blue;
   const totalPags = Math.max(1, Math.ceil(arr.length / POR_PAGINA));
   const pagActual = Math.min(pagina, totalPags - 1);
   const filasPagina = arr.slice(pagActual * POR_PAGINA, pagActual * POR_PAGINA + POR_PAGINA);
@@ -202,22 +217,22 @@ function ResultadoCruce({
         { id: "pcnManual", l: "Manual · PCN", sub: "Personalizadas — solicitar al WMS", arr: grupos.pcnManual || [], c: "#B45309", s: "#FEF3C7" },
         { id: "canceladoCupon", l: "Manual · Cupón", sub: "Cupón web — facturar a mano", arr: grupos.canceladoCupon || [], c: "#C2410C", s: "#FFEDD5" }
       ].map(k => /*#__PURE__*/React.createElement("button", {
-        key: k.id, onClick: () => irTab(k.id),
-        className: "text-left rounded-2xl p-4 border transition-all", style: { background: k.s, borderColor: k.c + "55" }
+        key: k.id, onClick: () => toggleTab(k.id),
+        className: "text-left rounded-2xl p-4 border transition-all", style: { background: k.s, borderColor: k.c + "55", boxShadow: estaSel(k.id) ? "inset 0 0 0 2px " + k.c : "none" }
       },
         /*#__PURE__*/React.createElement("div", { className: "text-2xl font-black fraunces tabular-nums", style: { color: k.c } }, arrDe(k).length),
         /*#__PURE__*/React.createElement("div", { className: "text-xs font-bold mt-0.5", style: { color: k.c } }, k.l),
         /*#__PURE__*/React.createElement("div", { className: "text-[11px] mt-0.5", style: { color: C.gray } }, k.sub, arrDe(k).length > 0 ? " · " + fmtI(sumImporte(arrDe(k))) : "")))),
-    grupos.pendienteOK.length > 0 && /*#__PURE__*/React.createElement("div", { className: "text-[11px]", style: { color: C.gray } }, grupos.pendienteOK.length, " pedidos aún en proceso (no se facturan todavía)")), /*#__PURE__*/React.createElement("div", {
+    grupos.pendienteOK.length > 0 && /*#__PURE__*/React.createElement("div", { className: "text-[11px]", style: { color: C.gray } }, grupos.pendienteOK.length, " pedidos aún en proceso (no se facturan todavía)")), /*#__PURE__*/React.createElement("div", { className: "text-[11px] px-1 flex items-center gap-2 flex-wrap", style: { color: C.gray } }, /*#__PURE__*/React.createElement("span", null, "Tip: tocá varias categorías para acumularlas y exportarlas juntas."), tabsSel.length > 1 && /*#__PURE__*/React.createElement("button", { onClick: () => setTabsSel([tabInicial]), className: "font-bold underline", style: { color: C.blue } }, "Limpiar (" + tabsSel.length + " seleccionadas)")), /*#__PURE__*/React.createElement("div", {
     className: "grid grid-cols-3 sm:grid-cols-4 xl:grid-cols-8 gap-2"
   }, TABS.map(t => /*#__PURE__*/React.createElement("button", {
     key: t.id,
-    onClick: () => irTab(t.id),
+    onClick: () => toggleTab(t.id),
     className: "rounded-2xl p-3 text-left transition-all border",
     style: {
-      background: tabAct === t.id ? t.c : "#fff",
-      color: tabAct === t.id ? "#fff" : t.c,
-      borderColor: tabAct === t.id ? t.c : C.line
+      background: estaSel(t.id) ? t.c : "#fff",
+      color: estaSel(t.id) ? "#fff" : t.c,
+      borderColor: estaSel(t.id) ? t.c : C.line
     }
   }, /*#__PURE__*/React.createElement("div", {
     className: "text-xl font-black tabular-nums fraunces"
@@ -229,10 +244,10 @@ function ResultadoCruce({
     className: "text-xs px-1 flex flex-wrap items-center gap-x-2 gap-y-1", style: { color: C.gray }
   }, /*#__PURE__*/React.createElement("span", { className: "font-bold uppercase tracking-wide text-[10px]" }, "A revisar:"),
     (grupos.canceladoConFactura || []).length > 0 && /*#__PURE__*/React.createElement("button", {
-      onClick: () => irTab("canceladoFactura"), className: "font-bold underline", style: { color: "#BE123C" }
+      onClick: () => toggleTab("canceladoFactura"), className: "font-bold underline", style: { color: "#BE123C" }
     }, grupos.canceladoConFactura.length, " cancelados con factura (anular)"),
     (factDuplicadas || []).length > 0 && /*#__PURE__*/React.createElement("button", {
-      onClick: () => irTab("facturaDup"), className: "font-bold underline", style: { color: "#7C3AED" }
+      onClick: () => toggleTab("facturaDup"), className: "font-bold underline", style: { color: "#7C3AED" }
     }, factDuplicadas.length, " facturados de más sin NC")), /*#__PURE__*/React.createElement("div", {
     className: "bg-white rounded-2xl border overflow-hidden",
     style: {
@@ -246,9 +261,9 @@ function ResultadoCruce({
   }, /*#__PURE__*/React.createElement("span", {
     className: "text-sm font-bold",
     style: {
-      color: tabActual.c
+      color: colorSel
     }
-  }, tabActual.l.replace("⚠ ", ""), " — ", arr.length, " pedido", arr.length !== 1 ? "s" : "", filtroTienda && /*#__PURE__*/React.createElement("span", { className: "ml-2 text-xs font-bold px-2 py-0.5 rounded-full", style: { background: C.soft, color: C.blue } }, filtroTienda, " ✕")), /*#__PURE__*/React.createElement("div", {
+  }, tituloSel, " — ", arr.length, " pedido", arr.length !== 1 ? "s" : "", filtroTienda && /*#__PURE__*/React.createElement("span", { className: "ml-2 text-xs font-bold px-2 py-0.5 rounded-full", style: { background: C.soft, color: C.blue } }, filtroTienda, " ✕")), /*#__PURE__*/React.createElement("div", {
     className: "flex items-center gap-2"
   }, filtroTienda && /*#__PURE__*/React.createElement("button", {
     onClick: () => setFiltroTienda(null), className: "text-xs font-bold", style: { color: C.blue }
@@ -258,13 +273,13 @@ function ResultadoCruce({
       color: C.gray
     }
   }, fmtI(sumImporte(arr))), arr.length > 0 && /*#__PURE__*/React.createElement("button", {
-    onClick: () => exportarXLSX(arr, `facturacion-${tabAct}${filtroTienda ? "-" + filtroTienda : ""}`),
+    onClick: () => exportarXLSX(arr.map(r => filaExport(r, catPorNro.get(String(r.nro)) || "")), `facturacion-${tabsSel.length === 1 ? tabsSel[0] : "seleccion"}${filtroTienda ? "-" + filtroTienda : ""}`),
     className: "text-xs font-bold px-2.5 py-1 rounded-lg flex items-center gap-1",
     style: {
       background: C.soft,
       color: C.blue
     }
-  }, "↓ Exportar XLSX"), totalCruce > 0 && /*#__PURE__*/React.createElement("button", {
+  }, "↓ Exportar XLSX", tabsSeleccionadas.length > 1 ? " (" + tabsSeleccionadas.length + " categorías)" : ""), totalCruce > 0 && /*#__PURE__*/React.createElement("button", {
     onClick: exportarTodo,
     title: "Exporta TODOS los pedidos analizados (todas las categorías, sin filtros) con su clasificación y motivo, para validar el cruce a mano",
     className: "text-xs font-bold px-2.5 py-1 rounded-lg flex items-center gap-1",
@@ -283,14 +298,14 @@ function ResultadoCruce({
     style: {
       background: "#F6F7F9"
     }
-  }, tabAct === "pedDup" ? ["Pedido", "Apariciones"].map(h => /*#__PURE__*/React.createElement("th", {
+  }, soloTab === "pedDup" ? ["Pedido", "Apariciones"].map(h => /*#__PURE__*/React.createElement("th", {
     key: h,
     className: "px-3 py-2 text-left font-bold uppercase",
     style: {
       color: C.gray,
       fontSize: 10
     }
-  }, h)) : tabAct === "facturaDup" ? ["Pedido", "Tienda", "Facturas (importe s/IVA)", "NC", "Duplicado neto"].map(h => /*#__PURE__*/React.createElement("th", {
+  }, h)) : soloTab === "facturaDup" ? ["Pedido", "Tienda", "Facturas (importe s/IVA)", "NC", "Duplicado neto"].map(h => /*#__PURE__*/React.createElement("th", {
     key: h,
     className: "px-3 py-2 text-left font-bold uppercase",
     style: {
@@ -308,16 +323,16 @@ function ResultadoCruce({
     key: pagActual * POR_PAGINA + i,
     style: {
       borderTop: `1px solid ${C.line}`,
-      background: tabAct === "revisar" ? "#FFF8F8" : tabAct === "facturaDup" ? "#FAF8FF" : "#fff"
+      background: soloTab === "revisar" ? "#FFF8F8" : soloTab === "facturaDup" ? "#FAF8FF" : "#fff"
     }
-  }, tabAct === "pedDup" ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("td", {
+  }, soloTab === "pedDup" ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("td", {
     className: "px-3 py-2 font-bold tabular-nums"
   }, r.nro), /*#__PURE__*/React.createElement("td", {
     className: "px-3 py-2 font-bold",
     style: {
       color: C.red
     }
-  }, r.apariciones, "×")) : tabAct === "facturaDup" ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("td", {
+  }, r.apariciones, "×")) : soloTab === "facturaDup" ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("td", {
     className: "px-3 py-2 font-bold tabular-nums"
   }, r.nro), /*#__PURE__*/React.createElement("td", {
     className: "px-3 py-2",
@@ -369,7 +384,7 @@ function ResultadoCruce({
     className: "px-3 py-2",
     style: {
       fontSize: 11,
-      color: tabAct === "revisar" ? C.red : tabAct === "pendienteOK" ? C.blue : C.gray
+      color: soloTab === "revisar" ? C.red : soloTab === "pendienteOK" ? C.blue : C.gray
     }
   }, r.razon || "—"), /*#__PURE__*/React.createElement("td", {
     className: "px-3 py-2 font-bold tabular-nums"
@@ -399,9 +414,9 @@ function ResultadoCruce({
   }, "Siguiente ›"))), arr.length === 0 && /*#__PURE__*/React.createElement("div", {
     className: "px-4 py-6 text-sm text-center",
     style: {
-      color: tabAct === "pcnManual" || tabAct === "pagoDespues" ? C.gray : C.green
+      color: soloTab === "pcnManual" || soloTab === "pagoDespues" ? C.gray : C.green
     }
-  }, filtroTienda ? "Sin pedidos de " + filtroTienda + " en esta categoría." : tabAct === "pcnManual" ? "Los pedidos PCN (prendas personalizadas) se detectan desde el Monitor WMS (columna \"Articulo\", prefijo PCN). Si esto está vacío, cargá el Monitor Ecommerce o no hay PCN sin facturar." : tabAct === "pagoDespues" ? "No encontré el método de pago \"Pago Después\" en tu reporte de Fenicio, así que no puedo separarlos. Para detectarlos, el export tiene que traer una columna con el medio de pago (buscamos el texto \"Pago Después\" en cualquier columna). Columnas de tu reporte actual: " + ((fenCols || []).join(" · ") || "—") + ". Agregá el medio de pago al export (o decime en qué columna/valor figura) y los separo." : "✓ Sin casos en esta categoría.")));
+  }, tabsSel.length === 0 ? "Seleccioná una o más categorías de arriba para ver los pedidos." : filtroTienda ? "Sin pedidos de " + filtroTienda + " en esta categoría." : soloTab === "pcnManual" ? "Los pedidos PCN (prendas personalizadas) se detectan desde el Monitor WMS (columna \"Articulo\", prefijo PCN). Si esto está vacío, cargá el Monitor Ecommerce o no hay PCN sin facturar." : soloTab === "pagoDespues" ? "No encontré el método de pago \"Pago Después\" en tu reporte de Fenicio, así que no puedo separarlos. Para detectarlos, el export tiene que traer una columna con el medio de pago (buscamos el texto \"Pago Después\" en cualquier columna). Columnas de tu reporte actual: " + ((fenCols || []).join(" · ") || "—") + ". Agregá el medio de pago al export (o decime en qué columna/valor figura) y los separo." : "✓ Sin casos en esta categoría.")));
 }
 
 /* ── MesesAnio: componente separado para poder usar useState ── */
@@ -1182,7 +1197,9 @@ function Metas({
         const f = factsXPed[nro];
         const nc = ncsXPed[nro] || { n: 0, ba: 0 };
         const di = dupInfoXPed(nro);
-        return { nro, facturas: nInvoices(nro), copiasDup: di.copiasDup, ncs: nc.n, ncMonto: nc.ba, total: f.sumBA, dupNeto: di.dupNeto, tienda: f.tienda || "—", detalle: f.invoices.map(x => x.label + " $" + Math.round(x.ba).toLocaleString("es-UY")).join("  ·  ") };
+        return { nro, facturas: nInvoices(nro), copiasDup: di.copiasDup, ncs: nc.n, ncMonto: nc.ba, total: f.sumBA, dupNeto: di.dupNeto, tienda: f.tienda || "—", detalle: f.invoices.map(x => x.label + " $" + Math.round(x.ba).toLocaleString("es-UY")).join("  ·  "),
+          // Campos base para que rinda bien también cuando se combina con otras categorías (vista/export unificados).
+          nFact: nInvoices(nro), nNCs: nc.n, importe: di.dupNeto, razon: "Facturado de más sin NC — " + di.copiasDup + " copia(s) repetida(s), duplicado neto $" + Math.round(di.dupNeto).toLocaleString("es-UY") };
       })
       .filter(d => d.copiasDup > 0 && d.dupNeto > 0.5)   // solo copias repetidas reales, aún sin NC
       .sort((a, b) => b.dupNeto - a.dupNeto);
