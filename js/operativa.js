@@ -185,6 +185,11 @@ function Operativa({ yo, activo, syncTick }) {
   // los que hagan falta y se aplican a todos los cálculos de días hábiles (atrasos, promesa, tiempos).
   const FERIADOS = new Set(["2026-08-25"]);
   const esFeriado = d => FERIADOS.has(d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"));
+  // Artículos en PREVENTA (sin stock, se atrasan a propósito): TODO pedido que incluya alguno queda FUERA
+  // del cumplimiento de entrega (no es una demora real nuestra). Es TEMPORAL: se comparan por código (mayúsc.,
+  // como subcadena del artículo/SKU). Cuando se normalice el stock, vaciar esta lista → deja de excluir.
+  const ARTS_PREVENTA = ["N1A32600", "N1BA2600"];
+  const esArtPreventa = art => { const a = String(art || "").toUpperCase(); return ARTS_PREVENTA.some(c => a.includes(c)); };
   const diasHab = desde => {
     try {
       const d = parseFecha(desde);
@@ -312,7 +317,7 @@ function Operativa({ yo, activo, syncTick }) {
     const tieneFechaEnt = row.fechaEntrega && String(row.fechaEntrega).trim() && row.fechaEntrega !== "-";
     const cumplido = entregado || listoRetiro;
     const fechaCumplido = tieneFechaEnt ? row.fechaEntrega : (listoRetiro && row.fechaListo && String(row.fechaListo).trim() && row.fechaListo !== "-" ? row.fechaListo : "");
-    return { ...row, dias, diasEstado, diasDesp, diasTransito, fenEntregado, wmsEntregado, entregado, cumplido, fechaCumplido, cancelado, cancelDiscrep, despachadoWMS, atrasado, critico, inconsistente, posibleNoDespacho, estancado, enTransito, transitoLargo, listoRetiro, clickCollect, pickup, sinStock, ccDepo9, leadtime, leadtimeEntrega, envioIntl: !!row.envioIntl, region: regionDe(row.departamento, row.envioIntl) };
+    return { ...row, dias, diasEstado, diasDesp, diasTransito, fenEntregado, wmsEntregado, entregado, cumplido, fechaCumplido, cancelado, cancelDiscrep, despachadoWMS, atrasado, critico, inconsistente, posibleNoDespacho, estancado, enTransito, transitoLargo, listoRetiro, clickCollect, pickup, sinStock, ccDepo9, leadtime, leadtimeEntrega, envioIntl: !!row.envioIntl, courier: row.courier || "", preventa: !!row.preventa, region: regionDe(row.departamento, row.envioIntl) };
   };
   // Carga el seguimiento ya analizado (con comentarios) al entrar a la pestaña, para que el análisis quede fijo.
   // opts.soloSiMasNuevo: usado cuando YA crucé archivos en esta sesión — solo pisa mi cruce si otro
@@ -557,7 +562,14 @@ function Operativa({ yo, activo, syncTick }) {
     // No se cuentan como Depo 0 (su falta de stock es normal, se hacen a pedido).
     const colArt = findCol(sW, [/art[ií]culo/i, /^sku$/i, /c[oó]d.*art/i]) || "Articulo";
     const pcnVentas = new Set();
-    rowsB.forEach(r => { if (String(r[colArt] || "").toUpperCase().startsWith("PCN")) { const k = String(r[colVenta] || "").trim(); if (k) pcnVentas.add(k); } });
+    // Ventas (pedidos) que incluyen algún artículo en PREVENTA → se excluyen del cumplimiento de entrega.
+    const preventaVentas = new Set();
+    rowsB.forEach(r => {
+      const art = String(r[colArt] || "");
+      const k = String(r[colVenta] || "").trim();
+      if (art.toUpperCase().startsWith("PCN") && k) pcnVentas.add(k);
+      if (k && esArtPreventa(art)) preventaVentas.add(k);
+    });
 
     const wmsF = filtroTienda === "todas" ? rowsB : rowsB.filter(r => String(r[colCanal] || "").toLowerCase().includes(filtroTienda.toLowerCase()));
     const wmsMap = {};
@@ -594,7 +606,10 @@ function Operativa({ yo, activo, syncTick }) {
       const fechaDespacho = wms ? wms[colFechDesp] || "-" : "-";
       const formaEntrega = wms ? String(wms[colForma] || "") : "";
       // Internacional: el "Destino" del WMS trae el courier (FedEx / DHL) o la forma de entrega lo indica.
-      const envioIntl = wms ? (RE_INTL.test(String(wms[colDestinoW] || "")) || RE_INTL.test(formaEntrega)) : false;
+      const destinoW = wms ? String(wms[colDestinoW] || "") : "";
+      const envioIntl = wms ? (RE_INTL.test(destinoW) || RE_INTL.test(formaEntrega)) : false;
+      // Courier del internacional, para diferenciar FedEx vs DHL (problemas del courier, no error nuestro).
+      const courier = envioIntl ? (/fedex/i.test(destinoW + " " + formaEntrega) ? "FedEx" : /\bdhl\b|d\.h\.l/i.test(destinoW + " " + formaEntrega) ? "DHL" : "Otro") : "";
       // Fecha de entrega real desde Fenicio (no del WMS). Vacío si Fenicio no la trae.
       const fechaEntrega = colFechEntFen ? String(r[colFechEntFen] || "") : "";
       const fechaListo = colFechListo ? String(r[colFechListo] || "") : "";
@@ -617,6 +632,8 @@ function Operativa({ yo, activo, syncTick }) {
         importe,
         departamento: colDepto ? String(r[colDepto] || "").trim() : "",
         envioIntl,
+        courier,
+        preventa: preventaVentas.has(pedido),
         depo0Any,
         pcn: pcnVentas.has(pedido),
         sinWMS: !wms
@@ -744,11 +761,15 @@ function Operativa({ yo, activo, syncTick }) {
         // Los CANCELADOS quedan afuera de todos los cálculos de cumplimiento (serie del mes,
         // calendario, desgloses por tienda): un pedido cancelado no es un incumplimiento de entrega.
         const efectivos = finalRows.filter(r => !esCancEf(r));
-        // Los envíos INTERNACIONALES (FedEx/DHL) quedan FUERA del cumplimiento de la promesa (tienen sus
-        // propios tiempos y hoy dan problemas): se miden aparte. Siguen contando para el volumen y las
-        // acciones operativas; sólo se excluyen de la ecuación de la promesa por región (Mvd/Interior/Todas).
-        const efectivosProm = efectivos.filter(r => r.region !== "internacional");
-        const nIntl = efectivos.filter(r => r.region === "internacional").length;
+        // Del cumplimiento de la promesa quedan FUERA (se miden aparte): (1) los INTERNACIONALES (FedEx/DHL,
+        // tienen sus propios tiempos y hoy dan problemas de courier) y (2) los pedidos con artículos en
+        // PREVENTA (sin stock, se atrasan a propósito). Siguen contando para el volumen y las acciones
+        // operativas; sólo se excluyen de la ecuación de la promesa por región (Mvd/Interior/Todas).
+        const efectivosProm = efectivos.filter(r => r.region !== "internacional" && !r.preventa);
+        const intlRows = efectivos.filter(r => r.region === "internacional");
+        const nIntl = intlRows.length;
+        const intlDetalle = { FedEx: intlRows.filter(r => r.courier === "FedEx").length, DHL: intlRows.filter(r => r.courier === "DHL").length, Otro: intlRows.filter(r => r.courier !== "FedEx" && r.courier !== "DHL").length };
+        const nPreventa = efectivos.filter(r => r.preventa).length;
         const lt = efectivos.filter(r => r.leadtime != null).map(r => r.leadtime);
         const ltE = efectivos.filter(r => r.leadtimeEntrega != null).map(r => r.leadtimeEntrega);
         // Resumen del mes corriente (para la barra de cumplimiento), calculado del cruce COMPLETO
@@ -905,7 +926,7 @@ function Operativa({ yo, activo, syncTick }) {
           leadtime_entrega: percentil(ltE, PCTL),
           // El calendario y los desgloses van TAMBIÉN adentro de "serie" (columna jsonb que ya existe
           // en la tabla): así se comparten sin necesidad de correr ninguna migración.
-          serie: { ...(serie || {}), calendario: calArr, maduros, internacionales: nIntl, promesaDH: promesaDH, deptoInfo, depoInfo, serieMeses, desgloses: { cumplPorTienda, stockTiendas, histEntrega, histPend: histPendGlob, histDesp: histDespGlob, histByReg } },
+          serie: { ...(serie || {}), calendario: calArr, maduros, internacionales: nIntl, internacionalesDetalle: intlDetalle, preventaN: nPreventa, promesaDH: promesaDH, deptoInfo, depoInfo, serieMeses, desgloses: { cumplPorTienda, stockTiendas, histEntrega, histPend: histPendGlob, histDesp: histDespGlob, histByReg } },
           calendario: calArr,
           actualizado: new Date().toISOString()
         };
@@ -1051,9 +1072,10 @@ function Operativa({ yo, activo, syncTick }) {
   const porRegion = regionVista !== "todas";
   // Vista de la PROMESA/cumplimiento: acá SÍ se aplica el MES elegido (la "foto" del mes) y la región.
   // (Las acciones rápidas y el listado NO se filtran por mes — ver nota más arriba.)
-  // Los internacionales (FedEx/DHL) quedan fuera de la promesa: en "Todas" se excluyen; sólo se ven si se
-  // elige expresamente esa región. (Mvd/Interior ya los excluyen por definición.)
-  const resVistaScope = (resVista || []).filter(r => (!mesVistaEff || mesDeR(r) === mesVistaEff) && (porRegion ? r.region === regionVista : r.region !== "internacional"));
+  // Los internacionales (FedEx/DHL) y los pedidos con artículos en PREVENTA quedan fuera de la promesa: en
+  // "Todas" se excluyen; los internacionales sólo se ven si se elige esa región. La preventa se excluye
+  // siempre (no es una demora real). (Mvd/Interior ya excluyen los internacionales por definición.)
+  const resVistaScope = (resVista || []).filter(r => (!mesVistaEff || mesDeR(r) === mesVistaEff) && !r.preventa && (porRegion ? r.region === regionVista : r.region !== "internacional"));
   // En vivo solo si el mes elegido está en el cruce actual; si es un mes histórico (sin filas cargadas),
   // usamos el snapshot mensual (serieMeses) en vez de un histograma vacío.
   const histsLive = cruceEnSesion.current && resVistaScope.length ? histsLiveDe(resVistaScope) : null;
@@ -1325,6 +1347,9 @@ function Operativa({ yo, activo, syncTick }) {
   const hayRegion = !!deptoCol || !!deptoDiagEff || !!(desgSnap && desgSnap.histByReg);
   // Envíos internacionales (FedEx/DHL): se miden aparte, no entran en la promesa de Mvd/Interior/Todas.
   const nIntlShown = (operSnap && operSnap.serie && typeof operSnap.serie.internacionales === "number") ? operSnap.serie.internacionales : null;
+  const intlDet = (operSnap && operSnap.serie && operSnap.serie.internacionalesDetalle) || null;
+  const intlDetTxt = intlDet ? [["FedEx", intlDet.FedEx], ["DHL", intlDet.DHL], ["Otro", intlDet.Otro]].filter(([, n]) => n > 0).map(([l, n]) => l + ": " + n).join(" · ") : "";
+  const nPreventaShown = (operSnap && operSnap.serie && typeof operSnap.serie.preventaN === "number") ? operSnap.serie.preventaN : null;
   const regionToggle = ceEl("div", { className: "flex items-center gap-1" },
     ceEl("span", { className: "text-[11px] font-bold uppercase mr-1", style: { color: C.gray } }, "Región"),
     [["todas", "Todas"], ["montevideo", "Montevideo"], ["interior", "Interior"]].map(([id, l]) => ceEl("button", {
@@ -1342,7 +1367,8 @@ function Operativa({ yo, activo, syncTick }) {
         ceEl("span", { className: "text-sm font-black fraunces", style: { color: C.ink } }, "Promesa de entrega y tiempos"),
         ceEl("span", { className: "text-[11px] ml-2", style: { color: C.gray } }, (mesVistaEff ? fmtMesYM(mesVistaEff) + " · " : "") + (porTiendaVista ? tiendaVista + " · " : "") + (porRegion ? (regionVista === "montevideo" ? "Montevideo · " : "Interior · ") : "") + distEnt.n + " cumplidos con fecha")),
       ceEl("div", { className: "flex items-center gap-3 flex-wrap" }, mesSelectorPromesa, hayRegion && regionToggle, promesaStep)),
-    nIntlShown > 0 && !porRegion && ceEl("div", { className: "text-[11px] rounded-lg px-3 py-1.5", style: { background: "#F6F8FB", color: C.gray } }, "✈ " + nIntlShown + " envío(s) internacional(es) (FedEx/DHL) quedan FUERA de este cumplimiento — tienen sus propios tiempos y se miden aparte."),
+    nIntlShown > 0 && !porRegion && ceEl("div", { className: "text-[11px] rounded-lg px-3 py-1.5", style: { background: "#F6F8FB", color: C.gray } }, "✈ " + nIntlShown + " envío(s) internacional(es) quedan FUERA de este cumplimiento (tienen sus propios tiempos, con problemas de courier)" + (intlDetTxt ? " — " + intlDetTxt : "") + "."),
+    nPreventaShown > 0 && ceEl("div", { className: "text-[11px] rounded-lg px-3 py-1.5", style: { background: "#FFF7ED", color: "#B45309" } }, "⏳ " + nPreventaShown + " pedido(s) con artículos en PREVENTA (sin stock) quedan FUERA de este cumplimiento — se atrasan a propósito, no es una demora real. (Temporal: " + ARTS_PREVENTA.join(", ") + ".)"),
     porRegion && distEnt.n === 0 && ceEl("div", { className: "text-[11px] rounded-lg px-3 py-2", style: { background: C.amberS, color: C.amber } },
       deptoDiagEff && !deptoDiagEff.col
         ? ceEl("span", null, "No encontré una columna de Departamento en tu Fenicio, así que no puedo separar Montevideo/Interior. Columnas de tu Fenicio: ", ceEl("b", null, (deptoDiagEff.cols || []).join(" · ")), ". Decime cuál trae el departamento del pedido y la conecto.")
