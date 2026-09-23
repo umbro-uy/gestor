@@ -283,15 +283,20 @@ function Operativa({ yo, activo, syncTick }) {
     // ATRASO (definición de operaciones): más de N días hábiles en el mismo estado de Encuentra, que
     // NO figure "Pedido entregado" ni "Listo para retirar" ni "En tránsito" en Fenicio y que NO esté
     // cancelado. Los "En tránsito" salen del atraso: ya se despacharon (van en su propio filtro).
-    const atrasado = !cancelado && !fenEntregado && !fenListoRetiro && !enTransito && dias != null && dias > filtroDias;
-    const critico = !cancelado && !fenEntregado && !fenListoRetiro && !enTransito && dias != null && dias > 10;
+    // FUERA de las alertas operativas (atraso/crítico/estancado/validar-despacho): los pedidos con artículos
+    // en PREVENTA (sin stock, se atrasan a propósito) y los INTERNACIONALES (FedEx/DHL, tiempos propios y hoy
+    // con problemas de courier). Su demora NO es un error nuestro, así que no deben ensuciar los accionables
+    // ni contar como críticos. Se siguen viendo por su conteo aparte y en "Todos".
+    const excluidoAlerta = !!row.preventa || !!row.envioIntl;
+    const atrasado = !excluidoAlerta && !cancelado && !fenEntregado && !fenListoRetiro && !enTransito && dias != null && dias > filtroDias;
+    const critico = !excluidoAlerta && !cancelado && !fenEntregado && !fenListoRetiro && !enTransito && dias != null && dias > 10;
     // "Validar despacho": Monitor dice despachado pero Fenicio no pasó a entregado tras +2 días hábiles.
     // Si Fenicio está "Listo para retirar" o "En tránsito", el despacho SÍ se cumplió → no hay que validar.
-    const posibleNoDespacho = despachadoWMS && !fenEntregado && !fenListoRetiro && !enTransito && (diasDesp != null ? diasDesp > 2 : (dias != null && dias > 2));
+    const posibleNoDespacho = !excluidoAlerta && despachadoWMS && !fenEntregado && !fenListoRetiro && !enTransito && (diasDesp != null ? diasDesp > 2 : (dias != null && dias > 2));
     const inconsistente = posibleNoDespacho;
     // ESTANCADO: hace +2 días hábiles que NO cambia de estado en el WMS y Fenicio no lo da por entregado
     // ni "Listo para retirar" ni "En tránsito". Es independiente del atraso.
-    const estancado = !cancelado && !fenEntregado && !fenListoRetiro && !enTransito && diasEstado != null && diasEstado > 2;
+    const estancado = !excluidoAlerta && !cancelado && !fenEntregado && !fenListoRetiro && !enTransito && diasEstado != null && diasEstado > 2;
     // Forma de entrega: Click & Collect ≠ Pickup ≠ Envío a domicilio
     const fe = String(row.formaEntrega || "").toLowerCase();
     const clickCollect = fe.includes("click") || fe.includes("collect");
@@ -303,7 +308,7 @@ function Operativa({ yo, activo, syncTick }) {
     const listoEnviar = /listo.*env[ií]|pronto.*despach|en\s*env[ií]o/i.test(estadoFen) || /pronto.*despach|env[ií]o\s*pronto/i.test(estadoWMS);
     const movidoODespachado = movidoWMS || listoRetiro || listoEnviar || /despach|tr[aá]nsito|camino/i.test(estadoFen) || /tr[aá]nsito|camino/i.test(estadoWMS);
     // Depo 0 = algún artículo sin stock (fila guardada en "0" o cualquier ítem del pedido en "0").
-    const sinStock = (depo === "0" || row.depo0Any) && !entregado && !cancelado && !movidoODespachado && !row.pcn;
+    const sinStock = (depo === "0" || row.depo0Any) && !entregado && !cancelado && !movidoODespachado && !row.pcn && !row.preventa;
     const ccDepo9 = clickCollect && depo === "9";  // C&C no debería pedirse a depo 9
     // Tiempo a despacho: días corridos compra → "Fecha despacho" del WMS (dato real; la entrega no se registra)
     let leadtime = null;
@@ -523,6 +528,12 @@ function Operativa({ yo, activo, syncTick }) {
     // Preferimos el departamento de ENTREGA (destino) sobre el de facturación.
     const colDepto = findCol(sF, [/departamento.*entrega/i, /departamento.*env[ií]/i]) || findCol(sF, [/departamento/i, /provincia/i, /depto/i, /dpto/i, /estado.*prov/i]) || "";
     setDeptoCol(colDepto || "");
+    // SKU y "Tipo envío" de FENICIO: los usamos para detectar preventa e internacionales AUNQUE el pedido
+    // todavía no esté en el WMS (recién ingresado, sólo en Fenicio). Antes ambos se detectaban sólo desde el
+    // WMS, así que un pedido nuevo de courier (DHL/FedEx) o de un artículo en preventa salía marcado como
+    // "crítico" hasta aparecer en el Monitor. Ahora se detectan desde el lado de Fenicio también.
+    const colSkuF = findCol(sF, [/^sku$/i, /sku/i, /art[ií]culo/i, /c[oó]d.*art/i]) || "";
+    const colTipoEnvF = findCol(sF, [/tipo.*env[ií]/i, /forma.*env[ií]/i, /m[eé]todo.*env[ií]/i]) || "";
     const sW = rowsB[0] || {};
     const colVenta = findCol(sW, [/^venta$/i, /venta/i]) || "Venta";
     const colEstEnc = findCol(sW, [/estado.*encuentra/i]) || "Estado Encuentra";
@@ -570,6 +581,8 @@ function Operativa({ yo, activo, syncTick }) {
       if (art.toUpperCase().startsWith("PCN") && k) pcnVentas.add(k);
       if (k && esArtPreventa(art)) preventaVentas.add(k);
     });
+    // Preventa también por el SKU de FENICIO: así se detecta aunque el pedido todavía no esté en el WMS.
+    if (colSkuF) rowsA.forEach(r => { const k = String(r[colNro] || "").trim(); if (k && esArtPreventa(r[colSkuF])) preventaVentas.add(k); });
 
     const wmsF = filtroTienda === "todas" ? rowsB : rowsB.filter(r => String(r[colCanal] || "").toLowerCase().includes(filtroTienda.toLowerCase()));
     const wmsMap = {};
@@ -605,11 +618,15 @@ function Operativa({ yo, activo, syncTick }) {
       const depo0Any = !!anyDepo0[pedido]; // algún artículo del pedido quedó en Depo 0 (aunque la fila guardada sea de otro depósito)
       const fechaDespacho = wms ? wms[colFechDesp] || "-" : "-";
       const formaEntrega = wms ? String(wms[colForma] || "") : "";
-      // Internacional: el "Destino" del WMS trae el courier (FedEx / DHL) o la forma de entrega lo indica.
+      // Internacional: el "Destino" del WMS trae el courier (FedEx / DHL); Fenicio lo trae en "Tipo envío"
+      // ("Envíos internacionales a través de DHL/FedEx"). Se miran AMBOS para marcarlo aunque el pedido
+      // todavía no esté en el WMS (recién ingresado) o el departamento parezca uruguayo.
       const destinoW = wms ? String(wms[colDestinoW] || "") : "";
-      const envioIntl = wms ? (RE_INTL.test(destinoW) || RE_INTL.test(formaEntrega)) : false;
+      const tipoEnvF = colTipoEnvF ? String(r[colTipoEnvF] || "") : "";
+      const intlTxt = destinoW + " " + formaEntrega + " " + tipoEnvF;
+      const envioIntl = RE_INTL.test(intlTxt);
       // Courier del internacional, para diferenciar FedEx vs DHL (problemas del courier, no error nuestro).
-      const courier = envioIntl ? (/fedex/i.test(destinoW + " " + formaEntrega) ? "FedEx" : /\bdhl\b|d\.h\.l/i.test(destinoW + " " + formaEntrega) ? "DHL" : "Otro") : "";
+      const courier = envioIntl ? (/fedex/i.test(intlTxt) ? "FedEx" : /\bdhl\b|d\.h\.l/i.test(intlTxt) ? "DHL" : "Otro") : "";
       // Fecha de entrega real desde Fenicio (no del WMS). Vacío si Fenicio no la trae.
       const fechaEntrega = colFechEntFen ? String(r[colFechEntFen] || "") : "";
       const fechaListo = colFechListo ? String(r[colFechListo] || "") : "";
@@ -1367,8 +1384,8 @@ function Operativa({ yo, activo, syncTick }) {
         ceEl("span", { className: "text-sm font-black fraunces", style: { color: C.ink } }, "Promesa de entrega y tiempos"),
         ceEl("span", { className: "text-[11px] ml-2", style: { color: C.gray } }, (mesVistaEff ? fmtMesYM(mesVistaEff) + " · " : "") + (porTiendaVista ? tiendaVista + " · " : "") + (porRegion ? (regionVista === "montevideo" ? "Montevideo · " : "Interior · ") : "") + distEnt.n + " cumplidos con fecha")),
       ceEl("div", { className: "flex items-center gap-3 flex-wrap" }, mesSelectorPromesa, hayRegion && regionToggle, promesaStep)),
-    nIntlShown > 0 && !porRegion && ceEl("div", { className: "text-[11px] rounded-lg px-3 py-1.5", style: { background: "#F6F8FB", color: C.gray } }, "✈ " + nIntlShown + " envío(s) internacional(es) quedan FUERA de este cumplimiento (tienen sus propios tiempos, con problemas de courier)" + (intlDetTxt ? " — " + intlDetTxt : "") + "."),
-    nPreventaShown > 0 && ceEl("div", { className: "text-[11px] rounded-lg px-3 py-1.5", style: { background: "#FFF7ED", color: "#B45309" } }, "⏳ " + nPreventaShown + " pedido(s) con artículos en PREVENTA (sin stock) quedan FUERA de este cumplimiento — se atrasan a propósito, no es una demora real. (Temporal: " + ARTS_PREVENTA.join(", ") + ".)"),
+    nIntlShown > 0 && !porRegion && ceEl("div", { className: "text-[11px] rounded-lg px-3 py-1.5", style: { background: "#F6F8FB", color: C.gray } }, "✈ " + nIntlShown + " envío(s) internacional(es) quedan FUERA de este cumplimiento y de las alertas (atrasados/críticos): tienen sus propios tiempos y hoy dan problemas de courier — no es un error nuestro" + (intlDetTxt ? " — " + intlDetTxt : "") + "."),
+    nPreventaShown > 0 && ceEl("div", { className: "text-[11px] rounded-lg px-3 py-1.5", style: { background: "#FFF7ED", color: "#B45309" } }, "⏳ " + nPreventaShown + " pedido(s) con artículos en PREVENTA (sin stock) quedan FUERA de este cumplimiento y de las alertas — se atrasan a propósito, no es una demora real. (Temporal: " + ARTS_PREVENTA.join(", ") + ".)"),
     porRegion && distEnt.n === 0 && ceEl("div", { className: "text-[11px] rounded-lg px-3 py-2", style: { background: C.amberS, color: C.amber } },
       deptoDiagEff && !deptoDiagEff.col
         ? ceEl("span", null, "No encontré una columna de Departamento en tu Fenicio, así que no puedo separar Montevideo/Interior. Columnas de tu Fenicio: ", ceEl("b", null, (deptoDiagEff.cols || []).join(" · ")), ". Decime cuál trae el departamento del pedido y la conecto.")
