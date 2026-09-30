@@ -185,10 +185,12 @@ function Operativa({ yo, activo, syncTick }) {
   // los que hagan falta y se aplican a todos los cálculos de días hábiles (atrasos, promesa, tiempos).
   const FERIADOS = new Set(["2026-08-25"]);
   const esFeriado = d => FERIADOS.has(d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"));
-  // Artículos en PREVENTA (sin stock, se atrasan a propósito): TODO pedido que incluya alguno queda FUERA
+  // Artículos en PREVENTA (sin stock, se atrasan a propósito): TODO pedido que incluya alguno quedaría FUERA
   // del cumplimiento de entrega (no es una demora real nuestra). Es TEMPORAL: se comparan por código (mayúsc.,
-  // como subcadena del artículo/SKU). Cuando se normalice el stock, vaciar esta lista → deja de excluir.
-  const ARTS_PREVENTA = ["N1A32600", "N1BA2600"];
+  // como subcadena del artículo/SKU). Al normalizar el stock se vacía esta lista → deja de excluir y esos
+  // pedidos vuelven a contar como cualquier otro (si no están despachados, cuentan como demorados).
+  // 2026-09-30: llegó el stock de N1A32600 / N1BA2600 → lista vaciada, la exclusión por preventa queda apagada.
+  const ARTS_PREVENTA = [];
   const esArtPreventa = art => { const a = String(art || "").toUpperCase(); return ARTS_PREVENTA.some(c => a.includes(c)); };
   const diasHab = desde => {
     try {
