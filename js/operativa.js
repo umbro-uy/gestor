@@ -574,6 +574,8 @@ function Operativa({ yo, activo, syncTick }) {
     // PCN (prendas personalizadas): se detectan por el artículo del WMS con prefijo "PCN".
     // No se cuentan como Depo 0 (su falta de stock es normal, se hacen a pedido).
     const colArt = findCol(sW, [/art[ií]culo/i, /^sku$/i, /c[oó]d.*art/i]) || "Articulo";
+    // Descripción del artículo (para el desglose "productos más afectados").
+    const colDesc = findCol(sW, [/descrip.*art/i, /descrip/i, /nombre.*art/i]) || "";
     const pcnVentas = new Set();
     // Ventas (pedidos) que incluyen algún artículo en PREVENTA → se excluyen del cumplimiento de entrega.
     const preventaVentas = new Set();
@@ -592,11 +594,20 @@ function Operativa({ yo, activo, syncTick }) {
     // Si ALGÚN artículo quedó en Depo 0 (sin stock), el pedido necesita acción manual aunque la fila que
     // guardemos sea de otro depósito. Por eso marcamos aparte los pedidos con algún ítem en Depo 0.
     const anyDepo0 = {};
+    // Por pedido: el SET de depósitos que usó (un pedido puede tener ítems en varios) y la lista de artículos
+    // (código/descripción/depósito). Sirven para los desgloses de cumplimiento POR DEPÓSITO y POR PRODUCTO.
+    const depsPorPed = {};
+    const artsPorPed = {};
     const ORDEN_EST = ["Items Pedidos", "Items Confirmados", "Items Clasificados  (Orden Liberada)", "Pedido en  envio pronto para despacho", "Pedido Despachado", "Pedido recibido  en tienda", "Pedido entregado  a cliente", "Cancelado"];
     wmsF.forEach(r => {
       const k = String(r[colVenta] || "").trim();
       if (!k) return;
-      if (String(r[colDep] || "").replace(/\.0+$/, "").trim() === "0") anyDepo0[k] = true;
+      const depR = String(r[colDep] || "").replace(/\.0+$/, "").trim();
+      if (depR === "0") anyDepo0[k] = true;
+      if (depR) (depsPorPed[k] || (depsPorPed[k] = new Set())).add(depR);
+      const artC = String(r[colArt] || "").trim();
+      const artD = colDesc ? String(r[colDesc] || "").trim() : "";
+      if (artC || artD) (artsPorPed[k] || (artsPorPed[k] = [])).push({ art: artC, desc: artD, dep: depR });
       if (!wmsMap[k]) wmsMap[k] = r;else {
         const ni = ORDEN_EST.findIndex(s => r[colEstEnc] === s);
         const ai = ORDEN_EST.findIndex(s => wmsMap[k][colEstEnc] === s);
@@ -858,6 +869,49 @@ function Operativa({ yo, activo, syncTick }) {
         const histPendGlob = histDe([].concat(...Object.values(porTienda).map(b => b.dhPend)));
         const histDespGlob = histDe([].concat(...Object.values(porTienda).map(b => b.dhDesp)));
         const tasaCumplProm = promEvalTot ? Math.round(promEnPlazoTot / promEvalTot * 100) : 0;
+        // ── Desgloses NUEVOS del cumplimiento: por FORMA DE ENTREGA, por DEPÓSITO y TOP PRODUCTOS afectados ──
+        // Mismo criterio de "en plazo" que el resto (promEval ≤ PROMESA_DH). Sirven para entender DÓNDE falla
+        // el cumplimiento (no sólo el promedio): cuello de botella por retiro/domicilio, depósito y producto.
+        // 1) Por forma de entrega (Domicilio / Pickup / Click & Collect).
+        const formaDe = r => r.clickCollect ? "Click & Collect" : r.pickup ? "Pickup" : (/domicil/i.test(String(r.formaEntrega || "")) ? "Domicilio" : "Otro");
+        const porForma = {};
+        efectivosProm.forEach(r => {
+          const f = formaDe(r);
+          const b = porForma[f] || (porForma[f] = { forma: f, total: 0, evalN: 0, enPlazo: 0, ltE: [] });
+          b.total++;
+          const pe = promEval(r); if (pe != null) { b.evalN++; if (pe) b.enPlazo++; }
+          if (r.leadtimeEntrega != null) b.ltE.push(r.leadtimeEntrega);
+        });
+        const cumplPorForma = Object.values(porForma).map(b => ({ forma: b.forma, total: b.total, evalN: b.evalN, enPlazo: b.enPlazo, late: b.evalN - b.enPlazo, pct: b.evalN ? Math.round(b.enPlazo / b.evalN * 100) : null, entregaP90: percentil(b.ltE, PCTL) })).sort((a, b) => (a.pct == null ? 999 : a.pct) - (b.pct == null ? 999 : b.pct));
+        // 2) Por depósito. Un pedido puede usar VARIOS depósitos → cuenta en cada uno (así se ve el impacto
+        //    real de Depo 0 / depósitos lentos, que el "depósito representativo" ocultaría). Nombre embebido
+        //    en "Destino" ("Gral. Flores - 301"), + nombres fijos conocidos.
+        const NOM_DEPO = { "9": "Depósito central", "0": "SIN STOCK (Depo 0)", "1601": "Tres Cruces", "1701": "Nuevo Centro" };
+        const nombreDepo = {};
+        if (colDestinoW) rowsB.forEach(r => { const m = String(r[colDestinoW] || "").trim().match(/^(.*?)[\s.-]*[-–]\s*(\d{3,4})\s*$/); if (m && !nombreDepo[m[2]]) nombreDepo[m[2]] = m[1].replace(/\s+/g, " ").trim(); });
+        const porDeposito = {};
+        efectivosProm.forEach(r => {
+          const ds = depsPorPed[r.pedido] ? [...depsPorPed[r.pedido]] : (r.deposito && r.deposito !== "-" ? [String(r.deposito)] : []);
+          const pe = promEval(r);
+          ds.forEach(d => {
+            const b = porDeposito[d] || (porDeposito[d] = { depo: d, total: 0, evalN: 0, enPlazo: 0, ltE: [], t: {} });
+            b.total++;
+            if (pe != null) { b.evalN++; if (pe) b.enPlazo++; }
+            if (r.leadtimeEntrega != null) b.ltE.push(r.leadtimeEntrega);
+            b.t[r.tienda || "-"] = (b.t[r.tienda || "-"] || 0) + 1;
+          });
+        });
+        const cumplPorDeposito = Object.values(porDeposito).filter(b => b.total >= 10).map(b => ({ depo: b.depo, nombre: NOM_DEPO[b.depo] || nombreDepo[b.depo] || ("Depo " + b.depo), total: b.total, evalN: b.evalN, enPlazo: b.enPlazo, late: b.evalN - b.enPlazo, pct: b.evalN ? Math.round(b.enPlazo / b.evalN * 100) : null, entregaP90: percentil(b.ltE, PCTL), tiendaDom: Object.entries(b.t).sort((a, b) => b[1] - a[1])[0][0] })).sort((a, b) => (a.pct == null ? 999 : a.pct) - (b.pct == null ? 999 : b.pct));
+        // 3) Top productos: artículos presentes en más pedidos ATRASADOS (y cuántas veces cayeron en Depo 0).
+        const porProd = {};
+        efectivosProm.forEach(r => {
+          const pe = promEval(r); if (pe == null) return; // sólo evaluables
+          const arts = artsPorPed[r.pedido] || [];
+          const vistos = new Set();
+          arts.forEach(a => { const key = (a.desc || a.art || "").trim(); if (!key || vistos.has(key)) return; vistos.add(key); const b = porProd[key] || (porProd[key] = { prod: key, n: 0, late: 0, depo0: 0 }); b.n++; if (!pe) b.late++; });
+          arts.forEach(a => { if (a.dep === "0") { const key = (a.desc || a.art || "").trim(); if (key && porProd[key]) porProd[key].depo0++; } });
+        });
+        const topProductos = Object.values(porProd).filter(b => b.n >= 10).map(b => ({ prod: b.prod, n: b.n, late: b.late, pct: b.n ? Math.round((b.n - b.late) / b.n * 100) : null, depo0: b.depo0 })).sort((a, b) => b.late - a.late || (a.pct - b.pct)).slice(0, 20);
         // ── HISTÓRICO MENSUAL de logística (cumplimiento + volumen), por región. Se ACUMULA en el snapshot:
         // cargar meses viejos una sola vez los deja guardados; los cruces siguientes solo pisan los meses
         // que traen (upsert por mes) y conservan el resto. No cambia nada de lo actual: es info que se suma.
@@ -949,7 +1003,7 @@ function Operativa({ yo, activo, syncTick }) {
           leadtime_entrega: percentil(ltE, PCTL),
           // El calendario y los desgloses van TAMBIÉN adentro de "serie" (columna jsonb que ya existe
           // en la tabla): así se comparten sin necesidad de correr ninguna migración.
-          serie: { ...(serie || {}), calendario: calArr, maduros, internacionales: nIntl, internacionalesDetalle: intlDetalle, preventaN: nPreventa, promesaDH: promesaDH, deptoInfo, depoInfo, serieMeses, desgloses: { cumplPorTienda, stockTiendas, histEntrega, histPend: histPendGlob, histDesp: histDespGlob, histByReg } },
+          serie: { ...(serie || {}), calendario: calArr, maduros, internacionales: nIntl, internacionalesDetalle: intlDetalle, preventaN: nPreventa, promesaDH: promesaDH, deptoInfo, depoInfo, serieMeses, desgloses: { cumplPorTienda, cumplPorForma, cumplPorDeposito, topProductos, stockTiendas, histEntrega, histPend: histPendGlob, histDesp: histDespGlob, histByReg } },
           calendario: calArr,
           actualizado: new Date().toISOString()
         };
@@ -1469,6 +1523,50 @@ function Operativa({ yo, activo, syncTick }) {
               ceEl("td", { className: "px-3 py-1.5 tabular-nums font-bold", style: { color: colDelta(dPct) } }, dPct == null ? "—" : (dPct > 0 ? "▲ +" : dPct < 0 ? "▼ " : "= ") + dPct + " pts"));
           })))),
     ceEl("p", { className: "text-[10px]", style: { color: C.gray } }, "Se acumula solo: cargá los meses anteriores una vez y quedan guardados para el equipo. Δ = variación vs el mes anterior de la lista. El cumplimiento se recalcula con la promesa actual (≤" + promesaDH + " días háb.)."));
+  // ── Paneles "¿DÓNDE falla el cumplimiento?": por forma de entrega, por depósito y top productos ──
+  // Del último cruce (snapshot). Ubican el cuello de botella, no sólo el promedio general.
+  const colPctC = p => p == null ? C.gray : p >= 90 ? C.green : p >= 70 ? C.amber : C.red;
+  const unAbrev = t => ({ "Tienda Nacional": "TN", "TimeOut": "TO", "Timeout": "TO", "Classico": "CLS", "Clasico": "CLS" }[t] || t || "—");
+  const celNum = (v, extra) => ceEl("td", Object.assign({ className: "px-3 py-1.5 tabular-nums", style: { textAlign: "right" } }, extra || {}), v);
+  const tablaCumpl = (titulo, nota, headers, filas) => ceEl("div", { className: "bg-white rounded-2xl border p-4", style: { borderColor: C.line } },
+    ceEl("div", { className: "text-sm font-black fraunces", style: { color: C.ink } }, titulo),
+    nota && ceEl("div", { className: "text-[11px] mt-0.5 mb-2", style: { color: C.gray } }, nota),
+    ceEl("div", { className: "overflow-auto" }, ceEl("table", { className: "w-full", style: { fontSize: 12 } },
+      ceEl("thead", null, ceEl("tr", { style: { background: "#F6F7F9" } }, headers.map((h, i) => ceEl("th", { key: i, className: "px-3 py-2 font-bold uppercase", style: { color: C.gray, fontSize: 10, textAlign: i === 0 ? "left" : "right", whiteSpace: "nowrap" } }, h)))),
+      ceEl("tbody", null, filas))));
+  const dCumpl = desgSnap && (desgSnap.cumplPorForma || desgSnap.cumplPorDeposito || desgSnap.topProductos) ? desgSnap : null;
+  const cumplDesglosesPanel = !dCumpl ? null : ceEl("div", { className: "space-y-3" },
+    ceEl("div", null,
+      ceEl("span", { className: "text-sm font-black fraunces", style: { color: C.ink } }, "¿Dónde falla el cumplimiento?"),
+      ceEl("span", { className: "text-[11px] ml-2", style: { color: C.gray } }, "Mismo criterio de “en plazo” (≤" + promesaDH + " días háb.), abierto por forma de entrega, depósito y producto · del último cruce")),
+    (dCumpl.cumplPorForma && dCumpl.cumplPorForma.length) ? tablaCumpl("Por forma de entrega",
+      "Dónde se concentran los atrasos: retiro en tienda (Pickup / Click & Collect) vs envío a domicilio.",
+      ["Forma", "Pedidos", "% a tiempo", "Atrasados", "P90 entrega"],
+      dCumpl.cumplPorForma.map((f, i) => ceEl("tr", { key: i, style: { borderTop: "1px solid " + C.line } },
+        ceEl("td", { className: "px-3 py-1.5 font-semibold" }, f.forma),
+        celNum((f.total || 0).toLocaleString("es-UY")),
+        celNum(f.pct == null ? "—" : f.pct + "%", { className: "px-3 py-1.5 tabular-nums font-black", style: { textAlign: "right", color: colPctC(f.pct) } }),
+        celNum(f.late || 0),
+        celNum(f.entregaP90 != null ? f.entregaP90 + " d" : "—")))) : null,
+    (dCumpl.cumplPorDeposito && dCumpl.cumplPorDeposito.length) ? tablaCumpl("Por depósito de origen",
+      "Un pedido puede usar varios depósitos → cuenta en cada uno (así se ve el impacto de Depo 0 / depósitos lentos). De peor a mejor.",
+      ["Depósito", "Pedidos", "% a tiempo", "Atrasados", "P90 entrega", "Tienda"],
+      dCumpl.cumplPorDeposito.slice(0, 14).map((d, i) => ceEl("tr", { key: i, style: { borderTop: "1px solid " + C.line, background: d.depo === "0" ? "#FFF7ED" : undefined } },
+        ceEl("td", { className: "px-3 py-1.5 font-semibold" }, d.nombre + " (" + d.depo + ")"),
+        celNum((d.total || 0).toLocaleString("es-UY")),
+        celNum(d.pct == null ? "—" : d.pct + "%", { className: "px-3 py-1.5 tabular-nums font-black", style: { textAlign: "right", color: colPctC(d.pct) } }),
+        celNum(d.late || 0),
+        celNum(d.entregaP90 != null ? d.entregaP90 + " d" : "—"),
+        celNum(unAbrev(d.tiendaDom))))) : null,
+    (dCumpl.topProductos && dCumpl.topProductos.length) ? tablaCumpl("Productos más afectados",
+      "Artículos presentes en más pedidos atrasados (y cuántas veces cayeron en Depo 0, sin stock).",
+      ["Producto", "Pedidos", "Atrasados", "% a tiempo", "En Depo 0"],
+      dCumpl.topProductos.map((p, i) => ceEl("tr", { key: i, style: { borderTop: "1px solid " + C.line } },
+        ceEl("td", { className: "px-3 py-1.5 font-semibold", style: { maxWidth: 280 } }, p.prod),
+        celNum((p.n || 0).toLocaleString("es-UY")),
+        celNum(p.late || 0, { className: "px-3 py-1.5 tabular-nums font-bold", style: { textAlign: "right", color: C.red } }),
+        celNum(p.pct == null ? "—" : p.pct + "%", { className: "px-3 py-1.5 tabular-nums font-black", style: { textAlign: "right", color: colPctC(p.pct) } }),
+        celNum(p.depo0 ? p.depo0 : "—", { className: "px-3 py-1.5 tabular-nums", style: { textAlign: "right", color: p.depo0 ? "#B45309" : C.gray } })))) : null);
   const calendarEl = calData.length > 0 ? ceEl("div", { className: "bg-white rounded-2xl border p-3", style: { borderColor: C.line } },
     ceEl("div", { className: "flex items-center justify-between flex-wrap gap-2 mb-2" },
       ceEl("div", null,
@@ -1703,7 +1801,7 @@ function Operativa({ yo, activo, syncTick }) {
     /*#__PURE__*/React.createElement(MetricCard, { label: "Tiempo de entrega", value: fmtDias(volEnt), color: C.ink, sub: "típico (mediana)" }),
     /*#__PURE__*/React.createElement(MetricCard, { label: "Sin WMS", value: operSnap ? (operSnap.sin_wms || 0) : sinWMS.length, color: (operSnap ? operSnap.sin_wms : sinWMS.length) ? C.amber : C.gray, tab: sinWMS.length ? "sinwms" : null })),
   subOper === "resumen" && kpiPanel && DesglosePanel({ tipo: kpiPanel })),
-  subOper === "tiempos" && /*#__PURE__*/React.createElement(React.Fragment, null, distPanel, /*#__PURE__*/React.createElement("div", { className: "text-[11px]", style: { color: C.gray } }, "Abajo: tiempo de despacho de STOCK desde cada tienda al depósito central (confirmado → procesado)."), DesglosePanel({ tipo: "stock" })),
+  subOper === "tiempos" && /*#__PURE__*/React.createElement(React.Fragment, null, distPanel, cumplDesglosesPanel, /*#__PURE__*/React.createElement("div", { className: "text-[11px]", style: { color: C.gray } }, "Abajo: tiempo de despacho de STOCK desde cada tienda al depósito central (confirmado → procesado)."), DesglosePanel({ tipo: "stock" })),
   subOper === "evolucion" && evolPanel,
   leadtimeEntProm == null && entregaDiag && /*#__PURE__*/React.createElement("div", { className: "rounded-xl px-4 py-3 text-xs", style: { background: C.amberS, color: C.amber } },
     /*#__PURE__*/React.createElement("b", null, "Tiempo de entrega sin datos. "),
