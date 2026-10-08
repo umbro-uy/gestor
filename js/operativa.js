@@ -872,46 +872,37 @@ function Operativa({ yo, activo, syncTick }) {
         // ── Desgloses NUEVOS del cumplimiento: por FORMA DE ENTREGA, por DEPÓSITO y TOP PRODUCTOS afectados ──
         // Mismo criterio de "en plazo" que el resto (promEval ≤ PROMESA_DH). Sirven para entender DÓNDE falla
         // el cumplimiento (no sólo el promedio): cuello de botella por retiro/domicilio, depósito y producto.
-        // 1) Por forma de entrega (Domicilio / Pickup / Click & Collect).
+        // Se calculan GLOBAL (todo el cruce) y también POR MES, y los meses se ACUMULAN en el snapshot (igual
+        // que serieMeses): cargar meses viejos los deja guardados y los cruces siguientes sólo pisan los meses
+        // que traen. Así la "performance mensual" por forma/depósito/producto NO se pierde al cargar datos nuevos.
         const formaDe = r => r.clickCollect ? "Click & Collect" : r.pickup ? "Pickup" : (/domicil/i.test(String(r.formaEntrega || "")) ? "Domicilio" : "Otro");
-        const porForma = {};
-        efectivosProm.forEach(r => {
-          const f = formaDe(r);
-          const b = porForma[f] || (porForma[f] = { forma: f, total: 0, evalN: 0, enPlazo: 0, ltE: [] });
-          b.total++;
-          const pe = promEval(r); if (pe != null) { b.evalN++; if (pe) b.enPlazo++; }
-          if (r.leadtimeEntrega != null) b.ltE.push(r.leadtimeEntrega);
-        });
-        const cumplPorForma = Object.values(porForma).map(b => ({ forma: b.forma, total: b.total, evalN: b.evalN, enPlazo: b.enPlazo, late: b.evalN - b.enPlazo, pct: b.evalN ? Math.round(b.enPlazo / b.evalN * 100) : null, entregaP90: percentil(b.ltE, PCTL) })).sort((a, b) => (a.pct == null ? 999 : a.pct) - (b.pct == null ? 999 : b.pct));
-        // 2) Por depósito. Un pedido puede usar VARIOS depósitos → cuenta en cada uno (así se ve el impacto
-        //    real de Depo 0 / depósitos lentos, que el "depósito representativo" ocultaría). Nombre embebido
-        //    en "Destino" ("Gral. Flores - 301"), + nombres fijos conocidos.
+        // Nombre de cada depósito (embebido en "Destino", ej. "Gral. Flores - 301") + nombres fijos conocidos.
         const NOM_DEPO = { "9": "Depósito central", "0": "SIN STOCK (Depo 0)", "1601": "Tres Cruces", "1701": "Nuevo Centro" };
         const nombreDepo = {};
         if (colDestinoW) rowsB.forEach(r => { const m = String(r[colDestinoW] || "").trim().match(/^(.*?)[\s.-]*[-–]\s*(\d{3,4})\s*$/); if (m && !nombreDepo[m[2]]) nombreDepo[m[2]] = m[1].replace(/\s+/g, " ").trim(); });
-        const porDeposito = {};
-        efectivosProm.forEach(r => {
-          const ds = depsPorPed[r.pedido] ? [...depsPorPed[r.pedido]] : (r.deposito && r.deposito !== "-" ? [String(r.deposito)] : []);
-          const pe = promEval(r);
-          ds.forEach(d => {
-            const b = porDeposito[d] || (porDeposito[d] = { depo: d, total: 0, evalN: 0, enPlazo: 0, ltE: [], t: {} });
-            b.total++;
-            if (pe != null) { b.evalN++; if (pe) b.enPlazo++; }
-            if (r.leadtimeEntrega != null) b.ltE.push(r.leadtimeEntrega);
-            b.t[r.tienda || "-"] = (b.t[r.tienda || "-"] || 0) + 1;
-          });
-        });
-        const cumplPorDeposito = Object.values(porDeposito).filter(b => b.total >= 10).map(b => ({ depo: b.depo, nombre: NOM_DEPO[b.depo] || nombreDepo[b.depo] || ("Depo " + b.depo), total: b.total, evalN: b.evalN, enPlazo: b.enPlazo, late: b.evalN - b.enPlazo, pct: b.evalN ? Math.round(b.enPlazo / b.evalN * 100) : null, entregaP90: percentil(b.ltE, PCTL), tiendaDom: Object.entries(b.t).sort((a, b) => b[1] - a[1])[0][0] })).sort((a, b) => (a.pct == null ? 999 : a.pct) - (b.pct == null ? 999 : b.pct));
-        // 3) Top productos: artículos presentes en más pedidos ATRASADOS (y cuántas veces cayeron en Depo 0).
-        const porProd = {};
-        efectivosProm.forEach(r => {
-          const pe = promEval(r); if (pe == null) return; // sólo evaluables
-          const arts = artsPorPed[r.pedido] || [];
-          const vistos = new Set();
-          arts.forEach(a => { const key = (a.desc || a.art || "").trim(); if (!key || vistos.has(key)) return; vistos.add(key); const b = porProd[key] || (porProd[key] = { prod: key, n: 0, late: 0, depo0: 0 }); b.n++; if (!pe) b.late++; });
-          arts.forEach(a => { if (a.dep === "0") { const key = (a.desc || a.art || "").trim(); if (key && porProd[key]) porProd[key].depo0++; } });
-        });
-        const topProductos = Object.values(porProd).filter(b => b.n >= 10).map(b => ({ prod: b.prod, n: b.n, late: b.late, pct: b.n ? Math.round((b.n - b.late) / b.n * 100) : null, depo0: b.depo0 })).sort((a, b) => b.late - a.late || (a.pct - b.pct)).slice(0, 20);
+        const calcDesglose = rows => {
+          // 1) Por forma de entrega.
+          const porForma = {};
+          rows.forEach(r => { const f = formaDe(r); const b = porForma[f] || (porForma[f] = { forma: f, total: 0, evalN: 0, enPlazo: 0, ltE: [] }); b.total++; const pe = promEval(r); if (pe != null) { b.evalN++; if (pe) b.enPlazo++; } if (r.leadtimeEntrega != null) b.ltE.push(r.leadtimeEntrega); });
+          const cumplPorForma = Object.values(porForma).map(b => ({ forma: b.forma, total: b.total, evalN: b.evalN, enPlazo: b.enPlazo, late: b.evalN - b.enPlazo, pct: b.evalN ? Math.round(b.enPlazo / b.evalN * 100) : null, entregaP90: percentil(b.ltE, PCTL) })).sort((a, b) => (a.pct == null ? 999 : a.pct) - (b.pct == null ? 999 : b.pct));
+          // 2) Por depósito (un pedido cuenta en cada depósito que usó).
+          const porDeposito = {};
+          rows.forEach(r => { const ds = depsPorPed[r.pedido] ? [...depsPorPed[r.pedido]] : (r.deposito && r.deposito !== "-" ? [String(r.deposito)] : []); const pe = promEval(r); ds.forEach(d => { const b = porDeposito[d] || (porDeposito[d] = { depo: d, total: 0, evalN: 0, enPlazo: 0, ltE: [], t: {} }); b.total++; if (pe != null) { b.evalN++; if (pe) b.enPlazo++; } if (r.leadtimeEntrega != null) b.ltE.push(r.leadtimeEntrega); b.t[r.tienda || "-"] = (b.t[r.tienda || "-"] || 0) + 1; }); });
+          const cumplPorDeposito = Object.values(porDeposito).filter(b => b.total >= 10).map(b => ({ depo: b.depo, nombre: NOM_DEPO[b.depo] || nombreDepo[b.depo] || ("Depo " + b.depo), total: b.total, evalN: b.evalN, enPlazo: b.enPlazo, late: b.evalN - b.enPlazo, pct: b.evalN ? Math.round(b.enPlazo / b.evalN * 100) : null, entregaP90: percentil(b.ltE, PCTL), tiendaDom: Object.entries(b.t).sort((a, b) => b[1] - a[1])[0][0] })).sort((a, b) => (a.pct == null ? 999 : a.pct) - (b.pct == null ? 999 : b.pct));
+          // 3) Top productos (artículos en más pedidos atrasados + veces en Depo 0).
+          const porProd = {};
+          rows.forEach(r => { const pe = promEval(r); if (pe == null) return; const arts = artsPorPed[r.pedido] || []; const vistos = new Set(); arts.forEach(a => { const key = (a.desc || a.art || "").trim(); if (!key || vistos.has(key)) return; vistos.add(key); const b = porProd[key] || (porProd[key] = { prod: key, n: 0, late: 0, depo0: 0 }); b.n++; if (!pe) b.late++; }); arts.forEach(a => { if (a.dep === "0") { const key = (a.desc || a.art || "").trim(); if (key && porProd[key]) porProd[key].depo0++; } }); });
+          const topProductos = Object.values(porProd).filter(b => b.n >= 10).map(b => ({ prod: b.prod, n: b.n, late: b.late, pct: b.n ? Math.round((b.n - b.late) / b.n * 100) : null, depo0: b.depo0 })).sort((a, b) => b.late - a.late || (a.pct - b.pct)).slice(0, 20);
+          return { cumplPorForma, cumplPorDeposito, topProductos };
+        };
+        const { cumplPorForma, cumplPorDeposito, topProductos } = calcDesglose(efectivosProm);
+        // Por MES, acumulado con lo ya guardado (merge por clave de mes, igual que serieMeses).
+        const mesKeyDe = r => { const d = parseFecha(r.fecha); return d ? d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") : null; };
+        const rowsPorMes = {};
+        efectivosProm.forEach(r => { const m = mesKeyDe(r); if (m) (rowsPorMes[m] || (rowsPorMes[m] = [])).push(r); });
+        const desglosesMesNuevos = {};
+        Object.keys(rowsPorMes).forEach(m => { desglosesMesNuevos[m] = calcDesglose(rowsPorMes[m]); });
+        const desglosesMes = { ...((operSnap && operSnap.serie && operSnap.serie.desglosesMes) || {}), ...desglosesMesNuevos };
         // ── HISTÓRICO MENSUAL de logística (cumplimiento + volumen), por región. Se ACUMULA en el snapshot:
         // cargar meses viejos una sola vez los deja guardados; los cruces siguientes solo pisan los meses
         // que traen (upsert por mes) y conservan el resto. No cambia nada de lo actual: es info que se suma.
@@ -1003,7 +994,7 @@ function Operativa({ yo, activo, syncTick }) {
           leadtime_entrega: percentil(ltE, PCTL),
           // El calendario y los desgloses van TAMBIÉN adentro de "serie" (columna jsonb que ya existe
           // en la tabla): así se comparten sin necesidad de correr ninguna migración.
-          serie: { ...(serie || {}), calendario: calArr, maduros, internacionales: nIntl, internacionalesDetalle: intlDetalle, preventaN: nPreventa, promesaDH: promesaDH, deptoInfo, depoInfo, serieMeses, desgloses: { cumplPorTienda, cumplPorForma, cumplPorDeposito, topProductos, stockTiendas, histEntrega, histPend: histPendGlob, histDesp: histDespGlob, histByReg } },
+          serie: { ...(serie || {}), calendario: calArr, maduros, internacionales: nIntl, internacionalesDetalle: intlDetalle, preventaN: nPreventa, promesaDH: promesaDH, deptoInfo, depoInfo, serieMeses, desglosesMes, desgloses: { cumplPorTienda, cumplPorForma, cumplPorDeposito, topProductos, stockTiendas, histEntrega, histPend: histPendGlob, histDesp: histDespGlob, histByReg } },
           calendario: calArr,
           actualizado: new Date().toISOString()
         };
@@ -1534,11 +1525,15 @@ function Operativa({ yo, activo, syncTick }) {
     ceEl("div", { className: "overflow-auto" }, ceEl("table", { className: "w-full", style: { fontSize: 12 } },
       ceEl("thead", null, ceEl("tr", { style: { background: "#F6F7F9" } }, headers.map((h, i) => ceEl("th", { key: i, className: "px-3 py-2 font-bold uppercase", style: { color: C.gray, fontSize: 10, textAlign: i === 0 ? "left" : "right", whiteSpace: "nowrap" } }, h)))),
       ceEl("tbody", null, filas))));
-  const dCumpl = desgSnap && (desgSnap.cumplPorForma || desgSnap.cumplPorDeposito || desgSnap.topProductos) ? desgSnap : null;
+  // Desglose del MES seleccionado (acumulado en el snapshot). Si el snapshot viejo no lo trae, cae al global.
+  const desglosesMesSnap = operSnap && operSnap.serie && operSnap.serie.desglosesMes ? operSnap.serie.desglosesMes : null;
+  const dCumplMes = mesVistaEff && desglosesMesSnap && desglosesMesSnap[mesVistaEff] ? desglosesMesSnap[mesVistaEff] : null;
+  const dCumpl = dCumplMes || (desgSnap && (desgSnap.cumplPorForma || desgSnap.cumplPorDeposito || desgSnap.topProductos) ? desgSnap : null);
+  const dCumplScope = dCumplMes ? fmtMesYM(mesVistaEff) : "global (volvé a cruzar los archivos para ver el detalle por mes)";
   const cumplDesglosesPanel = !dCumpl ? null : ceEl("div", { className: "space-y-3" },
     ceEl("div", null,
       ceEl("span", { className: "text-sm font-black fraunces", style: { color: C.ink } }, "¿Dónde falla el cumplimiento?"),
-      ceEl("span", { className: "text-[11px] ml-2", style: { color: C.gray } }, "Mismo criterio de “en plazo” (≤" + promesaDH + " días háb.), abierto por forma de entrega, depósito y producto · del último cruce")),
+      ceEl("span", { className: "text-[11px] ml-2", style: { color: C.gray } }, "Mismo criterio de “en plazo” (≤" + promesaDH + " días háb.), por forma de entrega, depósito y producto · " + dCumplScope + (dCumplMes ? " · cambiá el mes con el selector de arriba" : ""))),
     (dCumpl.cumplPorForma && dCumpl.cumplPorForma.length) ? tablaCumpl("Por forma de entrega",
       "Dónde se concentran los atrasos: retiro en tienda (Pickup / Click & Collect) vs envío a domicilio.",
       ["Forma", "Pedidos", "% a tiempo", "Atrasados", "P90 entrega"],
