@@ -60,6 +60,7 @@ function Operativa({ yo, activo, syncTick }) {
   const [operSnap, setOperSnap] = useState(null); // resumen COMPARTIDO (operativa_snapshot): números que ven todos, = Resumen
   const cruceEnSesion = useRef(false); // true si crucé archivos en esta sesión (no interrumpir mi cruce con el realtime)
   const cruceTs = useRef(0); // cuándo crucé (ms): si lo COMPARTIDO es más nuevo que mi cruce, gana lo compartido
+  const desglosesSesion = useRef(null); // desgloses (por mes + global) de MI último cruce en sesión: el panel "¿dónde falla?" los usa al instante, sin depender del snapshot compartido (que puede fallar al guardar o pisarse por el realtime)
   const supresRealtime = useRef(0); // timestamp del último cambio LOCAL (comentario/accionado): evita que el eco de realtime recargue la lista y te mande al principio
   const [filtroEstadoFen, setFiltroEstadoFen] = useState("");
   const [filtroDeposito, setFiltroDeposito] = useState("");
@@ -903,6 +904,9 @@ function Operativa({ yo, activo, syncTick }) {
         const desglosesMesNuevos = {};
         Object.keys(rowsPorMes).forEach(m => { desglosesMesNuevos[m] = calcDesglose(rowsPorMes[m]); });
         const desglosesMes = { ...((operSnap && operSnap.serie && operSnap.serie.desglosesMes) || {}), ...desglosesMesNuevos };
+        // Guardar MI cruce en un ref (antes de armar/guardar el snapshot): así el panel "¿dónde falla?" muestra
+        // SIEMPRE este cruce al instante, aunque el guardado del snapshot compartido falle o tarde.
+        desglosesSesion.current = { porMes: desglosesMes, global: { cumplPorForma, cumplPorDeposito, topProductos } };
         // ── HISTÓRICO MENSUAL de logística (cumplimiento + volumen), por región. Se ACUMULA en el snapshot:
         // cargar meses viejos una sola vez los deja guardados; los cruces siguientes solo pisan los meses
         // que traen (upsert por mes) y conservan el resto. No cambia nada de lo actual: es info que se suma.
@@ -1526,14 +1530,18 @@ function Operativa({ yo, activo, syncTick }) {
       ceEl("thead", null, ceEl("tr", { style: { background: "#F6F7F9" } }, headers.map((h, i) => ceEl("th", { key: i, className: "px-3 py-2 font-bold uppercase", style: { color: C.gray, fontSize: 10, textAlign: i === 0 ? "left" : "right", whiteSpace: "nowrap" } }, h)))),
       ceEl("tbody", null, filas))));
   // Desglose del MES seleccionado (acumulado en el snapshot). Si el snapshot viejo no lo trae, cae al global.
-  const desglosesMesSnap = operSnap && operSnap.serie && operSnap.serie.desglosesMes ? operSnap.serie.desglosesMes : null;
+  // Fuente: si crucé en esta sesión, uso MI cruce (ref) al instante; si no, el snapshot compartido.
+  const desgSesion = cruceEnSesion.current && desglosesSesion.current ? desglosesSesion.current : null;
+  const desglosesMesSnap = (desgSesion && desgSesion.porMes) || (operSnap && operSnap.serie && operSnap.serie.desglosesMes) || null;
   const dCumplMes = mesVistaEff && desglosesMesSnap && desglosesMesSnap[mesVistaEff] ? desglosesMesSnap[mesVistaEff] : null;
-  const dCumpl = dCumplMes || (desgSnap && (desgSnap.cumplPorForma || desgSnap.cumplPorDeposito || desgSnap.topProductos) ? desgSnap : null);
-  const dCumplScope = dCumplMes ? fmtMesYM(mesVistaEff) : "global (volvé a cruzar los archivos para ver el detalle por mes)";
+  const desgGlobalEff = (desgSesion && desgSesion.global) || desgSnap;
+  const dCumpl = dCumplMes || (desgGlobalEff && (desgGlobalEff.cumplPorForma || desgGlobalEff.cumplPorDeposito || desgGlobalEff.topProductos) ? desgGlobalEff : null);
+  const dCumplN = dCumpl && dCumpl.cumplPorForma ? dCumpl.cumplPorForma.reduce((a, f) => a + (f.total || 0), 0) : 0;
+  const dCumplScope = dCumplMes ? fmtMesYM(mesVistaEff) : "global (volvé a cruzar demoras-web + Monitor para el detalle por mes)";
   const cumplDesglosesPanel = !dCumpl ? null : ceEl("div", { className: "space-y-3" },
     ceEl("div", null,
       ceEl("span", { className: "text-sm font-black fraunces", style: { color: C.ink } }, "¿Dónde falla el cumplimiento?"),
-      ceEl("span", { className: "text-[11px] ml-2", style: { color: C.gray } }, "Mismo criterio de “en plazo” (≤" + promesaDH + " días háb.), por forma de entrega, depósito y producto · " + dCumplScope + (dCumplMes ? " · cambiá el mes con el selector de arriba" : ""))),
+      ceEl("span", { className: "text-[11px] ml-2", style: { color: C.gray } }, "Mismo criterio de “en plazo” (≤" + promesaDH + " días háb.), por forma de entrega, depósito y producto · " + dCumplScope + " · " + dCumplN.toLocaleString("es-UY") + " pedidos" + (dCumplMes ? " · cambiá el mes con el selector de arriba" : ""))),
     (dCumpl.cumplPorForma && dCumpl.cumplPorForma.length) ? tablaCumpl("Por forma de entrega",
       "Dónde se concentran los atrasos: retiro en tienda (Pickup / Click & Collect) vs envío a domicilio.",
       ["Forma", "Pedidos", "% a tiempo", "Atrasados", "P90 entrega"],
