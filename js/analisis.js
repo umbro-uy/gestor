@@ -1482,11 +1482,15 @@ function Metas({
     const CLAS = { revisar: "Falta factura (orden liberada)", ccForzar: "C&C a forzar", pagoDespues: "Pago Después", pcnManual: "PCN (manual)", pendienteOK: "En proceso" };
     const porT = {}; const detalle = []; let sinArts = 0;
     GR.forEach(gk => (pendientes.grupos[gk] || []).forEach(p => {
+      const arts0 = artsXPed[String(p.nro)] || [];
+      // Excluir los artículos PCN (personalizaciones): se hacen a pedido, no viven en stock → faltarían siempre.
+      const arts = arts0.filter(a => !/^PCN/i.test(String(a.sku || "").trim()));
+      // Pedido con artículos en el Monitor pero TODOS PCN → fuera del control de stock (no se cuenta).
+      if (arts0.length && !arts.length) return;
       const tienda = p.tienda || "—";
       const dep = depoDeTienda(tienda);
       const t = porT[tienda] || (porT[tienda] = { tienda, dep, pedidos: 0, conFaltante: 0, uFaltantes: 0 });
       t.pedidos++;
-      const arts = artsXPed[String(p.nro)] || [];
       if (!arts.length) { sinArts++; return; }
       let faltaAlgo = false;
       arts.forEach(a => {
@@ -1673,7 +1677,7 @@ function Metas({
                 h("td", { className: "px-3 py-1.5 tabular-nums", style: { textAlign: "right" } }, t.pedidos),
                 h("td", { className: "px-3 py-1.5 tabular-nums font-black", style: { textAlign: "right", color: t.conFaltante > 0 ? C.red : C.green } }, t.conFaltante),
                 h("td", { className: "px-3 py-1.5 tabular-nums font-bold", style: { textAlign: "right", color: t.uFaltantes > 0 ? C.red : C.gray } }, t.uFaltantes))))))),
-          h("div", { className: "text-[11px]", style: { color: C.gray } }, "“Con faltante” = pedidos pendientes de facturar cuyos artículos NO tienen suficiente StkActual en el depósito de facturación de su tienda → el egreso no se hizo (va a necesitar ajuste). El detalle pedido-artículo está en “Exportar faltantes”."))),
+          h("div", { className: "text-[11px]", style: { color: C.gray } }, "“Con faltante” = pedidos pendientes de facturar cuyos artículos NO tienen suficiente StkActual en el depósito de facturación de su tienda → el egreso no se hizo (va a necesitar ajuste). Los artículos PCN (personalizaciones) se excluyen: se hacen a pedido, no están en stock. El detalle pedido-artículo está en “Exportar faltantes”."))),
     // ── Modal edición de meta ──
     formMeta && h("div", {
       className: "fixed inset-0 z-50 flex items-center justify-center p-4",
