@@ -8,17 +8,18 @@
 // RAMA "SIN FACTURA" — se aplica sólo cuando el pedido NO tiene factura y NO está cancelado/reversado
 // (esas dos ramas se resuelven antes, en analisis.js). Cada pedido cae en UNA sola categoría, en este orden:
 //
-//   1) pagoDespues → "Pago Después" es un MÉTODO DE PAGO (atributo del pedido), no depende del despacho:
-//      puede no requerir factura (se factura al cobrar). Se separa SIEMPRE en su propia categoría —aunque
-//      el pedido todavía no se haya despachado— para poder revisarlo caso a caso y que NO se pierda dentro
-//      de "en proceso" ni se marque como "falta factura".
-//   2) en proceso (pendienteOK) → la factura se espera cuando el pedido está PROCESADO, es decir cuando el
-//      WMS llegó al menos a "Items clasificados / Orden liberada" (o cualquier estado posterior). NO hace
-//      falta que esté despachado. Mientras el WMS siga en "items pedidos" o "items confirmados" (o el pedido
-//      recién ingresó / se está preparando), todavía no se procesó → no se factura. Vale también para PCN/C&C.
-//   3) pcnManual → PCN (prenda personalizada). Se guía por FENICIO, no por el WMS (que queda congelado para
+//   1) en proceso (pendienteOK) → PRIMER FILTRO: la factura se espera recién cuando el pedido está
+//      PROCESADO, es decir cuando el WMS llegó al menos a "Items clasificados / Orden liberada" (o
+//      cualquier estado posterior). NO hace falta que esté despachado. Mientras el WMS siga en "items
+//      pedidos" o "items confirmados" (o recién ingresó / se está preparando), todavía NO se procesó →
+//      no se factura, CUALQUIERA sea el método de pago. (Los PCN miden "procesado" por Fenicio, abajo.)
+//      OJO: antes "Pago Después" se separaba aun SIN procesar, y por eso pedidos que están "Pendiente OK"
+//      (en proceso) aparecían como falta de factura / Pago Después. Ya no: en proceso manda.
+//   2) pcnManual → PCN (prenda personalizada). Se guía por FENICIO, no por el WMS (que queda congelado para
 //                  los PCN): si Fenicio ya lo da por salido (en tránsito / listo para retirar / entregado) →
 //                  su filtro "PCN". Si todavía se está haciendo → "en proceso".
+//   3) pagoDespues → pedido YA procesado (orden liberada) con método "Pago Después": puede no requerir
+//                  factura ahora (se factura al cobrar). Se separa para revisarlo caso a caso.
 //   4) ccForzar  → Click & Collect YA procesado sin factura → forzar en el WMS.
 //   5) revisar   → procesado (orden liberada o más) sin factura de verdad → falta emitirla.
 (function (root) {
@@ -37,13 +38,16 @@
   // c = { estadoWMS, estadoFen, esPcn, clickCollect, pagoDespues }  →  { grupo, razon }
   function clasificarSinFactura(c) {
     c = c || {};
-    if (c.pagoDespues) return { grupo: "pagoDespues", razon: "Método Pago Después sin factura — revisar caso a caso (suele facturarse al cobrar)" };
+    // PCN: "procesado/salido" se mide por FENICIO (el WMS queda congelado). En preparación → en proceso.
     if (c.esPcn) {
-      // PCN → guiarse por FENICIO (el WMS queda congelado). Si ya salió (tránsito/retiro/entregado) → PCN.
-      if (RE_PCN_LISTO.test(String(c.estadoFen || ""))) return { grupo: "pcnManual", razon: "Prenda personalizada (PCN) — facturar/forzar manualmente" };
-      return { grupo: "pendienteOK", razon: "PCN (personalizada) en preparación — todavía no se factura" };
+      if (!RE_PCN_LISTO.test(String(c.estadoFen || ""))) return { grupo: "pendienteOK", razon: "PCN (personalizada) en preparación — todavía no se factura" };
+      return { grupo: "pcnManual", razon: "Prenda personalizada (PCN) — facturar/forzar manualmente" };
     }
+    // EN PROCESO: si todavía NO se procesó (sin orden liberada), no se factura aún, CUALQUIERA sea el método
+    // de pago. Así un Pago Después en proceso queda en "Pendiente OK" y no como falta de factura.
     if (!RE_FACTURABLE.test(String(c.estadoWMS || ""))) return { grupo: "pendienteOK", razon: "Todavía no procesado (sin orden liberada) — no se factura aún" };
+    // Ya PROCESADO (orden liberada o más) y sin factura:
+    if (c.pagoDespues) return { grupo: "pagoDespues", razon: "Pago Después YA procesado sin factura — revisar caso a caso (suele facturarse al cobrar)" };
     if (c.clickCollect) return { grupo: "ccForzar", razon: "Click & Collect sin factura — pedir al WMS que fuerce la facturación automática" };
     return { grupo: "revisar", razon: "Orden liberada sin factura — emitir ⚠️" };
   }
