@@ -776,6 +776,9 @@ function Metas({
   })));
   const [archivoWMS, setArchivoWMS] = useState(null);
   const [rowsWMS, setRowsWMS] = useState([]);
+  // Stock de los depósitos de FACTURACIÓN (8101 Nacional · 8001 TimeOut · 8201 Classico), persistido/compartido.
+  const [stockDepos, setStockDepos] = useState(null); // { actualizado, archivo, filas:[{sku,dep,act,disp,item}] }
+  const [cargandoStock, setCargandoStock] = useState(false);
   const [cargandoBAS, setCargandoBAS] = useState(false);
   const [cargandoWMS, setCargandoWMS] = useState(false);
   const [resumenBAS, setResumenBAS] = useState(null);
@@ -800,6 +803,7 @@ function Metas({
       if (!data) return; // tabla ok pero todavía sin snapshot guardado
       if (data.resumen) setResumenBAS(data.resumen);
       if (data.pendientes) setPendientes(data.pendientes);
+      if (data.stock_depos) setStockDepos(data.stock_depos);
       if (data.mes) setMes(data.mes);
     } catch (_) { setSnapOK(false); }
   }, []);
@@ -992,6 +996,45 @@ function Metas({
         alert("Error WMS: " + err.message);
       }
       setCargandoWMS(false);
+    };
+    reader.readAsBinaryString(file);
+  };
+  // Lee el archivo de STOCK de los depósitos de facturación (8101/8001/8201). Arma el SKU como
+  // Codigo+Codcol+Codtal (mismo formato del "Articulo" del Monitor) y guarda el stock por depósito.
+  // Se persiste (compartido) para cruzarlo con la última info de facturación aunque no se recargue.
+  const leerStock = e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    setCargandoStock(true);
+    const reader = new FileReader();
+    reader.onload = ev => {
+      try {
+        const wb = XLSX.read(ev.target.result, { type: "binary", cellText: true });
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        const data = XLSX.utils.sheet_to_json(ws, { header: 1, raw: false, defval: "" });
+        const headers = (data[0] || []).map(String);
+        const rows = data.slice(1).map(r => { const o = {}; headers.forEach((h, i) => o[h] = r[i] || ""); return o; });
+        const fc = pats => headers.find(h => pats.some(p => p.test(h))) || "";
+        const cCod = fc([/^codigo$/i, /c[oó]digo.*art/i, /^cod$/i]) || "Codigo";
+        const cCol = fc([/^codcol$/i, /c[oó]d.*col/i]) || "Codcol";
+        const cTal = fc([/^codtal$/i, /c[oó]d.*tal/i, /talle/i]) || "Codtal";
+        const cDep = fc([/^coddep$/i, /c[oó]d.*dep/i, /dep[oó]sito/i]) || "Coddep";
+        const cAct = fc([/stk\s*actual/i, /stock\s*actual/i]) || "StkActual";
+        const cDisp = fc([/stk\s*disp/i, /disponible/i]);
+        const cItem = fc([/^item$/i, /descrip/i, /nombre/i]);
+        const n = v => { const x = parseFloat(String(v).replace(/\./g, "").replace(",", ".").replace(/[^0-9.-]/g, "")); return isNaN(x) ? 0 : x; };
+        const norm = s => String(s || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+        const filas = rows.filter(r => String(r[cCod] || "").trim()).map(r => ({
+          sku: norm(String(r[cCod]) + String(r[cCol]) + String(r[cTal])),
+          dep: String(r[cDep] || "").replace(/\.0+$/, "").trim(),
+          act: n(r[cAct]), disp: cDisp ? n(r[cDisp]) : n(r[cAct]),
+          item: cItem ? String(r[cItem] || "").trim() : ""
+        }));
+        const snap = { actualizado: new Date().toISOString(), archivo: file.name, filas };
+        setStockDepos(snap);
+        guardarSnapshot({ stock_depos: snap });
+      } catch (err) { alert("Error stock: " + err.message); }
+      setCargandoStock(false);
     };
     reader.readAsBinaryString(file);
   };
@@ -1213,6 +1256,7 @@ function Metas({
     const wmsMap = {};
     const pcnXVenta = {};   // { venta: { arts:[], estadoEnc, estadoEco, importe, deposito, fecha } }
     const ccByVenta = {};   // { venta: true } → pedido Click & Collect (retiro en tienda), detectado en Encuentra
+    const artsXVenta = {};  // { venta: [{ sku, desc, u }] } → artículos+unidades del Monitor (para el control de stock de facturación)
     if (rowsWMS.length) {
       const sW = rowsWMS[0] || {};
       const colArt = findCol(sW, [/art[ií]culo/i, /^sku$/i, /c[oó]d.*art/i]) || "Articulo";
@@ -1224,9 +1268,20 @@ function Metas({
       const colFechW = findCol(sW, [/fecha.*ped/i, /^fecha/i]) || "Fecha pedido";
       // Forma de entrega en el Monitor de Encuentra: Click & Collect / retiro en tienda (no se autofacturan).
       const colFormaW = findCol(sW, [/forma.*entr/i, /m[eé]todo.*entr/i, /tipo.*entr/i, /modalidad/i]);
+      // Unidades por línea (para el control de stock): preferimos "procesadas", si no "pedidas".
+      const colUnidW = findCol(sW, [/unidades.*procesad/i, /unidades.*ped/i, /unidades.*confirm/i, /^unidades$/i, /^cantidad/i, /unidades/i]);
+      const colDescW = findCol(sW, [/descrip.*art/i, /descrip/i, /nombre.*art/i]);
       rowsWMS.forEach(r => {
         const k = String(r[colVenta] || "").trim();
         if (k && !wmsMap[k]) wmsMap[k] = r;
+        // Artículos + unidades del pedido (todas las líneas), para cruzar contra el stock de facturación.
+        if (k) {
+          const skuW = String(r[colArt] || "").trim();
+          if (skuW) {
+            const uW = colUnidW ? num(r[colUnidW]) : 1;
+            (artsXVenta[k] || (artsXVenta[k] = [])).push({ sku: skuW, desc: colDescW ? String(r[colDescW] || "").trim() : "", u: uW > 0 ? uW : 1 });
+          }
+        }
         if (k) {
           const forma = colFormaW ? String(r[colFormaW] || "").toLowerCase() : "";
           const estados = (String(r[colEstEnc] || "") + " " + String(r[colEstEco] || "")).toLowerCase();
@@ -1352,7 +1407,7 @@ function Metas({
     porTienda.forEach(pt => { const o = pendXTienda[pt.tienda] || { count: 0, monto: 0 }; pt.pendCount = o.count; pt.pendMonto = o.monto; });
 
     const totalPedidos = Object.keys(fenPed).length + Object.keys(pcnXVenta).filter(v => !fenPed[v]).length;
-    const pend = { grupos, factDuplicadas, pedDuplicados, totalPedidos, porTienda, tieneCuponInfo, fenCols: Object.keys(sF) };
+    const pend = { grupos, factDuplicadas, pedDuplicados, totalPedidos, porTienda, tieneCuponInfo, fenCols: Object.keys(sF), artsXPedido: artsXVenta };
     setPendientes(pend);
     guardarSnapshot({ pendientes: pend });
     if (esAdmin) {
@@ -1410,9 +1465,53 @@ function Metas({
   }, sub));
   // ── Menú lateral de subsecciones (reutiliza el patrón de Operativa) ──
   const hayDatos = !!(resumenBAS || pendientes || metas.length);
+  // ── Control de stock de facturación ──────────────────────────────────────────────────────────────
+  // Para facturar, la unidad tiene que estar egresada en el depósito de FACTURACIÓN de su tienda
+  // (8101 Nacional · 8001 TimeOut · 8201 Classico). Cruzamos el stock de esos depósitos con los pedidos
+  // pendientes de facturar (del último análisis): si un pedido pendiente tiene artículos que NO están en
+  // su depósito de facturación, el egreso no se hizo → va a necesitar ajuste. Comparamos contra StkActual.
+  const DEPO_FACT = { "tienda nacional": "8101", "nacional": "8101", "timeout": "8001", "classico": "8201", "clasico": "8201", "clásico": "8201" };
+  const depoDeTienda = t => DEPO_FACT[String(t || "").toLowerCase().trim()] || "";
+  const normSku = s => String(s || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+  const stockCross = (() => {
+    if (!stockDepos || !stockDepos.filas || !stockDepos.filas.length || !pendientes || !pendientes.grupos) return null;
+    const stk = {};
+    stockDepos.filas.forEach(f => { (stk[f.sku] || (stk[f.sku] = {}))[f.dep] = (stk[f.sku][f.dep] || 0) + (f.act || 0); });
+    const artsXPed = pendientes.artsXPedido || {};
+    const GR = ["revisar", "ccForzar", "pagoDespues", "pcnManual", "pendienteOK"];
+    const CLAS = { revisar: "Falta factura (orden liberada)", ccForzar: "C&C a forzar", pagoDespues: "Pago Después", pcnManual: "PCN (manual)", pendienteOK: "En proceso" };
+    const porT = {}; const detalle = []; let sinArts = 0;
+    GR.forEach(gk => (pendientes.grupos[gk] || []).forEach(p => {
+      const tienda = p.tienda || "—";
+      const dep = depoDeTienda(tienda);
+      const t = porT[tienda] || (porT[tienda] = { tienda, dep, pedidos: 0, conFaltante: 0, uFaltantes: 0 });
+      t.pedidos++;
+      const arts = artsXPed[String(p.nro)] || [];
+      if (!arts.length) { sinArts++; return; }
+      let faltaAlgo = false;
+      arts.forEach(a => {
+        const sk = normSku(a.sku);
+        const enDep = dep && stk[sk] ? (stk[sk][dep] || 0) : 0;
+        const falt = Math.max(0, (a.u || 1) - enDep);
+        if (falt > 0) { faltaAlgo = true; t.uFaltantes += falt; detalle.push({ Pedido: p.nro, Tienda: tienda, "Depósito fact.": dep || "?", Clasificación: CLAS[gk] || gk, "Artículo (SKU)": a.sku, Descripción: a.desc || "", "Unid. necesarias": a.u || 1, "Stock en depósito": enDep, Faltante: falt }); }
+      });
+      if (faltaAlgo) t.conFaltante++;
+    }));
+    return { porTienda: Object.values(porT).sort((a, b) => b.conFaltante - a.conFaltante), detalle, sinArts, totalPend: Object.values(porT).reduce((n, x) => n + x.pedidos, 0) };
+  })();
+  const exportStock = () => {
+    if (!stockCross || !stockCross.detalle.length) { alert("No hay faltantes para exportar (o todavía no cargaste el stock y el análisis de facturación)."); return; }
+    try {
+      const ws = XLSX.utils.json_to_sheet(stockCross.detalle);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "Faltantes stock fact.");
+      XLSX.writeFile(wb, "stock-facturacion-faltantes-" + new Date().toISOString().slice(0, 10) + ".xlsx");
+    } catch (e) { alert("Error al exportar: " + e.message); }
+  };
   const SUBS_AN = [
     { id: "resumen", l: "Metas por tienda" },
     { id: "facturacion", l: "Facturación" },
+    { id: "stock", l: "Stock facturación" },
     { id: "anual", l: "Progreso anual" },
     { id: "cargar", l: "Cargar archivos" }
   ];
@@ -1546,6 +1645,35 @@ function Metas({
     subAnEff === "facturacion" && (pendientes
       ? h(ResultadoCruce, { pendientes: pendientes })
       : h("div", { className: "bg-white rounded-2xl border p-6 text-sm text-center", style: { borderColor: C.line, color: C.gray } }, "Cargá el BAS y el reporte de Fenicio en “Cargar archivos” para ver los pedidos a facturar.")))),
+    subAnEff === "stock" && h("div", { className: "space-y-3" },
+      h("div", { className: "bg-white rounded-2xl border p-4", style: { borderColor: C.line } },
+        h("div", { className: "flex items-center justify-between flex-wrap gap-2" },
+          h("div", null,
+            h("div", { className: "text-sm font-black fraunces", style: { color: C.ink } }, "Stock de depósitos de facturación"),
+            h("div", { className: "text-[11px] mt-0.5", style: { color: C.gray } }, "Cargá el stock de los depósitos 8101 (Nacional) · 8001 (TimeOut) · 8201 (Classico). Se guarda y se cruza con los pedidos pendientes de facturar del último análisis.")),
+          h("label", { className: "text-xs font-bold px-3 py-1.5 rounded-lg cursor-pointer whitespace-nowrap", style: { background: C.blue, color: "#fff" } },
+            cargandoStock ? "Leyendo…" : "Subir stock (.xlsx)",
+            h("input", { type: "file", accept: ".xlsx,.xls,.csv", className: "hidden", onChange: leerStock }))),
+        stockDepos && h("div", { className: "text-[11px] mt-2", style: { color: C.gray } },
+          "Último stock cargado: ", h("b", { style: { color: C.ink } }, stockDepos.archivo || "archivo"), " · ", (stockDepos.filas || []).length, " líneas · ", (() => { try { return new Date(stockDepos.actualizado).toLocaleString("es-UY"); } catch (e) { return ""; } })())),
+      !stockDepos ? h("div", { className: "bg-white rounded-2xl border p-6 text-sm text-center", style: { borderColor: C.line, color: C.gray } }, "Subí el archivo de stock para empezar el control.")
+      : !pendientes ? h("div", { className: "bg-white rounded-2xl border p-6 text-sm text-center", style: { borderColor: C.line, color: C.gray } }, "Falta el análisis de facturación: cargá el BAS + Fenicio + Monitor de Encuentra en “Cargar archivos” y cruzá, así tengo los pedidos pendientes y sus artículos.")
+      : !stockCross ? h("div", { className: "bg-white rounded-2xl border p-6 text-sm text-center", style: { borderColor: C.line, color: C.gray } }, "No pude cruzar el stock con la facturación.")
+      : h("div", { className: "space-y-3" },
+          stockCross.sinArts > 0 && h("div", { className: "rounded-xl px-4 py-2 text-[11px]", style: { background: C.amberS, color: C.amber } }, stockCross.sinArts + " pedido(s) pendiente(s) sin artículos en el Monitor cargado (no se pueden verificar). Cargá el Monitor de Encuentra del período y volvé a cruzar la facturación."),
+          h("div", { className: "bg-white rounded-2xl border overflow-hidden", style: { borderColor: C.line } },
+            h("div", { className: "px-4 py-3 border-b flex items-center justify-between gap-2 flex-wrap", style: { borderColor: C.line } },
+              h("span", { className: "text-sm font-bold", style: { color: C.ink } }, "Faltantes por tienda — pedidos pendientes sin stock en su depósito de facturación"),
+              stockCross.detalle.length > 0 && h("button", { onClick: exportStock, className: "text-xs font-bold px-2.5 py-1 rounded-lg", style: { background: C.soft, color: C.blue } }, "↓ Exportar faltantes (" + stockCross.detalle.length + ")")),
+            h("div", { className: "overflow-auto" }, h("table", { className: "w-full", style: { fontSize: 12 } },
+              h("thead", null, h("tr", { style: { background: "#F6F7F9" } }, ["Tienda", "Depósito", "Pedidos pendientes", "Con faltante", "Unid. faltantes"].map((hh, i) => h("th", { key: i, className: "px-3 py-2 font-bold uppercase", style: { color: C.gray, fontSize: 10, textAlign: i < 2 ? "left" : "right", whiteSpace: "nowrap" } }, hh)))),
+              h("tbody", null, stockCross.porTienda.map((t, i) => h("tr", { key: i, style: { borderTop: "1px solid " + C.line } },
+                h("td", { className: "px-3 py-1.5 font-semibold" }, t.tienda),
+                h("td", { className: "px-3 py-1.5", style: { color: C.gray } }, t.dep || "?"),
+                h("td", { className: "px-3 py-1.5 tabular-nums", style: { textAlign: "right" } }, t.pedidos),
+                h("td", { className: "px-3 py-1.5 tabular-nums font-black", style: { textAlign: "right", color: t.conFaltante > 0 ? C.red : C.green } }, t.conFaltante),
+                h("td", { className: "px-3 py-1.5 tabular-nums font-bold", style: { textAlign: "right", color: t.uFaltantes > 0 ? C.red : C.gray } }, t.uFaltantes))))))),
+          h("div", { className: "text-[11px]", style: { color: C.gray } }, "“Con faltante” = pedidos pendientes de facturar cuyos artículos NO tienen suficiente StkActual en el depósito de facturación de su tienda → el egreso no se hizo (va a necesitar ajuste). El detalle pedido-artículo está en “Exportar faltantes”."))),
     // ── Modal edición de meta ──
     formMeta && h("div", {
       className: "fixed inset-0 z-50 flex items-center justify-center p-4",

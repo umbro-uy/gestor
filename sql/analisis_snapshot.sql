@@ -9,8 +9,11 @@ create table if not exists public.analisis_snapshot (
   mes         text,
   resumen     jsonb,                    -- resumenBAS: facturación neta/bruta, NCD, pedidos, etc. por mes/tienda
   pendientes  jsonb,                    -- resultado del cruce: grupos (revisar, cancelado c/factura, PCN, ...)
+  stock_depos jsonb,                    -- último stock de los depósitos de facturación (8101/8001/8201), para el control de egresos
   actualizado timestamptz default now()
 );
+-- Si la tabla ya existía, agregar la columna nueva:
+alter table public.analisis_snapshot add column if not exists stock_depos jsonb;
 
 -- Seguridad a nivel de fila: usuarios autenticados pueden leer/escribir
 alter table public.analisis_snapshot enable row level security;
