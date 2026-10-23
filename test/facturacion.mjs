@@ -20,11 +20,14 @@ const check = (msg, real, esperado) => {
   else { fallos++; console.error("  ✗ " + msg + " → esperaba '" + esperado + "', dio '" + real + "'"); }
 };
 
-// 1) Pago Después SIEMPRE se diferencia, esté procesado o no (regla que motivó centralizar esto).
-for (const e of EN_PROCESO) check("Pago Después no procesado (" + e.trim() + ")", g({ estadoWMS: e, pagoDespues: true }), "pagoDespues");
-for (const e of PROCESADO) check("Pago Después procesado (" + e.trim() + ")", g({ estadoWMS: e, pagoDespues: true }), "pagoDespues");
-check("Pago Después + PCN procesado", g({ estadoWMS: "Items Clasificados  (Orden Liberada) ", pagoDespues: true, esPcn: true }), "pagoDespues");
-check("Pago Después + C&C procesado", g({ estadoWMS: "Pedido recibido  en tienda", pagoDespues: true, clickCollect: true }), "pagoDespues");
+// 1) Pago Después se diferencia SÓLO cuando el pedido YA está procesado (orden liberada). En proceso, un
+//    Pago Después es "Pendiente OK" como cualquier otro (NO falta de factura): "en proceso" manda sobre el
+//    método de pago. (Antes se separaba aun sin procesar y traía pedidos "Pendiente OK" como falta factura.)
+for (const e of EN_PROCESO) check("Pago Después EN PROCESO (" + e.trim() + ") → pendienteOK", g({ estadoWMS: e, pagoDespues: true }), "pendienteOK");
+for (const e of PROCESADO) check("Pago Después procesado (" + e.trim() + ") → pagoDespues", g({ estadoWMS: e, pagoDespues: true }), "pagoDespues");
+// PCN manda sobre Pago Después (PCN se guía por Fenicio): sin Fenicio avanzado → en proceso.
+check("Pago Después + PCN sin Fenicio avanzado → en proceso", g({ estadoWMS: "Items Clasificados  (Orden Liberada) ", pagoDespues: true, esPcn: true }), "pendienteOK");
+check("Pago Después procesado + C&C → pagoDespues (Pago Después antes que C&C)", g({ estadoWMS: "Pedido recibido  en tienda", pagoDespues: true, clickCollect: true }), "pagoDespues");
 
 // 2) Sin procesar (items pedidos/confirmados) y sin Pago Después → en proceso, aunque sea PCN o C&C.
 for (const e of EN_PROCESO) check("Normal no procesado (" + e.trim() + ")", g({ estadoWMS: e }), "pendienteOK");
