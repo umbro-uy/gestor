@@ -779,6 +779,18 @@ function Metas({
   // Stock de los depósitos de FACTURACIÓN (8101 Nacional · 8001 TimeOut · 8201 Classico), persistido/compartido.
   const [stockDepos, setStockDepos] = useState(null); // { actualizado, archivo, filas:[{sku,dep,act,disp,item}] }
   const [cargandoStock, setCargandoStock] = useState(false);
+  // ── FRAUDE ──
+  // rowsFraude: reporte de ventas cargado, YA sin el PAN completo (sólo hash + BIN + últimos 4). Vive SÓLO en
+  // memoria del navegador, NO se guarda en Supabase (es info sensible del cliente). La lista negra sí se
+  // persiste (compartida entre tiendas), pero guarda apenas atributos de fraudes confirmados.
+  const [rowsFraude, setRowsFraude] = useState([]);
+  const [archivoFraude, setArchivoFraude] = useState(null);
+  const [cargandoFraude, setCargandoFraude] = useState(false);
+  const [blocklist, setBlocklist] = useState([]);   // filas de fraude_blocklist (compartida)
+  const [blSnapOK, setBlSnapOK] = useState(null);    // null=sin chequear, true=tabla ok, false=falta crear
+  const [tiendaFraude, setTiendaFraude] = useState("TimeOut"); // tienda del reporte que se está cargando
+  const [motivosFraude, setMotivosFraude] = useState(null);    // { archivo, mapa:{pedido:motivo} } opcional p/ sembrar
+  const [marcando, setMarcando] = useState(false);
   const [cargandoBAS, setCargandoBAS] = useState(false);
   const [cargandoWMS, setCargandoWMS] = useState(false);
   const [resumenBAS, setResumenBAS] = useState(null);
@@ -812,10 +824,19 @@ function Metas({
   const guardarSnapshot = async campos => {
     try { await supa.from("analisis_snapshot").upsert({ id: "ultimo", actualizado: new Date().toISOString(), ...campos }, { onConflict: "id" }); } catch (_) {}
   };
+  // Lista negra de fraude (compartida entre tiendas). Se carga al entrar.
+  const cargarBlocklist = useCallback(async () => {
+    try {
+      const { data, error } = await supa.from("fraude_blocklist").select("*").order("creado", { ascending: false });
+      if (error) { setBlSnapOK(false); return; }
+      setBlSnapOK(true); setBlocklist(data || []);
+    } catch (_) { setBlSnapOK(false); }
+  }, []);
   useEffect(() => {
     cargarMetas();
     cargarSnapshot();
-  }, [cargarMetas, cargarSnapshot]);
+    cargarBlocklist();
+  }, [cargarMetas, cargarSnapshot, cargarBlocklist]);
   // metasDeMes: real viene del BAS cargado (neto = FABs-NCDs) cuando está disponible,
   // y cae a Supabase si no hay BAS en esta sesión.
   const metasDeMes = TIENDAS_META.map(t => {
@@ -1037,6 +1058,121 @@ function Metas({
       setCargandoStock(false);
     };
     reader.readAsBinaryString(file);
+  };
+
+  // ── FRAUDE: lectura del reporte de ventas + scoring + lista negra ──
+  // Hash SHA-256 (hex) en el navegador. Sirve para comparar tarjetas SIN guardar el PAN completo.
+  const sha256Hex = async str => {
+    const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(String(str)));
+    return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, "0")).join("");
+  };
+  const impNum = v => { const x = parseFloat(String(v == null ? "" : v).replace(/[^\d.,-]/g, "").replace(/\.(?=\d{3}\b)/g, "").replace(",", ".")); return isNaN(x) ? 0 : x; };
+  const soloDig = v => String(v == null ? "" : v).replace(/\D/g, "");
+  // Lee un reporte de ventas de Fenicio (.xls HTML, .xlsx o .csv), HASHEA el PAN al vuelo y DESCARTA el número
+  // completo: en memoria sólo quedan hash + BIN + últimos 4. No persiste nada: la info sensible no sale del navegador.
+  const leerFraude = e => {
+    const file = e && e.target && e.target.files ? e.target.files[0] : null;
+    if (!file) return;
+    setCargandoFraude(true); setArchivoFraude(file.name);
+    const reader = new FileReader();
+    reader.onload = async ev => {
+      try {
+        const wb = XLSX.read(ev.target.result, { type: "binary" });
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        const clean = v => String(v == null ? "" : v).replace(/<[^>]*>/g, "").replace(/&nbsp;/gi, " ").replace(/&amp;/gi, "&").replace(/&#?\w+;/g, "").trim();
+        const data = XLSX.utils.sheet_to_json(ws, { header: 1, raw: false, defval: "" }).map(r => (r || []).map(clean));
+        let hIdx = -1;
+        for (let i = 0; i < Math.min(8, data.length); i++) if ((data[i] || []).some(c => String(c || "").toLowerCase().includes("pedido"))) { hIdx = i; break; }
+        if (hIdx < 0) { alert("No reconocí el reporte de ventas (no encontré la fila de encabezados)."); setCargandoFraude(false); return; }
+        const headers = data[hIdx].map(String);
+        const norm = s => String(s || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
+        const col = re => headers.findIndex(h => re.test(norm(h)));
+        const iPed = col(/nro\.?\s*pedido|^pedido/), iDoc = col(/comprador.*documento|^documento/), iMail = col(/comprador.*email|^email|correo/),
+          iBin = col(/tarjeta.*bin/), iL4 = col(/tarjeta.*last\s*4|ultimos?\s*4/), iCard = col(/^numero de tarjeta$|^tarjeta$/),
+          iIp = col(/^ip$/), iImp = col(/importe de pago|^importe/), iFecha = col(/fecha.*pago|^fecha/), iNom = col(/comprador.*nombre|^nombre|cliente/);
+        if (iPed < 0) { alert("No encontré la columna de Nro. de pedido en el reporte."); setCargandoFraude(false); return; }
+        const g = (r, i) => i >= 0 ? clean(r[i]) : "";
+        const filas = data.slice(hIdx + 1).filter(r => /^\d+$/.test(String(g(r, iPed)).trim()));
+        // hashear PAN y soltar el número completo
+        const rows = await Promise.all(filas.map(async r => {
+          const panFull = soloDig(g(r, iCard));
+          const bin = g(r, iBin) ? soloDig(g(r, iBin)).slice(0, 6) : (panFull ? panFull.slice(0, 6) : "");
+          const last4 = g(r, iL4) ? soloDig(g(r, iL4)).slice(-4) : (panFull ? panFull.slice(-4) : "");
+          let cardHash = "";
+          if (panFull.length >= 8) cardHash = await sha256Hex(panFull);
+          else if (bin && last4) cardHash = await sha256Hex("bl|" + bin + "|" + last4); // sin PAN: huella débil BIN+last4
+          return {
+            pedido: String(g(r, iPed)).trim(), tienda: tiendaFraude, nombre: g(r, iNom),
+            doc: FraudeReglas.normAttr(g(r, iDoc)), mail: FraudeReglas.normAttr(g(r, iMail)), ip: FraudeReglas.normAttr(g(r, iIp)),
+            bin, last4, cardHash, importe: impNum(g(r, iImp)), fecha: g(r, iFecha)
+          };
+        }));
+        setRowsFraude(rows);
+        if (!rows.length) alert("No se encontraron ventas en el archivo.");
+      } catch (err) { alert("Error leyendo el reporte: " + err.message); }
+      setCargandoFraude(false);
+    };
+    reader.readAsBinaryString(file);
+  };
+  // Lee un reporte de MOTIVOS de cancelación (CSV/.xls) para sembrar la lista negra: pedido → motivo. Sólo se
+  // toman los motivos que indican fraude. Se cruza con el reporte de ventas (que aporta los atributos).
+  const leerMotivos = e => {
+    const file = e && e.target && e.target.files ? e.target.files[0] : null;
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = ev => {
+      try {
+        const wb = XLSX.read(ev.target.result, { type: "binary" });
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        const clean = v => String(v == null ? "" : v).replace(/<[^>]*>/g, "").replace(/&nbsp;/gi, " ").replace(/&#?\w+;/g, "").trim();
+        const data = XLSX.utils.sheet_to_json(ws, { header: 1, raw: false, defval: "" }).map(r => (r || []).map(clean));
+        const mapa = {};
+        data.forEach(r => { const ped = String(r[0] || "").trim(); const mot = String(r[1] || "").trim(); if (/^\d+$/.test(ped) && mot) mapa[ped] = mot; });
+        setMotivosFraude({ archivo: file.name, mapa });
+      } catch (err) { alert("Error leyendo motivos: " + err.message); }
+    };
+    reader.readAsBinaryString(file);
+  };
+  const esMotivoFraude = m => /fraud|robo|robad|tarjeta\s*robada|compra\s*fraudulenta/i.test(String(m || ""));
+  // Inserta (upsert) en la lista negra compartida los atributos de un pedido confirmado como fraude.
+  const atributosDe = (row, motivo) => {
+    const base = { tienda: row.tienda, pedido: row.pedido, motivo: motivo || "Fraude confirmado" };
+    const out = [];
+    if (row.cardHash) out.push({ ...base, tipo: "card", valor: row.cardHash, bin: row.bin, last4: row.last4 });
+    if (row.doc) out.push({ ...base, tipo: "doc", valor: row.doc });
+    if (row.mail) out.push({ ...base, tipo: "mail", valor: row.mail });
+    if (row.ip) out.push({ ...base, tipo: "ip", valor: row.ip });
+    return out;
+  };
+  const marcarFraude = async row => {
+    const regs = atributosDe(row);
+    if (!regs.length) { alert("Este pedido no tiene datos (tarjeta/documento/mail/IP) para agregar a la lista negra."); return; }
+    setMarcando(true);
+    try {
+      const { error } = await supa.from("fraude_blocklist").upsert(regs, { onConflict: "tipo,valor" });
+      if (error) throw error;
+      await cargarBlocklist();
+    } catch (err) { alert("No se pudo marcar como fraude: " + err.message); }
+    setMarcando(false);
+  };
+  const quitarBlocklist = async id => {
+    try { await supa.from("fraude_blocklist").delete().eq("id", id); await cargarBlocklist(); } catch (err) { alert("No se pudo quitar: " + err.message); }
+  };
+  // Siembra masiva: toma los pedidos del reporte de ventas cuyo motivo (en el archivo de motivos) es fraude,
+  // y agrega sus atributos a la lista negra de una sola vez.
+  const sembrarDesdeMotivos = async () => {
+    if (!motivosFraude || !rowsFraude.length) return;
+    const regs = [];
+    rowsFraude.forEach(r => { const mot = motivosFraude.mapa[r.pedido]; if (mot && esMotivoFraude(mot)) regs.push(...atributosDe(r, mot)); });
+    if (!regs.length) { alert("No encontré pedidos con motivo de fraude que crucen con el reporte de ventas cargado."); return; }
+    setMarcando(true);
+    try {
+      const { error } = await supa.from("fraude_blocklist").upsert(regs, { onConflict: "tipo,valor" });
+      if (error) throw error;
+      await cargarBlocklist();
+      alert("Lista negra sembrada: " + regs.length + " atributo(s) de fraudes confirmados agregados.");
+    } catch (err) { alert("No se pudo sembrar: " + err.message); }
+    setMarcando(false);
   };
 
   // ── Lógica core separada para poder combinarla ──
@@ -1512,10 +1648,45 @@ function Metas({
       XLSX.writeFile(wb, "stock-facturacion-faltantes-" + new Date().toISOString().slice(0, 10) + ".xlsx");
     } catch (e) { alert("Error al exportar: " + e.message); }
   };
+  // Cola de fraude: cruza el reporte cargado con la lista negra compartida y puntúa cada pedido.
+  const fraudeResult = (() => {
+    if (!rowsFraude.length) return null;
+    // sets de la lista negra por tipo (comparación O(1))
+    const bl = { card: new Set(), doc: new Set(), mail: new Set(), ip: new Set() };
+    blocklist.forEach(b => { if (bl[b.tipo]) bl[b.tipo].add(String(b.valor)); });
+    // conteos dentro de lo cargado: documentos distintos por tarjeta / mail / IP
+    const docsPor = { card: {}, mail: {}, ip: {} };
+    const add = (m, key, doc) => { if (!key || !doc) return; (m[key] || (m[key] = new Set())).add(doc); };
+    rowsFraude.forEach(r => { add(docsPor.card, r.cardHash, r.doc); add(docsPor.mail, r.mail, r.doc); add(docsPor.ip, r.ip, r.doc); });
+    const nd = (m, k) => (k && m[k]) ? m[k].size : 0;
+    const filas = rowsFraude.map(r => {
+      const enBlocklist = (r.cardHash && bl.card.has(r.cardHash)) || (r.doc && bl.doc.has(r.doc)) || (r.mail && bl.mail.has(r.mail)) || (r.ip && bl.ip.has(r.ip));
+      const ev = FraudeReglas.evaluar({ enBlocklist, docsPorTarjeta: nd(docsPor.card, r.cardHash), docsPorMail: nd(docsPor.mail, r.mail), docsPorIp: nd(docsPor.ip, r.ip), importe: r.importe });
+      return { ...r, score: ev.score, nivel: ev.nivel, motivos: ev.motivos, bloqueado: ev.bloqueado };
+    }).sort((a, b) => b.score - a.score);
+    const cuenta = { bloquear: 0, alto: 0, medio: 0, bajo: 0 };
+    filas.forEach(f => cuenta[f.nivel]++);
+    return { filas, cuenta, total: filas.length };
+  })();
+  const exportFraude = () => {
+    if (!fraudeResult) return;
+    const rev = fraudeResult.filas.filter(f => f.nivel !== "bajo");
+    if (!rev.length) { alert("No hay pedidos para revisar (ninguno con señales de riesgo)."); return; }
+    try {
+      const ws = XLSX.utils.json_to_sheet(rev.map(f => ({
+        Pedido: f.pedido, Tienda: f.tienda, Cliente: f.nombre, Importe: f.importe, Nivel: f.nivel, Score: f.score,
+        Documento: f.doc, Mail: f.mail, IP: f.ip, Tarjeta: (f.bin ? f.bin + "…" + f.last4 : ""), Motivos: f.motivos.join(" · ")
+      })));
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "Revisar fraude");
+      XLSX.writeFile(wb, "fraude-revisar-" + new Date().toISOString().slice(0, 10) + ".xlsx");
+    } catch (e) { alert("Error al exportar: " + e.message); }
+  };
   const SUBS_AN = [
     { id: "resumen", l: "Metas por tienda" },
     { id: "facturacion", l: "Facturación" },
     { id: "stock", l: "Stock facturación" },
+    { id: "fraude", l: "Fraude" },
     { id: "anual", l: "Progreso anual" },
     { id: "cargar", l: "Cargar archivos" }
   ];
@@ -1678,6 +1849,66 @@ function Metas({
                 h("td", { className: "px-3 py-1.5 tabular-nums font-black", style: { textAlign: "right", color: t.conFaltante > 0 ? C.red : C.green } }, t.conFaltante),
                 h("td", { className: "px-3 py-1.5 tabular-nums font-bold", style: { textAlign: "right", color: t.uFaltantes > 0 ? C.red : C.gray } }, t.uFaltantes))))))),
           h("div", { className: "text-[11px]", style: { color: C.gray } }, "“Con faltante” = pedidos pendientes de facturar cuyos artículos NO tienen suficiente StkActual en el depósito de facturación de su tienda → el egreso no se hizo (va a necesitar ajuste). Los artículos PCN (personalizaciones) se excluyen: se hacen a pedido, no están en stock. El detalle pedido-artículo está en “Exportar faltantes”."))),
+    // ── Fraude: red de detección entre tiendas ──
+    subAnEff === "fraude" && h("div", { className: "space-y-3" },
+      h("div", { className: "bg-white rounded-2xl border p-4 space-y-3", style: { borderColor: C.line } },
+        h("div", { className: "flex items-center justify-between flex-wrap gap-2" },
+          h("div", null,
+            h("div", { className: "text-sm font-black fraunces", style: { color: C.ink } }, "Detección de fraude — red entre tiendas"),
+            h("div", { className: "text-[11px] mt-0.5", style: { color: C.gray } }, "Subí un reporte de ventas de Fenicio. El número de tarjeta se convierte en hash en tu navegador y NO se guarda (sólo BIN + últimos 4). Cada pedido se cruza con la lista negra compartida y se puntúa. La lista negra la alimentan las tres tiendas.")),
+          h("div", { className: "text-right" },
+            h("div", { className: "text-2xl font-black tabular-nums", style: { color: C.ink } }, blocklist.length),
+            h("div", { className: "text-[10px] font-bold uppercase", style: { color: C.gray } }, "en lista negra"))),
+        blSnapOK === false && h("div", { className: "rounded-xl px-3 py-2 text-[11px]", style: { background: C.amberS, color: C.amber } }, "⚠ Falta crear la tabla fraude_blocklist en Supabase (sql/fraude_blocklist.sql). Sin eso la lista negra no se guarda ni se comparte entre tiendas."),
+        h("div", { className: "flex flex-wrap items-end gap-3" },
+          h("div", null,
+            h("label", { className: "text-[10px] font-bold uppercase block mb-1", style: { color: C.gray } }, "Tienda del reporte"),
+            h("select", { value: tiendaFraude, onChange: e => setTiendaFraude(e.target.value), className: "text-sm rounded-xl border px-3 py-2 outline-none", style: { borderColor: C.line } },
+              ["TimeOut", "Tienda Nacional", "Classico"].map(t => h("option", { key: t, value: t }, t)))),
+          h("label", { className: "flex items-center gap-2 p-2.5 rounded-xl border-2 border-dashed cursor-pointer", style: { borderColor: archivoFraude ? "#86EFAC" : C.line, background: archivoFraude ? C.greenS : "transparent" } },
+            h("span", { style: { color: archivoFraude ? C.green : C.blue, display: "inline-flex" } }, archivoFraude ? Ic.ok : Ic.upload),
+            h("span", { className: "text-sm font-semibold", style: { color: archivoFraude ? C.green : C.gray } }, cargandoFraude ? "Leyendo…" : archivoFraude || "Reporte de ventas (.xls)"),
+            h("input", { type: "file", accept: ".xlsx,.xls,.csv", className: "hidden", onChange: leerFraude })),
+          h("label", { className: "flex items-center gap-2 p-2.5 rounded-xl border-2 border-dashed cursor-pointer", style: { borderColor: motivosFraude ? "#86EFAC" : C.line, background: motivosFraude ? C.greenS : "transparent" } },
+            h("span", { style: { color: motivosFraude ? C.green : C.blue, display: "inline-flex" } }, motivosFraude ? Ic.ok : Ic.upload),
+            h("span", { className: "text-xs font-semibold", style: { color: motivosFraude ? C.green : C.gray } }, motivosFraude ? motivosFraude.archivo : "Motivos de cancelación (opcional)"),
+            h("input", { type: "file", accept: ".xlsx,.xls,.csv", className: "hidden", onChange: leerMotivos })),
+          motivosFraude && rowsFraude.length > 0 && h("button", { onClick: sembrarDesdeMotivos, disabled: marcando, className: "text-xs font-bold px-3 py-2 rounded-xl text-white disabled:opacity-40", style: { background: C.ink } }, marcando ? "Sembrando…" : "Sembrar lista negra con los fraudes"))),
+      !fraudeResult ? h("div", { className: "bg-white rounded-2xl border p-6 text-sm text-center", style: { borderColor: C.line, color: C.gray } }, "Subí un reporte de ventas para empezar. (Opcional: subí también el reporte de motivos de cancelación y tocá “Sembrar” para cargar de golpe los fraudes ya confirmados.)")
+      : h("div", { className: "space-y-3" },
+          h("div", { className: "grid grid-cols-2 sm:grid-cols-4 gap-2" },
+            [["bloquear", "Bloquear", C.red], ["alto", "Alto", C.red], ["medio", "Medio", C.amber], ["bajo", "Bajo / OK", C.green]].map(x =>
+              h("div", { key: x[0], className: "rounded-xl border p-3", style: { borderColor: C.line } },
+                h("div", { className: "text-2xl font-black tabular-nums", style: { color: x[2] } }, fraudeResult.cuenta[x[0]]),
+                h("div", { className: "text-[10px] font-bold uppercase", style: { color: C.gray } }, x[1])))),
+          h("div", { className: "bg-white rounded-2xl border overflow-hidden", style: { borderColor: C.line } },
+            h("div", { className: "px-4 py-3 border-b flex items-center justify-between gap-2 flex-wrap", style: { borderColor: C.line } },
+              h("span", { className: "text-sm font-bold", style: { color: C.ink } }, "Cola priorizada — pedidos a revisar (" + fraudeResult.filas.filter(f => f.nivel !== "bajo").length + ")"),
+              h("button", { onClick: exportFraude, className: "text-xs font-bold px-2.5 py-1 rounded-lg", style: { background: C.soft, color: C.blue } }, "↓ Exportar")),
+            fraudeResult.filas.filter(f => f.nivel !== "bajo").length === 0
+              ? h("div", { className: "px-4 py-6 text-sm text-center", style: { color: C.gray } }, "Ningún pedido con señales de riesgo en este reporte. 👍")
+              : h("div", { className: "overflow-auto", style: { maxHeight: 520 } }, h("table", { className: "w-full", style: { fontSize: 12 } },
+                h("thead", null, h("tr", null, ["Nivel", "Pedido", "Tienda", "Cliente", "Importe", "Señales", ""].map((hh, i) => h("th", { key: i, className: "px-3 py-2 font-bold uppercase", style: { color: C.gray, fontSize: 10, textAlign: i === 4 ? "right" : "left", whiteSpace: "nowrap", position: "sticky", top: 0, background: "#F6F7F9" } }, hh)))),
+                h("tbody", null, fraudeResult.filas.filter(f => f.nivel !== "bajo").slice(0, 300).map((f, i) =>
+                  h("tr", { key: f.pedido + "_" + i, style: { borderTop: "1px solid " + C.line } },
+                    h("td", { className: "px-3 py-1.5" }, h("span", { className: "text-[10px] font-black uppercase px-2 py-0.5 rounded-full", style: { background: f.nivel === "medio" ? C.amberS : C.redS, color: f.nivel === "medio" ? C.amber : C.red } }, f.nivel)),
+                    h("td", { className: "px-3 py-1.5 font-semibold" }, f.pedido),
+                    h("td", { className: "px-3 py-1.5", style: { color: C.gray } }, f.tienda),
+                    h("td", { className: "px-3 py-1.5", style: { maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, f.nombre || "—"),
+                    h("td", { className: "px-3 py-1.5 tabular-nums", style: { textAlign: "right" } }, f.importe ? f.importe.toLocaleString("es-UY") : "—"),
+                    h("td", { className: "px-3 py-1.5 text-[11px]", style: { color: C.gray } }, f.motivos.join(" · ")),
+                    h("td", { className: "px-3 py-1.5" }, h("button", { onClick: () => marcarFraude(f), disabled: marcando, className: "text-[11px] font-bold px-2 py-1 rounded-lg disabled:opacity-40", style: { background: C.redS, color: C.red } }, "Marcar fraude"))))))))),
+      blocklist.length > 0 && h("details", { className: "bg-white rounded-2xl border p-4", style: { borderColor: C.line } },
+        h("summary", { className: "text-sm font-bold cursor-pointer", style: { color: C.ink } }, "Ver lista negra compartida (" + blocklist.length + ")"),
+        h("div", { className: "overflow-auto mt-3", style: { maxHeight: 360 } }, h("table", { className: "w-full", style: { fontSize: 11 } },
+          h("thead", null, h("tr", { style: { background: "#F6F7F9" } }, ["Tipo", "Valor", "Tienda", "Pedido", "Motivo", ""].map((hh, i) => h("th", { key: i, className: "px-2 py-1.5 font-bold uppercase text-left", style: { color: C.gray, fontSize: 9, whiteSpace: "nowrap" } }, hh)))),
+          h("tbody", null, blocklist.slice(0, 500).map(b => h("tr", { key: b.id, style: { borderTop: "1px solid " + C.line } },
+            h("td", { className: "px-2 py-1 font-semibold" }, b.tipo),
+            h("td", { className: "px-2 py-1", style: { color: C.gray, fontFamily: "monospace" } }, b.tipo === "card" ? ((b.bin || "") + "…" + (b.last4 || "")) : String(b.valor || "").slice(0, 32)),
+            h("td", { className: "px-2 py-1" }, b.tienda || "—"),
+            h("td", { className: "px-2 py-1" }, b.pedido || "—"),
+            h("td", { className: "px-2 py-1", style: { maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, b.motivo || "—"),
+            h("td", { className: "px-2 py-1" }, h("button", { onClick: () => quitarBlocklist(b.id), className: "text-[10px] font-bold px-1.5 py-0.5 rounded", style: { color: C.red } }, "quitar"))))))))),
     // ── Modal edición de meta ──
     formMeta && h("div", {
       className: "fixed inset-0 z-50 flex items-center justify-center p-4",
