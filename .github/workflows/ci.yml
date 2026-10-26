@@ -29,6 +29,9 @@ jobs:
       - name: Reglas de facturación (Análisis)
         run: npm run test:fac
 
+      - name: Reglas de fraude (Análisis)
+        run: npm run test:fraude
+
       - name: Instalar Chromium para el smoke test
         run: npx playwright install --with-deps chromium
 
