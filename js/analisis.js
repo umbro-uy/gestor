@@ -791,6 +791,7 @@ function Metas({
   const [tiendaFraude, setTiendaFraude] = useState("TimeOut"); // tienda del reporte que se está cargando
   const [motivosFraude, setMotivosFraude] = useState(null);    // { archivo, mapa:{pedido:motivo} } opcional p/ sembrar
   const [marcando, setMarcando] = useState(false);
+  const [filtroFraude, setFiltroFraude] = useState(null);      // nivel seleccionado en los chips (null = la cola de riesgo)
   const [cargandoBAS, setCargandoBAS] = useState(false);
   const [cargandoWMS, setCargandoWMS] = useState(false);
   const [resumenBAS, setResumenBAS] = useState(null);
@@ -1157,6 +1158,25 @@ function Metas({
   };
   const quitarBlocklist = async id => {
     try { await supa.from("fraude_blocklist").delete().eq("id", id); await cargarBlocklist(); } catch (err) { alert("No se pudo quitar: " + err.message); }
+  };
+  // Desbloquear un pedido: quita de la lista negra SÓLO las entradas que hicieron que este pedido matcheara
+  // (p.ej. una IP compartida que dio un falso positivo). Afecta a todas las tiendas, así que pide confirmación.
+  const desbloquearPedido = async row => {
+    const quitar = blocklist.filter(b =>
+      (b.tipo === "card" && b.valor === row.cardHash) ||
+      (b.tipo === "doc" && b.valor === row.doc) ||
+      (b.tipo === "mail" && b.valor === row.mail) ||
+      (b.tipo === "ip" && b.valor === row.ip));
+    if (!quitar.length) { alert("No hay entradas de lista negra que coincidan con este pedido."); return; }
+    const detalle = quitar.map(b => b.tipo + (b.tipo === "card" ? " " + (b.bin || "") + "…" + (b.last4 || "") : " " + b.valor)).join(", ");
+    if (!confirm("Desbloquear quitará de la lista negra COMPARTIDA (afecta a todas las tiendas): " + detalle + ".\n¿Continuar?")) return;
+    setMarcando(true);
+    try {
+      const { error } = await supa.from("fraude_blocklist").delete().in("id", quitar.map(b => b.id));
+      if (error) throw error;
+      await cargarBlocklist();
+    } catch (err) { alert("No se pudo desbloquear: " + err.message); }
+    setMarcando(false);
   };
   // Siembra masiva: toma los pedidos del reporte de ventas cuyo motivo (en el archivo de motivos) es fraude,
   // y agrega sus atributos a la lista negra de una sola vez.
@@ -1668,10 +1688,12 @@ function Metas({
     filas.forEach(f => cuenta[f.nivel]++);
     return { filas, cuenta, total: filas.length };
   })();
+  // Filas que se muestran en la cola: si hay un chip seleccionado, ese nivel; si no, los de riesgo (todo menos "bajo").
+  const fraudeVisibles = fraudeResult ? (filtroFraude ? fraudeResult.filas.filter(f => f.nivel === filtroFraude) : fraudeResult.filas.filter(f => f.nivel !== "bajo")) : [];
   const exportFraude = () => {
     if (!fraudeResult) return;
-    const rev = fraudeResult.filas.filter(f => f.nivel !== "bajo");
-    if (!rev.length) { alert("No hay pedidos para revisar (ninguno con señales de riesgo)."); return; }
+    const rev = fraudeVisibles;
+    if (!rev.length) { alert("No hay pedidos para exportar en esta vista."); return; }
     try {
       const ws = XLSX.utils.json_to_sheet(rev.map(f => ({
         Pedido: f.pedido, Tienda: f.tienda, Cliente: f.nombre, Importe: f.importe, Nivel: f.nivel, Score: f.score,
@@ -1877,27 +1899,37 @@ function Metas({
       !fraudeResult ? h("div", { className: "bg-white rounded-2xl border p-6 text-sm text-center", style: { borderColor: C.line, color: C.gray } }, "Subí un reporte de ventas para empezar. (Opcional: subí también el reporte de motivos de cancelación y tocá “Sembrar” para cargar de golpe los fraudes ya confirmados.)")
       : h("div", { className: "space-y-3" },
           h("div", { className: "grid grid-cols-2 sm:grid-cols-4 gap-2" },
-            [["bloquear", "Bloquear", C.red], ["alto", "Alto", C.red], ["medio", "Medio", C.amber], ["bajo", "Bajo / OK", C.green]].map(x =>
-              h("div", { key: x[0], className: "rounded-xl border p-3", style: { borderColor: C.line } },
+            [["bloquear", "Lista negra", C.red, C.redS], ["alto", "Alto", C.red, C.redS], ["medio", "Medio", C.amber, C.amberS], ["bajo", "Bajo / OK", C.green, C.greenS]].map(x =>
+              h("button", { key: x[0], onClick: () => setFiltroFraude(filtroFraude === x[0] ? null : x[0]),
+                className: "rounded-xl border p-3 text-left cursor-pointer",
+                style: { borderColor: filtroFraude === x[0] ? x[2] : C.line, borderWidth: filtroFraude === x[0] ? 2 : 1, background: filtroFraude === x[0] ? x[3] : "#fff" } },
                 h("div", { className: "text-2xl font-black tabular-nums", style: { color: x[2] } }, fraudeResult.cuenta[x[0]]),
-                h("div", { className: "text-[10px] font-bold uppercase", style: { color: C.gray } }, x[1])))),
+                h("div", { className: "text-[10px] font-bold uppercase", style: { color: C.gray } }, x[1] + (filtroFraude === x[0] ? " ✓" : ""))))),
+          h("div", { className: "text-[11px] leading-relaxed px-1", style: { color: C.gray } },
+            h("b", { style: { color: C.red } }, "Lista negra"), " = reusa datos de un fraude que YA confirmaste → no despachar (tocá un pedido “Desbloquear” si fue un falso positivo). ",
+            h("b", { style: { color: C.ink } }, "Alto / Medio"), " = sospecha por patrones, todavía SIN confirmar → validar antes de despachar. ",
+            "“Marcar fraude” agrega los datos del pedido a la lista negra compartida (todas las tiendas); no cancela solo en Fenicio, es la señal para frenarlo. Tocá un chip para filtrar."),
           h("div", { className: "bg-white rounded-2xl border overflow-hidden", style: { borderColor: C.line } },
             h("div", { className: "px-4 py-3 border-b flex items-center justify-between gap-2 flex-wrap", style: { borderColor: C.line } },
-              h("span", { className: "text-sm font-bold", style: { color: C.ink } }, "Cola priorizada — pedidos a revisar (" + fraudeResult.filas.filter(f => f.nivel !== "bajo").length + ")"),
-              h("button", { onClick: exportFraude, className: "text-xs font-bold px-2.5 py-1 rounded-lg", style: { background: C.soft, color: C.blue } }, "↓ Exportar")),
-            fraudeResult.filas.filter(f => f.nivel !== "bajo").length === 0
-              ? h("div", { className: "px-4 py-6 text-sm text-center", style: { color: C.gray } }, "Ningún pedido con señales de riesgo en este reporte. 👍")
+              h("span", { className: "text-sm font-bold", style: { color: C.ink } }, (filtroFraude ? "Filtrando: " + ({ bloquear: "Lista negra", alto: "Alto", medio: "Medio", bajo: "Bajo / OK" }[filtroFraude]) : "Cola priorizada — pedidos a revisar") + " (" + fraudeVisibles.length + ")"),
+              h("div", { className: "flex items-center gap-2" },
+                filtroFraude && h("button", { onClick: () => setFiltroFraude(null), className: "text-xs font-bold px-2.5 py-1 rounded-lg", style: { background: C.soft, color: C.gray } }, "Ver todos"),
+                h("button", { onClick: exportFraude, className: "text-xs font-bold px-2.5 py-1 rounded-lg", style: { background: C.soft, color: C.blue } }, "↓ Exportar"))),
+            fraudeVisibles.length === 0
+              ? h("div", { className: "px-4 py-6 text-sm text-center", style: { color: C.gray } }, filtroFraude ? "No hay pedidos en este nivel." : "Ningún pedido con señales de riesgo en este reporte. 👍")
               : h("div", { className: "overflow-auto", style: { maxHeight: 520 } }, h("table", { className: "w-full", style: { fontSize: 12 } },
                 h("thead", null, h("tr", null, ["Nivel", "Pedido", "Tienda", "Cliente", "Importe", "Señales", ""].map((hh, i) => h("th", { key: i, className: "px-3 py-2 font-bold uppercase", style: { color: C.gray, fontSize: 10, textAlign: i === 4 ? "right" : "left", whiteSpace: "nowrap", position: "sticky", top: 0, background: "#F6F7F9" } }, hh)))),
-                h("tbody", null, fraudeResult.filas.filter(f => f.nivel !== "bajo").slice(0, 300).map((f, i) =>
+                h("tbody", null, fraudeVisibles.slice(0, 300).map((f, i) =>
                   h("tr", { key: f.pedido + "_" + i, style: { borderTop: "1px solid " + C.line } },
-                    h("td", { className: "px-3 py-1.5" }, h("span", { className: "text-[10px] font-black uppercase px-2 py-0.5 rounded-full", style: { background: f.nivel === "medio" ? C.amberS : C.redS, color: f.nivel === "medio" ? C.amber : C.red } }, f.nivel)),
+                    h("td", { className: "px-3 py-1.5" }, h("span", { className: "text-[10px] font-black uppercase px-2 py-0.5 rounded-full", style: { background: f.nivel === "medio" ? C.amberS : f.nivel === "bajo" ? C.greenS : C.redS, color: f.nivel === "medio" ? C.amber : f.nivel === "bajo" ? C.green : C.red } }, f.nivel === "bloquear" ? "lista negra" : f.nivel)),
                     h("td", { className: "px-3 py-1.5 font-semibold" }, f.pedido),
                     h("td", { className: "px-3 py-1.5", style: { color: C.gray } }, f.tienda),
                     h("td", { className: "px-3 py-1.5", style: { maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, f.nombre || "—"),
                     h("td", { className: "px-3 py-1.5 tabular-nums", style: { textAlign: "right" } }, f.importe ? f.importe.toLocaleString("es-UY") : "—"),
                     h("td", { className: "px-3 py-1.5 text-[11px]", style: { color: C.gray } }, f.motivos.join(" · ")),
-                    h("td", { className: "px-3 py-1.5" }, h("button", { onClick: () => marcarFraude(f), disabled: marcando, className: "text-[11px] font-bold px-2 py-1 rounded-lg disabled:opacity-40", style: { background: C.redS, color: C.red } }, "Marcar fraude"))))))))),
+                    h("td", { className: "px-3 py-1.5" }, f.bloqueado
+                      ? h("button", { onClick: () => desbloquearPedido(f), disabled: marcando, className: "text-[11px] font-bold px-2 py-1 rounded-lg disabled:opacity-40", style: { background: C.soft, color: C.gray } }, "Desbloquear")
+                      : h("button", { onClick: () => marcarFraude(f), disabled: marcando, className: "text-[11px] font-bold px-2 py-1 rounded-lg disabled:opacity-40", style: { background: C.redS, color: C.red } }, "Marcar fraude"))))))))),
       blocklist.length > 0 && h("details", { className: "bg-white rounded-2xl border p-4", style: { borderColor: C.line } },
         h("summary", { className: "text-sm font-bold cursor-pointer", style: { color: C.ink } }, "Ver lista negra compartida (" + blocklist.length + ")"),
         h("div", { className: "overflow-auto mt-3", style: { maxHeight: 360 } }, h("table", { className: "w-full", style: { fontSize: 11 } },
