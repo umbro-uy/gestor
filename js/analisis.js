@@ -1696,7 +1696,7 @@ function Metas({
     h(Title, {
       eyebrow: "Análisis",
       title: "Facturación y metas",
-      right: h("div", { className: "flex items-center gap-2" },
+      right: (subAnEff !== "stock" && subAnEff !== "fraude") ? h("div", { className: "flex items-center gap-2" },
         h("span", { className: "text-[11px] font-bold uppercase tracking-wide", style: { color: C.gray } }, "Período"),
         h("input", {
           type: "month",
@@ -1704,14 +1704,14 @@ function Metas({
           onChange: e => setMes(e.target.value),
           className: "text-sm rounded-xl border px-3 py-1.5 outline-none",
           style: { borderColor: C.line }
-        }))
+        })) : null
     }),
     snapOK === false && h("div", {
       className: "rounded-xl px-4 py-3 text-xs font-medium",
       style: { background: C.amberS, color: C.amber }
     }, "⚠ La persistencia del análisis no está activa: falta crear la tabla en Supabase, así que lo que cargás (resumen del BAS y cruce) NO se guarda ni lo ven los demás al entrar. Ejecutá el SQL de sql/analisis_snapshot.sql en Supabase → SQL Editor."),
-    // ── KPIs grandes arriba ──
-    h("div", { className: "grid sm:grid-cols-3 gap-3" },
+    // ── KPIs grandes arriba (sólo en vistas de facturación/metas; Stock y Fraude tienen su propio resumen) ──
+    subAnEff !== "stock" && subAnEff !== "fraude" && h("div", { className: "grid sm:grid-cols-3 gap-3" },
       kpi("Facturación neta · " + fmtM(mes), fmtUSD(realMes),
         pctMes != null ? pctMes + "% de " + fmtUSD(metaMes) : "Meta sin definir",
         colMes,
@@ -1819,7 +1819,7 @@ function Metas({
     // ── Facturación: pedidos (paginado) ──
     subAnEff === "facturacion" && (pendientes
       ? h(ResultadoCruce, { pendientes: pendientes })
-      : h("div", { className: "bg-white rounded-2xl border p-6 text-sm text-center", style: { borderColor: C.line, color: C.gray } }, "Cargá el BAS y el reporte de Fenicio en “Cargar archivos” para ver los pedidos a facturar.")))),
+      : h("div", { className: "bg-white rounded-2xl border p-6 text-sm text-center", style: { borderColor: C.line, color: C.gray } }, "Cargá el BAS y el reporte de Fenicio en “Cargar archivos” para ver los pedidos a facturar.")),
     subAnEff === "stock" && h("div", { className: "space-y-3" },
       h("div", { className: "bg-white rounded-2xl border p-4", style: { borderColor: C.line } },
         h("div", { className: "flex items-center justify-between flex-wrap gap-2" },
@@ -1908,7 +1908,7 @@ function Metas({
             h("td", { className: "px-2 py-1" }, b.tienda || "—"),
             h("td", { className: "px-2 py-1" }, b.pedido || "—"),
             h("td", { className: "px-2 py-1", style: { maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, b.motivo || "—"),
-            h("td", { className: "px-2 py-1" }, h("button", { onClick: () => quitarBlocklist(b.id), className: "text-[10px] font-bold px-1.5 py-0.5 rounded", style: { color: C.red } }, "quitar"))))))))),
+            h("td", { className: "px-2 py-1" }, h("button", { onClick: () => quitarBlocklist(b.id), className: "text-[10px] font-bold px-1.5 py-0.5 rounded", style: { color: C.red } }, "quitar"))))))))))),
     // ── Modal edición de meta ──
     formMeta && h("div", {
       className: "fixed inset-0 z-50 flex items-center justify-center p-4",
