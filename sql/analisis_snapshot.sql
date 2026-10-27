@@ -10,10 +10,12 @@ create table if not exists public.analisis_snapshot (
   resumen     jsonb,                    -- resumenBAS: facturación neta/bruta, NCD, pedidos, etc. por mes/tienda
   pendientes  jsonb,                    -- resultado del cruce: grupos (revisar, cancelado c/factura, PCN, ...)
   stock_depos jsonb,                    -- último stock de los depósitos de facturación (8101/8001/8201), para el control de egresos
+  fraude_resumen jsonb,                 -- resumen (solo números, sin datos de clientes) del último reporte analizado en Fraude
   actualizado timestamptz default now()
 );
--- Si la tabla ya existía, agregar la columna nueva:
+-- Si la tabla ya existía, agregar las columnas nuevas:
 alter table public.analisis_snapshot add column if not exists stock_depos jsonb;
+alter table public.analisis_snapshot add column if not exists fraude_resumen jsonb;
 
 -- Seguridad a nivel de fila: usuarios autenticados pueden leer/escribir
 alter table public.analisis_snapshot enable row level security;
