@@ -783,13 +783,13 @@ function Metas({
   // rowsFraude: reporte de ventas cargado, YA sin el PAN completo (sólo hash + BIN + últimos 4). Vive SÓLO en
   // memoria del navegador, NO se guarda en Supabase (es info sensible del cliente). La lista negra sí se
   // persiste (compartida entre tiendas), pero guarda apenas atributos de fraudes confirmados.
-  const [rowsFraude, setRowsFraude] = useState([]);
-  const [archivoFraude, setArchivoFraude] = useState(null);
+  const [rowsFraude, setRowsFraude] = useState([]);              // filas de TODAS las tiendas cargadas (cada fila lleva .tienda)
+  const [archivosFraude, setArchivosFraude] = useState({});      // tienda -> nombre de archivo cargado
   const [cargandoFraude, setCargandoFraude] = useState(false);
   const [blocklist, setBlocklist] = useState([]);   // filas de fraude_blocklist (compartida)
   const [blSnapOK, setBlSnapOK] = useState(null);    // null=sin chequear, true=tabla ok, false=falta crear
-  const [tiendaFraude, setTiendaFraude] = useState("TimeOut"); // tienda del reporte que se está cargando
-  const [motivosFraude, setMotivosFraude] = useState(null);    // { archivo, mapa:{pedido:motivo} } opcional p/ sembrar
+  const [tiendaFraude, setTiendaFraude] = useState("TimeOut"); // tienda por defecto si el nombre del archivo no la indica
+  const [motivosFraude, setMotivosFraude] = useState(null);    // { archivos:[], mapa:{ "tienda|pedido": motivo } } opcional p/ sembrar
   const [marcando, setMarcando] = useState(false);
   const [filtroFraude, setFiltroFraude] = useState(null);      // nivel seleccionado en los chips (null = la cola de riesgo)
   const [fraudeResumen, setFraudeResumen] = useState(null);    // resumen persistido del último análisis (solo números)
@@ -1073,70 +1073,93 @@ function Metas({
   };
   const impNum = v => { const x = parseFloat(String(v == null ? "" : v).replace(/[^\d.,-]/g, "").replace(/\.(?=\d{3}\b)/g, "").replace(",", ".")); return isNaN(x) ? 0 : x; };
   const soloDig = v => String(v == null ? "" : v).replace(/\D/g, "");
-  // Lee un reporte de ventas de Fenicio (.xls HTML, .xlsx o .csv), HASHEA el PAN al vuelo y DESCARTA el número
-  // completo: en memoria sólo quedan hash + BIN + últimos 4. No persiste nada: la info sensible no sale del navegador.
-  const leerFraude = e => {
-    const file = e && e.target && e.target.files ? e.target.files[0] : null;
-    if (!file) return;
-    setCargandoFraude(true); setArchivoFraude(file.name);
+  const leerArchivo = file => new Promise((resolve, reject) => {
     const reader = new FileReader();
-    reader.onload = async ev => {
-      try {
-        const wb = XLSX.read(ev.target.result, { type: "binary" });
-        const ws = wb.Sheets[wb.SheetNames[0]];
-        const clean = v => String(v == null ? "" : v).replace(/<[^>]*>/g, "").replace(/&nbsp;/gi, " ").replace(/&amp;/gi, "&").replace(/&#?\w+;/g, "").trim();
-        const data = XLSX.utils.sheet_to_json(ws, { header: 1, raw: false, defval: "" }).map(r => (r || []).map(clean));
-        let hIdx = -1;
-        for (let i = 0; i < Math.min(8, data.length); i++) if ((data[i] || []).some(c => String(c || "").toLowerCase().includes("pedido"))) { hIdx = i; break; }
-        if (hIdx < 0) { alert("No reconocí el reporte de ventas (no encontré la fila de encabezados)."); setCargandoFraude(false); return; }
-        const headers = data[hIdx].map(String);
-        const norm = s => String(s || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
-        const col = re => headers.findIndex(h => re.test(norm(h)));
-        const iPed = col(/nro\.?\s*pedido|^pedido/), iDoc = col(/comprador.*documento|^documento/), iMail = col(/comprador.*email|^email|correo/),
-          iBin = col(/tarjeta.*bin/), iL4 = col(/tarjeta.*last\s*4|ultimos?\s*4/), iCard = col(/^numero de tarjeta$|^tarjeta$/),
-          iIp = col(/^ip$/), iImp = col(/importe de pago|^importe/), iFecha = col(/fecha.*pago|^fecha/), iNom = col(/comprador.*nombre|^nombre|cliente/);
-        if (iPed < 0) { alert("No encontré la columna de Nro. de pedido en el reporte."); setCargandoFraude(false); return; }
-        const g = (r, i) => i >= 0 ? clean(r[i]) : "";
-        const filas = data.slice(hIdx + 1).filter(r => /^\d+$/.test(String(g(r, iPed)).trim()));
-        // hashear PAN y soltar el número completo
-        const rows = await Promise.all(filas.map(async r => {
-          const panFull = soloDig(g(r, iCard));
-          const bin = g(r, iBin) ? soloDig(g(r, iBin)).slice(0, 6) : (panFull ? panFull.slice(0, 6) : "");
-          const last4 = g(r, iL4) ? soloDig(g(r, iL4)).slice(-4) : (panFull ? panFull.slice(-4) : "");
-          let cardHash = "";
-          if (panFull.length >= 8) cardHash = await sha256Hex(panFull);
-          else if (bin && last4) cardHash = await sha256Hex("bl|" + bin + "|" + last4); // sin PAN: huella débil BIN+last4
-          return {
-            pedido: String(g(r, iPed)).trim(), tienda: tiendaFraude, nombre: g(r, iNom),
-            doc: FraudeReglas.normAttr(g(r, iDoc)), mail: FraudeReglas.normAttr(g(r, iMail)), ip: FraudeReglas.normAttr(g(r, iIp)),
-            bin, last4, cardHash, importe: impNum(g(r, iImp)), fecha: g(r, iFecha)
-          };
-        }));
-        setRowsFraude(rows);
-        if (!rows.length) alert("No se encontraron ventas en el archivo.");
-      } catch (err) { alert("Error leyendo el reporte: " + err.message); }
-      setCargandoFraude(false);
-    };
+    reader.onload = ev => resolve(ev.target.result);
+    reader.onerror = () => reject(new Error("no se pudo leer " + file.name));
     reader.readAsBinaryString(file);
+  });
+  // Detecta la tienda por el nombre del archivo (así se pueden cargar las 3 juntas). Si no la reconoce, usa
+  // la tienda por defecto del selector.
+  const detectarTienda = (nombre, fallback) => {
+    const n = String(nombre || "").toLowerCase();
+    if (/time.?out/.test(n)) return "TimeOut";
+    if (/nacional/.test(n)) return "Tienda Nacional";
+    if (/cl[aá]s+ico/.test(n)) return "Classico";
+    return fallback;
   };
-  // Lee un reporte de MOTIVOS de cancelación (CSV/.xls) para sembrar la lista negra: pedido → motivo. Sólo se
-  // toman los motivos que indican fraude. Se cruza con el reporte de ventas (que aporta los atributos).
-  const leerMotivos = e => {
-    const file = e && e.target && e.target.files ? e.target.files[0] : null;
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = ev => {
-      try {
-        const wb = XLSX.read(ev.target.result, { type: "binary" });
-        const ws = wb.Sheets[wb.SheetNames[0]];
+  // Parsea un reporte de ventas de Fenicio (.xls HTML, .xlsx o .csv). HASHEA el PAN al vuelo y DESCARTA el número
+  // completo: en memoria sólo quedan hash + BIN + últimos 4. Devuelve las filas, cada una con su tienda.
+  const parsearVentas = async (bin0, tienda) => {
+    const wb = XLSX.read(bin0, { type: "binary" });
+    const ws = wb.Sheets[wb.SheetNames[0]];
+    const clean = v => String(v == null ? "" : v).replace(/<[^>]*>/g, "").replace(/&nbsp;/gi, " ").replace(/&amp;/gi, "&").replace(/&#?\w+;/g, "").trim();
+    const data = XLSX.utils.sheet_to_json(ws, { header: 1, raw: false, defval: "" }).map(r => (r || []).map(clean));
+    let hIdx = -1;
+    for (let i = 0; i < Math.min(8, data.length); i++) if ((data[i] || []).some(c => String(c || "").toLowerCase().includes("pedido"))) { hIdx = i; break; }
+    if (hIdx < 0) throw new Error("no encontré la fila de encabezados");
+    const headers = data[hIdx].map(String);
+    const norm = s => String(s || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
+    const col = re => headers.findIndex(h => re.test(norm(h)));
+    const iPed = col(/nro\.?\s*pedido|^pedido/), iDoc = col(/comprador.*documento|^documento/), iMail = col(/comprador.*email|^email|correo/),
+      iBin = col(/tarjeta.*bin/), iL4 = col(/tarjeta.*last\s*4|ultimos?\s*4/), iCard = col(/^numero de tarjeta$|^tarjeta$/),
+      iIp = col(/^ip$/), iImp = col(/importe de pago|^importe/), iFecha = col(/fecha.*pago|^fecha/), iNom = col(/comprador.*nombre|^nombre|cliente/);
+    if (iPed < 0) throw new Error("no encontré la columna de Nro. de pedido");
+    const g = (r, i) => i >= 0 ? clean(r[i]) : "";
+    const filas = data.slice(hIdx + 1).filter(r => /^\d+$/.test(String(g(r, iPed)).trim()));
+    return Promise.all(filas.map(async r => {
+      const panFull = soloDig(g(r, iCard));
+      const bin = g(r, iBin) ? soloDig(g(r, iBin)).slice(0, 6) : (panFull ? panFull.slice(0, 6) : "");
+      const last4 = g(r, iL4) ? soloDig(g(r, iL4)).slice(-4) : (panFull ? panFull.slice(-4) : "");
+      let cardHash = "";
+      if (panFull.length >= 8) cardHash = await sha256Hex(panFull);
+      else if (bin && last4) cardHash = await sha256Hex("bl|" + bin + "|" + last4); // sin PAN: huella débil BIN+last4
+      return {
+        pedido: String(g(r, iPed)).trim(), tienda, nombre: g(r, iNom),
+        doc: FraudeReglas.normAttr(g(r, iDoc)), mail: FraudeReglas.normAttr(g(r, iMail)), ip: FraudeReglas.normAttr(g(r, iIp)),
+        bin, last4, cardHash, importe: impNum(g(r, iImp)), fecha: g(r, iFecha)
+      };
+    }));
+  };
+  // Carga UNO O VARIOS reportes de ventas a la vez (una por tienda, o las 3 juntas). La tienda se detecta por
+  // el nombre del archivo. Vuelve a cargar una tienda reemplaza SOLO sus filas.
+  const leerFraude = async e => {
+    const files = e && e.target && e.target.files ? Array.from(e.target.files) : [];
+    if (!files.length) return;
+    setCargandoFraude(true);
+    try {
+      const resultados = [];
+      for (const file of files) {
+        const tienda = detectarTienda(file.name, tiendaFraude);
+        try { const rows = await parsearVentas(await leerArchivo(file), tienda); resultados.push({ tienda, archivo: file.name, rows }); }
+        catch (err) { alert("“" + file.name + "”: " + err.message + "."); }
+      }
+      if (resultados.length) {
+        const tiendas = new Set(resultados.map(r => r.tienda));
+        setRowsFraude(prev => prev.filter(r => !tiendas.has(r.tienda)).concat(...resultados.map(r => r.rows)));
+        setArchivosFraude(prev => { const n = { ...prev }; resultados.forEach(r => n[r.tienda] = r.archivo); return n; });
+        const vacios = resultados.filter(r => !r.rows.length).map(r => r.tienda);
+        if (vacios.length) alert("Sin ventas en: " + vacios.join(", ") + ".");
+      }
+    } catch (err) { alert("Error leyendo reportes: " + err.message); }
+    setCargandoFraude(false);
+  };
+  // Lee UNO O VARIOS reportes de MOTIVOS de cancelación para sembrar la lista negra. El mapa se arma por
+  // "tienda|pedido" (los números de pedido se repiten entre tiendas). Sólo se usan los motivos de fraude.
+  const leerMotivos = async e => {
+    const files = e && e.target && e.target.files ? Array.from(e.target.files) : [];
+    if (!files.length) return;
+    try {
+      const mapa = {}; const nombres = [];
+      for (const file of files) {
+        const tienda = detectarTienda(file.name, tiendaFraude); nombres.push(file.name);
+        const wb = XLSX.read(await leerArchivo(file), { type: "binary" });
         const clean = v => String(v == null ? "" : v).replace(/<[^>]*>/g, "").replace(/&nbsp;/gi, " ").replace(/&#?\w+;/g, "").trim();
-        const data = XLSX.utils.sheet_to_json(ws, { header: 1, raw: false, defval: "" }).map(r => (r || []).map(clean));
-        const mapa = {};
-        data.forEach(r => { const ped = String(r[0] || "").trim(); const mot = String(r[1] || "").trim(); if (/^\d+$/.test(ped) && mot) mapa[ped] = mot; });
-        setMotivosFraude({ archivo: file.name, mapa });
-      } catch (err) { alert("Error leyendo motivos: " + err.message); }
-    };
-    reader.readAsBinaryString(file);
+        const data = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, raw: false, defval: "" }).map(r => (r || []).map(clean));
+        data.forEach(r => { const ped = String(r[0] || "").trim(); const mot = String(r[1] || "").trim(); if (/^\d+$/.test(ped) && mot) mapa[tienda + "|" + ped] = mot; });
+      }
+      setMotivosFraude({ archivos: nombres, mapa });
+    } catch (err) { alert("Error leyendo motivos: " + err.message); }
   };
   const esMotivoFraude = m => /fraud|robo|robad|tarjeta\s*robada|compra\s*fraudulenta/i.test(String(m || ""));
   // Inserta (upsert) en la lista negra compartida los atributos de un pedido confirmado como fraude.
@@ -1190,11 +1213,12 @@ function Metas({
   // y agrega sus atributos a la lista negra de una sola vez.
   const sembrarDesdeMotivos = async () => {
     if (!motivosFraude || !rowsFraude.length) return;
-    const fraudesCSV = Object.keys(motivosFraude.mapa).filter(p => esMotivoFraude(motivosFraude.mapa[p]));
-    const pedsVentas = new Set(rowsFraude.map(r => r.pedido));
-    const cruzan = fraudesCSV.filter(p => pedsVentas.has(p));
+    // Las claves del mapa y de ventas son "tienda|pedido" (los números se repiten entre tiendas).
+    const fraudesCSV = Object.keys(motivosFraude.mapa).filter(k => esMotivoFraude(motivosFraude.mapa[k]));
+    const pedsVentas = new Set(rowsFraude.map(r => r.tienda + "|" + r.pedido));
+    const cruzan = fraudesCSV.filter(k => pedsVentas.has(k));
     const regsRaw = [];
-    cruzan.forEach(p => { const r = rowsFraude.find(x => x.pedido === p); if (r) regsRaw.push(...atributosDe(r, motivosFraude.mapa[p])); });
+    cruzan.forEach(k => { const r = rowsFraude.find(x => (x.tienda + "|" + x.pedido) === k); if (r) regsRaw.push(...atributosDe(r, motivosFraude.mapa[k])); });
     // Dedupe por (tipo,valor): varios fraudes pueden compartir un dato (misma IP/tarjeta/mail) y el upsert
     // falla ("ON CONFLICT ... cannot affect row a second time") si el mismo par llega dos veces en el lote.
     const vistos = {};
@@ -1703,9 +1727,9 @@ function Metas({
     // los atributos del comprador (doc/mail/tarjeta/IP) son los mismos, el importe se toma el mayor y
     // se guarda el detalle de líneas para el modal.
     const porPed = {};
-    rowsFraude.forEach(r => { (porPed[r.pedido] || (porPed[r.pedido] = [])).push(r); });
-    const filas = Object.keys(porPed).map(ped => {
-      const rs = porPed[ped], r0 = rs[0];
+    rowsFraude.forEach(r => { const k = r.tienda + "|" + r.pedido; (porPed[k] || (porPed[k] = [])).push(r); });
+    const filas = Object.keys(porPed).map(k => {
+      const rs = porPed[k], r0 = rs[0], ped = r0.pedido;
       const importe = Math.max.apply(null, rs.map(x => x.importe || 0));
       const enBlocklist = (r0.cardHash && bl.card.has(r0.cardHash)) || (r0.doc && bl.doc.has(r0.doc)) || (r0.mail && bl.mail.has(r0.mail)) || (r0.ip && bl.ip.has(r0.ip));
       const ev = FraudeReglas.evaluar({ enBlocklist, docsPorTarjeta: nd(docsPor.card, r0.cardHash), docsPorMail: nd(docsPor.mail, r0.mail), docsPorIp: nd(docsPor.ip, r0.ip), importe });
@@ -1729,7 +1753,7 @@ function Metas({
     const peersDe = (campo, val) => {
       if (!val) return [];
       const m = {};
-      rowsFraude.forEach(r => { if (r[campo] === val && r.pedido !== f.pedido) m[r.pedido] = { pedido: r.pedido, doc: r.doc, nombre: r.nombre, tienda: r.tienda }; });
+      rowsFraude.forEach(r => { const k = r.tienda + "|" + r.pedido; if (r[campo] === val && k !== (f.tienda + "|" + f.pedido)) m[k] = { pedido: r.pedido, doc: r.doc, nombre: r.nombre, tienda: r.tienda }; });
       return Object.values(m);
     };
     return { cruces, porMail: peersDe("mail", f.mail), porTarjeta: peersDe("cardHash", f.cardHash), porIp: peersDe("ip", f.ip) };
@@ -1746,14 +1770,15 @@ function Metas({
   // panel muestre el estado aunque no haya un reporte cargado (el reporte en sí no se guarda).
   useEffect(() => {
     if (!rowsFraude.length || !fraudeResult) return;
-    const resumen = { tienda: tiendaFraude, archivo: archivoFraude, fecha: new Date().toISOString(), total: fraudeResult.total, bloquear: fraudeResult.cuenta.bloquear, alto: fraudeResult.cuenta.alto, medio: fraudeResult.cuenta.medio, bajo: fraudeResult.cuenta.bajo };
+    const resumen = { tienda: Object.keys(archivosFraude).join(", ") || tiendaFraude, fecha: new Date().toISOString(), total: fraudeResult.total, bloquear: fraudeResult.cuenta.bloquear, alto: fraudeResult.cuenta.alto, medio: fraudeResult.cuenta.medio, bajo: fraudeResult.cuenta.bajo };
     setFraudeResumen(resumen);
     guardarSnapshot({ fraude_resumen: resumen });
   }, [rowsFraude]);
   // Métricas a mostrar siempre: en vivo si hay reporte cargado, si no las del último análisis persistido.
   const fraudeStats = fraudeResult
-    ? { total: fraudeResult.total, bloquear: fraudeResult.cuenta.bloquear, alto: fraudeResult.cuenta.alto, medio: fraudeResult.cuenta.medio, fuente: "en vivo · " + tiendaFraude }
+    ? { total: fraudeResult.total, bloquear: fraudeResult.cuenta.bloquear, alto: fraudeResult.cuenta.alto, medio: fraudeResult.cuenta.medio, fuente: "en vivo · " + (Object.keys(archivosFraude).join(", ") || tiendaFraude) }
     : (fraudeResumen ? { total: fraudeResumen.total || 0, bloquear: fraudeResumen.bloquear || 0, alto: fraudeResumen.alto || 0, medio: fraudeResumen.medio || 0, fuente: "último: " + (fraudeResumen.tienda || "—") + " · " + (() => { try { return new Date(fraudeResumen.fecha).toLocaleDateString("es-UY"); } catch (e) { return ""; } })() } : null);
+  const tiendasFraudeCargadas = Object.keys(archivosFraude);
   const exportFraude = () => {
     if (!fraudeResult) return;
     const rev = fraudeVisibles;
@@ -1941,25 +1966,26 @@ function Metas({
         h("div", { className: "flex items-center justify-between flex-wrap gap-2" },
           h("div", null,
             h("div", { className: "text-sm font-black fraunces", style: { color: C.ink } }, "Detección de fraude — red entre tiendas"),
-            h("div", { className: "text-[11px] mt-0.5", style: { color: C.gray } }, "Subí un reporte de ventas de Fenicio. El número de tarjeta se convierte en hash en tu navegador y NO se guarda (sólo BIN + últimos 4). Cada pedido se cruza con la lista negra compartida y se puntúa. La lista negra la alimentan las tres tiendas.")),
+            h("div", { className: "text-[11px] mt-0.5", style: { color: C.gray } }, "Subí uno o los tres reportes de ventas de Fenicio a la vez (se detecta la tienda por el nombre del archivo). El número de tarjeta se convierte en hash en tu navegador y NO se guarda (sólo BIN + últimos 4). Cada pedido se cruza con la lista negra compartida y se puntúa.")),
           h("div", { className: "text-right" },
             h("div", { className: "text-2xl font-black tabular-nums", style: { color: C.ink } }, blocklist.length),
             h("div", { className: "text-[10px] font-bold uppercase", style: { color: C.gray } }, "en lista negra"))),
         blSnapOK === false && h("div", { className: "rounded-xl px-3 py-2 text-[11px]", style: { background: C.amberS, color: C.amber } }, "⚠ Falta crear la tabla fraude_blocklist en Supabase (sql/fraude_blocklist.sql). Sin eso la lista negra no se guarda ni se comparte entre tiendas."),
         h("div", { className: "flex flex-wrap items-end gap-3" },
           h("div", null,
-            h("label", { className: "text-[10px] font-bold uppercase block mb-1", style: { color: C.gray } }, "Tienda del reporte"),
+            h("label", { className: "text-[10px] font-bold uppercase block mb-1", style: { color: C.gray } }, "Tienda por defecto"),
             h("select", { value: tiendaFraude, onChange: e => setTiendaFraude(e.target.value), className: "text-sm rounded-xl border px-3 py-2 outline-none", style: { borderColor: C.line } },
               ["TimeOut", "Tienda Nacional", "Classico"].map(t => h("option", { key: t, value: t }, t)))),
-          h("label", { className: "flex items-center gap-2 p-2.5 rounded-xl border-2 border-dashed cursor-pointer", style: { borderColor: archivoFraude ? "#86EFAC" : C.line, background: archivoFraude ? C.greenS : "transparent" } },
-            h("span", { style: { color: archivoFraude ? C.green : C.blue, display: "inline-flex" } }, archivoFraude ? Ic.ok : Ic.upload),
-            h("span", { className: "text-sm font-semibold", style: { color: archivoFraude ? C.green : C.gray } }, cargandoFraude ? "Leyendo…" : archivoFraude || "Reporte de ventas (.xls)"),
-            h("input", { type: "file", accept: ".xlsx,.xls,.csv", className: "hidden", onChange: leerFraude })),
+          h("label", { className: "flex items-center gap-2 p-2.5 rounded-xl border-2 border-dashed cursor-pointer", style: { borderColor: tiendasFraudeCargadas.length ? "#86EFAC" : C.line, background: tiendasFraudeCargadas.length ? C.greenS : "transparent" } },
+            h("span", { style: { color: tiendasFraudeCargadas.length ? C.green : C.blue, display: "inline-flex" } }, tiendasFraudeCargadas.length ? Ic.ok : Ic.upload),
+            h("span", { className: "text-sm font-semibold", style: { color: tiendasFraudeCargadas.length ? C.green : C.gray } }, cargandoFraude ? "Leyendo…" : (tiendasFraudeCargadas.length ? tiendasFraudeCargadas.length + " tienda(s) cargada(s)" : "Reportes de ventas (una o las 3)")),
+            h("input", { type: "file", accept: ".xlsx,.xls,.csv", multiple: true, className: "hidden", onChange: leerFraude })),
           h("label", { className: "flex items-center gap-2 p-2.5 rounded-xl border-2 border-dashed cursor-pointer", style: { borderColor: motivosFraude ? "#86EFAC" : C.line, background: motivosFraude ? C.greenS : "transparent" } },
             h("span", { style: { color: motivosFraude ? C.green : C.blue, display: "inline-flex" } }, motivosFraude ? Ic.ok : Ic.upload),
-            h("span", { className: "text-xs font-semibold", style: { color: motivosFraude ? C.green : C.gray } }, motivosFraude ? motivosFraude.archivo : "Motivos de cancelación (opcional)"),
-            h("input", { type: "file", accept: ".xlsx,.xls,.csv", className: "hidden", onChange: leerMotivos })),
-          motivosFraude && rowsFraude.length > 0 && h("button", { onClick: sembrarDesdeMotivos, disabled: marcando, className: "text-xs font-bold px-3 py-2 rounded-xl text-white disabled:opacity-40", style: { background: C.ink } }, marcando ? "Sembrando…" : "Sembrar lista negra con los fraudes"))),
+            h("span", { className: "text-xs font-semibold", style: { color: motivosFraude ? C.green : C.gray } }, motivosFraude ? (motivosFraude.archivos.length + " archivo(s) de motivos") : "Motivos de cancelación (opcional)"),
+            h("input", { type: "file", accept: ".xlsx,.xls,.csv", multiple: true, className: "hidden", onChange: leerMotivos })),
+          motivosFraude && rowsFraude.length > 0 && h("button", { onClick: sembrarDesdeMotivos, disabled: marcando, className: "text-xs font-bold px-3 py-2 rounded-xl text-white disabled:opacity-40", style: { background: C.ink } }, marcando ? "Sembrando…" : "Sembrar lista negra con los fraudes")),
+        tiendasFraudeCargadas.length > 0 && h("div", { className: "text-[11px] flex flex-wrap gap-x-3 gap-y-1", style: { color: C.gray } }, tiendasFraudeCargadas.map(t => h("span", { key: t }, h("b", { style: { color: C.ink } }, t), ": ", archivosFraude[t])))),
       // Métricas fijas (se ven siempre, aunque no haya reporte cargado)
       h("div", { className: "grid grid-cols-2 sm:grid-cols-4 gap-2" },
         kpi("Fraudes en lista negra", String(blocklistPorPedido.length), blocklist.length + " datos · histórico compartido", C.red),
@@ -1990,7 +2016,7 @@ function Metas({
               : h("div", { className: "overflow-auto", style: { maxHeight: 520 } }, h("table", { className: "w-full", style: { fontSize: 12 } },
                 h("thead", null, h("tr", null, ["Nivel", "Pedido", "Tienda", "Cliente", "Importe", "Señales", ""].map((hh, i) => h("th", { key: i, className: "px-3 py-2 font-bold uppercase", style: { color: C.gray, fontSize: 10, textAlign: i === 4 ? "right" : "left", whiteSpace: "nowrap", position: "sticky", top: 0, background: "#F6F7F9" } }, hh)))),
                 h("tbody", null, fraudeVisibles.slice(0, 300).map((f, i) =>
-                  h("tr", { key: f.pedido + "_" + i, onClick: () => setDetalleFraude(f), className: "cursor-pointer", style: { borderTop: "1px solid " + C.line } },
+                  h("tr", { key: f.tienda + "|" + f.pedido + "_" + i, onClick: () => setDetalleFraude(f), className: "cursor-pointer", style: { borderTop: "1px solid " + C.line } },
                     h("td", { className: "px-3 py-1.5" }, h("span", { className: "text-[10px] font-black uppercase px-2 py-0.5 rounded-full", style: { background: f.nivel === "medio" ? C.amberS : f.nivel === "bajo" ? C.greenS : C.redS, color: f.nivel === "medio" ? C.amber : f.nivel === "bajo" ? C.green : C.red } }, f.nivel === "bloquear" ? "lista negra" : f.nivel)),
                     h("td", { className: "px-3 py-1.5 font-semibold" }, f.pedido, f.lineas > 1 && h("span", { className: "font-normal", style: { color: C.gray } }, " ·" + f.lineas)),
                     h("td", { className: "px-3 py-1.5", style: { color: C.gray } }, f.tienda),
