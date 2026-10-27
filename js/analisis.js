@@ -1191,8 +1191,12 @@ function Metas({
     const fraudesCSV = Object.keys(motivosFraude.mapa).filter(p => esMotivoFraude(motivosFraude.mapa[p]));
     const pedsVentas = new Set(rowsFraude.map(r => r.pedido));
     const cruzan = fraudesCSV.filter(p => pedsVentas.has(p));
-    const regs = [];
-    cruzan.forEach(p => { const r = rowsFraude.find(x => x.pedido === p); if (r) regs.push(...atributosDe(r, motivosFraude.mapa[p])); });
+    const regsRaw = [];
+    cruzan.forEach(p => { const r = rowsFraude.find(x => x.pedido === p); if (r) regsRaw.push(...atributosDe(r, motivosFraude.mapa[p])); });
+    // Dedupe por (tipo,valor): varios fraudes pueden compartir un dato (misma IP/tarjeta/mail) y el upsert
+    // falla ("ON CONFLICT ... cannot affect row a second time") si el mismo par llega dos veces en el lote.
+    const vistos = {};
+    const regs = regsRaw.filter(r => { const k = r.tipo + "|" + r.valor; if (vistos[k]) return false; vistos[k] = 1; return true; });
     if (!regs.length) {
       alert("El archivo de motivos tiene " + fraudesCSV.length + " pedido(s) con motivo de fraude, pero " + cruzan.length + " cruzan con el reporte de ventas cargado.\n\n" +
         (fraudesCSV.length === 0 ? "Ese CSV no tiene motivos de fraude (o están escritos de otra forma)."
