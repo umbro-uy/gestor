@@ -792,6 +792,8 @@ function Metas({
   const [motivosFraude, setMotivosFraude] = useState(null);    // { archivo, mapa:{pedido:motivo} } opcional p/ sembrar
   const [marcando, setMarcando] = useState(false);
   const [filtroFraude, setFiltroFraude] = useState(null);      // nivel seleccionado en los chips (null = la cola de riesgo)
+  const [detalleFraude, setDetalleFraude] = useState(null);    // pedido abierto en el modal de detalle
+  const [detalleBloque, setDetalleBloque] = useState(null);    // fraude confirmado (agrupado) abierto en su modal
   const [cargandoBAS, setCargandoBAS] = useState(false);
   const [cargandoWMS, setCargandoWMS] = useState(false);
   const [resumenBAS, setResumenBAS] = useState(null);
@@ -1159,6 +1161,10 @@ function Metas({
   const quitarBlocklist = async id => {
     try { await supa.from("fraude_blocklist").delete().eq("id", id); await cargarBlocklist(); } catch (err) { alert("No se pudo quitar: " + err.message); }
   };
+  const quitarGrupoBloque = async grupo => {
+    if (!confirm("Quitar de la lista negra los " + grupo.items.length + " dato(s) del pedido " + (grupo.pedido || "?") + "? Afecta a todas las tiendas.")) return;
+    try { await supa.from("fraude_blocklist").delete().in("id", grupo.items.map(b => b.id)); await cargarBlocklist(); setDetalleBloque(null); } catch (err) { alert("No se pudo quitar: " + err.message); }
+  };
   // Desbloquear un pedido: quita de la lista negra SÓLO las entradas que hicieron que este pedido matcheara
   // (p.ej. una IP compartida que dio un falso positivo). Afecta a todas las tiendas, así que pide confirmación.
   const desbloquearPedido = async row => {
@@ -1182,15 +1188,23 @@ function Metas({
   // y agrega sus atributos a la lista negra de una sola vez.
   const sembrarDesdeMotivos = async () => {
     if (!motivosFraude || !rowsFraude.length) return;
+    const fraudesCSV = Object.keys(motivosFraude.mapa).filter(p => esMotivoFraude(motivosFraude.mapa[p]));
+    const pedsVentas = new Set(rowsFraude.map(r => r.pedido));
+    const cruzan = fraudesCSV.filter(p => pedsVentas.has(p));
     const regs = [];
-    rowsFraude.forEach(r => { const mot = motivosFraude.mapa[r.pedido]; if (mot && esMotivoFraude(mot)) regs.push(...atributosDe(r, mot)); });
-    if (!regs.length) { alert("No encontré pedidos con motivo de fraude que crucen con el reporte de ventas cargado."); return; }
+    cruzan.forEach(p => { const r = rowsFraude.find(x => x.pedido === p); if (r) regs.push(...atributosDe(r, motivosFraude.mapa[p])); });
+    if (!regs.length) {
+      alert("El archivo de motivos tiene " + fraudesCSV.length + " pedido(s) con motivo de fraude, pero " + cruzan.length + " cruzan con el reporte de ventas cargado.\n\n" +
+        (fraudesCSV.length === 0 ? "Ese CSV no tiene motivos de fraude (o están escritos de otra forma)."
+          : "Los fraudes del CSV no aparecen en este reporte de ventas (suelen ser pedidos cancelados que el export de ventas no incluye, o de otro período). Probá con un reporte de ventas que incluya esos pedidos."));
+      return;
+    }
     setMarcando(true);
     try {
       const { error } = await supa.from("fraude_blocklist").upsert(regs, { onConflict: "tipo,valor" });
       if (error) throw error;
       await cargarBlocklist();
-      alert("Lista negra sembrada: " + regs.length + " atributo(s) de fraudes confirmados agregados.");
+      alert("Lista negra sembrada: " + cruzan.length + " fraude(s) confirmado(s) del CSV cruzaron con el reporte → " + regs.length + " atributo(s) agregados.");
     } catch (err) { alert("No se pudo sembrar: " + err.message); }
     setMarcando(false);
   };
@@ -1679,14 +1693,46 @@ function Metas({
     const add = (m, key, doc) => { if (!key || !doc) return; (m[key] || (m[key] = new Set())).add(doc); };
     rowsFraude.forEach(r => { add(docsPor.card, r.cardHash, r.doc); add(docsPor.mail, r.mail, r.doc); add(docsPor.ip, r.ip, r.doc); });
     const nd = (m, k) => (k && m[k]) ? m[k].size : 0;
-    const filas = rowsFraude.map(r => {
-      const enBlocklist = (r.cardHash && bl.card.has(r.cardHash)) || (r.doc && bl.doc.has(r.doc)) || (r.mail && bl.mail.has(r.mail)) || (r.ip && bl.ip.has(r.ip));
-      const ev = FraudeReglas.evaluar({ enBlocklist, docsPorTarjeta: nd(docsPor.card, r.cardHash), docsPorMail: nd(docsPor.mail, r.mail), docsPorIp: nd(docsPor.ip, r.ip), importe: r.importe });
-      return { ...r, score: ev.score, nivel: ev.nivel, motivos: ev.motivos, bloqueado: ev.bloqueado };
+    // Un reporte trae VARIAS filas por pedido (una por ítem/pago). Agrupamos a UNA fila por pedido:
+    // los atributos del comprador (doc/mail/tarjeta/IP) son los mismos, el importe se toma el mayor y
+    // se guarda el detalle de líneas para el modal.
+    const porPed = {};
+    rowsFraude.forEach(r => { (porPed[r.pedido] || (porPed[r.pedido] = [])).push(r); });
+    const filas = Object.keys(porPed).map(ped => {
+      const rs = porPed[ped], r0 = rs[0];
+      const importe = Math.max.apply(null, rs.map(x => x.importe || 0));
+      const enBlocklist = (r0.cardHash && bl.card.has(r0.cardHash)) || (r0.doc && bl.doc.has(r0.doc)) || (r0.mail && bl.mail.has(r0.mail)) || (r0.ip && bl.ip.has(r0.ip));
+      const ev = FraudeReglas.evaluar({ enBlocklist, docsPorTarjeta: nd(docsPor.card, r0.cardHash), docsPorMail: nd(docsPor.mail, r0.mail), docsPorIp: nd(docsPor.ip, r0.ip), importe });
+      return {
+        pedido: ped, tienda: r0.tienda, nombre: r0.nombre, doc: r0.doc, mail: r0.mail, ip: r0.ip,
+        bin: r0.bin, last4: r0.last4, cardHash: r0.cardHash, importe, lineas: rs.length, importes: rs.map(x => x.importe || 0),
+        score: ev.score, nivel: ev.nivel, motivos: ev.motivos, bloqueado: ev.bloqueado
+      };
     }).sort((a, b) => b.score - a.score);
     const cuenta = { bloquear: 0, alto: 0, medio: 0, bajo: 0 };
     filas.forEach(f => cuenta[f.nivel]++);
     return { filas, cuenta, total: filas.length };
+  })();
+  // Detalle de un pedido para el modal: con qué fraudes confirmados cruza (lista negra) y qué otros
+  // pedidos del reporte comparten su mail / tarjeta / IP (posibles identidades del mismo comprador).
+  const detalleDe = f => {
+    if (!f) return null;
+    const cruces = blocklist.filter(b =>
+      (b.tipo === "card" && b.valor === f.cardHash) || (b.tipo === "doc" && b.valor === f.doc) ||
+      (b.tipo === "mail" && b.valor === f.mail) || (b.tipo === "ip" && b.valor === f.ip));
+    const peersDe = (campo, val) => {
+      if (!val) return [];
+      const m = {};
+      rowsFraude.forEach(r => { if (r[campo] === val && r.pedido !== f.pedido) m[r.pedido] = { pedido: r.pedido, doc: r.doc, nombre: r.nombre, tienda: r.tienda }; });
+      return Object.values(m);
+    };
+    return { cruces, porMail: peersDe("mail", f.mail), porTarjeta: peersDe("cardHash", f.cardHash), porIp: peersDe("ip", f.ip) };
+  };
+  // Lista negra AGRUPADA por pedido de origen (un fraude confirmado = varios atributos): una fila por fraude.
+  const blocklistPorPedido = (() => {
+    const g = {};
+    blocklist.forEach(b => { const k = (b.tienda || "") + "|" + (b.pedido || ""); (g[k] || (g[k] = { pedido: b.pedido, tienda: b.tienda, motivo: b.motivo, items: [] })).items.push(b); });
+    return Object.values(g).sort((a, b) => String(b.pedido).localeCompare(String(a.pedido)));
   })();
   // Filas que se muestran en la cola: si hay un chip seleccionado, ese nivel; si no, los de riesgo (todo menos "bajo").
   const fraudeVisibles = fraudeResult ? (filtroFraude ? fraudeResult.filas.filter(f => f.nivel === filtroFraude) : fraudeResult.filas.filter(f => f.nivel !== "bajo")) : [];
@@ -1920,27 +1966,78 @@ function Metas({
               : h("div", { className: "overflow-auto", style: { maxHeight: 520 } }, h("table", { className: "w-full", style: { fontSize: 12 } },
                 h("thead", null, h("tr", null, ["Nivel", "Pedido", "Tienda", "Cliente", "Importe", "Señales", ""].map((hh, i) => h("th", { key: i, className: "px-3 py-2 font-bold uppercase", style: { color: C.gray, fontSize: 10, textAlign: i === 4 ? "right" : "left", whiteSpace: "nowrap", position: "sticky", top: 0, background: "#F6F7F9" } }, hh)))),
                 h("tbody", null, fraudeVisibles.slice(0, 300).map((f, i) =>
-                  h("tr", { key: f.pedido + "_" + i, style: { borderTop: "1px solid " + C.line } },
+                  h("tr", { key: f.pedido + "_" + i, onClick: () => setDetalleFraude(f), className: "cursor-pointer", style: { borderTop: "1px solid " + C.line } },
                     h("td", { className: "px-3 py-1.5" }, h("span", { className: "text-[10px] font-black uppercase px-2 py-0.5 rounded-full", style: { background: f.nivel === "medio" ? C.amberS : f.nivel === "bajo" ? C.greenS : C.redS, color: f.nivel === "medio" ? C.amber : f.nivel === "bajo" ? C.green : C.red } }, f.nivel === "bloquear" ? "lista negra" : f.nivel)),
-                    h("td", { className: "px-3 py-1.5 font-semibold" }, f.pedido),
+                    h("td", { className: "px-3 py-1.5 font-semibold" }, f.pedido, f.lineas > 1 && h("span", { className: "font-normal", style: { color: C.gray } }, " ·" + f.lineas)),
                     h("td", { className: "px-3 py-1.5", style: { color: C.gray } }, f.tienda),
                     h("td", { className: "px-3 py-1.5", style: { maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, f.nombre || "—"),
                     h("td", { className: "px-3 py-1.5 tabular-nums", style: { textAlign: "right" } }, f.importe ? f.importe.toLocaleString("es-UY") : "—"),
-                    h("td", { className: "px-3 py-1.5 text-[11px]", style: { color: C.gray } }, f.motivos.join(" · ")),
-                    h("td", { className: "px-3 py-1.5" }, f.bloqueado
-                      ? h("button", { onClick: () => desbloquearPedido(f), disabled: marcando, className: "text-[11px] font-bold px-2 py-1 rounded-lg disabled:opacity-40", style: { background: C.soft, color: C.gray } }, "Desbloquear")
-                      : h("button", { onClick: () => marcarFraude(f), disabled: marcando, className: "text-[11px] font-bold px-2 py-1 rounded-lg disabled:opacity-40", style: { background: C.redS, color: C.red } }, "Marcar fraude"))))))))),
+                    h("td", { className: "px-3 py-1.5 text-[11px]", style: { color: C.gray, maxWidth: 240, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, f.motivos.join(" · ")),
+                    h("td", { className: "px-3 py-1.5 whitespace-nowrap" }, (f.bloqueado
+                      ? h("button", { onClick: e => { e.stopPropagation(); desbloquearPedido(f); }, disabled: marcando, className: "text-[11px] font-bold px-2 py-1 rounded-lg disabled:opacity-40", style: { background: C.soft, color: C.gray } }, "Desbloquear")
+                      : h("button", { onClick: e => { e.stopPropagation(); marcarFraude(f); }, disabled: marcando, className: "text-[11px] font-bold px-2 py-1 rounded-lg disabled:opacity-40", style: { background: C.redS, color: C.red } }, "Marcar fraude")), h("span", { className: "text-[10px] ml-2", style: { color: C.blue } }, "ver ›"))))))))),
       blocklist.length > 0 && h("details", { className: "bg-white rounded-2xl border p-4", style: { borderColor: C.line } },
-        h("summary", { className: "text-sm font-bold cursor-pointer", style: { color: C.ink } }, "Ver lista negra compartida (" + blocklist.length + ")"),
-        h("div", { className: "overflow-auto mt-3", style: { maxHeight: 360 } }, h("table", { className: "w-full", style: { fontSize: 11 } },
-          h("thead", null, h("tr", { style: { background: "#F6F7F9" } }, ["Tipo", "Valor", "Tienda", "Pedido", "Motivo", ""].map((hh, i) => h("th", { key: i, className: "px-2 py-1.5 font-bold uppercase text-left", style: { color: C.gray, fontSize: 9, whiteSpace: "nowrap" } }, hh)))),
-          h("tbody", null, blocklist.slice(0, 500).map(b => h("tr", { key: b.id, style: { borderTop: "1px solid " + C.line } },
-            h("td", { className: "px-2 py-1 font-semibold" }, b.tipo),
-            h("td", { className: "px-2 py-1", style: { color: C.gray, fontFamily: "monospace" } }, b.tipo === "card" ? ((b.bin || "") + "…" + (b.last4 || "")) : String(b.valor || "").slice(0, 32)),
-            h("td", { className: "px-2 py-1" }, b.tienda || "—"),
-            h("td", { className: "px-2 py-1" }, b.pedido || "—"),
-            h("td", { className: "px-2 py-1", style: { maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, b.motivo || "—"),
-            h("td", { className: "px-2 py-1" }, h("button", { onClick: () => quitarBlocklist(b.id), className: "text-[10px] font-bold px-1.5 py-0.5 rounded", style: { color: C.red } }, "quitar"))))))))))),
+        h("summary", { className: "text-sm font-bold cursor-pointer", style: { color: C.ink } }, "Ver lista negra compartida (" + blocklistPorPedido.length + " fraude" + (blocklistPorPedido.length === 1 ? "" : "s") + " · " + blocklist.length + " datos)"),
+        h("div", { className: "overflow-auto mt-3", style: { maxHeight: 360 } }, h("table", { className: "w-full", style: { fontSize: 12 } },
+          h("thead", null, h("tr", { style: { background: "#F6F7F9" } }, ["Pedido", "Motivo", "Tienda", "Datos", ""].map((hh, i) => h("th", { key: i, className: "px-3 py-2 font-bold uppercase text-left", style: { color: C.gray, fontSize: 10, whiteSpace: "nowrap" } }, hh)))),
+          h("tbody", null, blocklistPorPedido.slice(0, 500).map((gpo, i) => h("tr", { key: i, onClick: () => setDetalleBloque(gpo), className: "cursor-pointer", style: { borderTop: "1px solid " + C.line } },
+            h("td", { className: "px-3 py-1.5 font-semibold" }, gpo.pedido || "—"),
+            h("td", { className: "px-3 py-1.5", style: { maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: C.red } }, gpo.motivo || "Fraude confirmado"),
+            h("td", { className: "px-3 py-1.5", style: { color: C.gray } }, gpo.tienda || "—"),
+            h("td", { className: "px-3 py-1.5 tabular-nums", style: { color: C.gray } }, gpo.items.length),
+            h("td", { className: "px-3 py-1.5", style: { color: C.blue } }, "ver ›")))))))))),
+    // ── Modal detalle de un pedido de la cola de fraude ──
+    detalleFraude && (() => {
+      const f = detalleFraude, d = detalleDe(f);
+      const peers = [["mismo mail", d.porMail], ["misma tarjeta", d.porTarjeta], ["misma IP", d.porIp]];
+      const nPeers = d.porMail.length + d.porTarjeta.length + d.porIp.length;
+      const colNiv = f.nivel === "medio" ? C.amber : f.nivel === "bajo" ? C.green : C.red;
+      const bgNiv = f.nivel === "medio" ? C.amberS : f.nivel === "bajo" ? C.greenS : C.redS;
+      const tLabel = { card: "tarjeta", doc: "documento", mail: "mail", ip: "IP" };
+      return h("div", { className: "fixed inset-0 z-50 flex items-center justify-center p-4", style: { background: "rgba(14,27,51,0.45)" }, onClick: () => setDetalleFraude(null) },
+        h("div", { className: "bg-white rounded-2xl p-5 w-full max-w-lg space-y-3 shadow-2xl", style: { maxHeight: "85vh", overflow: "auto" }, onClick: e => e.stopPropagation() },
+          h("div", { className: "flex items-start justify-between gap-3" },
+            h("div", null,
+              h("div", { className: "font-black text-lg fraunces", style: { color: C.ink } }, "Pedido ", f.pedido),
+              h("div", { className: "text-xs", style: { color: C.gray } }, f.tienda, " · ", f.nombre || "—", f.importe ? " · $" + f.importe.toLocaleString("es-UY") : "", f.lineas > 1 ? " · " + f.lineas + " líneas" : "")),
+            h("span", { className: "text-[10px] font-black uppercase px-2 py-0.5 rounded-full", style: { background: bgNiv, color: colNiv } }, f.nivel === "bloquear" ? "lista negra" : f.nivel)),
+          h("div", { className: "rounded-xl border p-3 text-xs space-y-1", style: { borderColor: C.line } },
+            h("div", { className: "font-bold uppercase text-[10px] mb-1", style: { color: C.gray } }, "Datos del comprador"),
+            h("div", null, "Documento: ", h("b", null, f.doc || "—")),
+            h("div", null, "Mail: ", h("b", null, f.mail || "—")),
+            h("div", null, "IP: ", h("b", null, f.ip || "—")),
+            h("div", null, "Tarjeta: ", h("b", null, f.bin ? f.bin + "…" + f.last4 : "—"))),
+          f.motivos.length > 0 && h("div", null,
+            h("div", { className: "font-bold uppercase text-[10px] mb-1", style: { color: C.gray } }, "Por qué es sospechoso"),
+            h("ul", { className: "text-xs space-y-0.5" }, f.motivos.map((m, i) => h("li", { key: i }, "• ", m)))),
+          d.cruces.length > 0 && h("div", null,
+            h("div", { className: "font-bold uppercase text-[10px] mb-1", style: { color: C.red } }, "Cruza con fraudes YA confirmados"),
+            h("ul", { className: "text-xs space-y-0.5" }, d.cruces.map((b, i) => h("li", { key: i }, "• ", (tLabel[b.tipo] || b.tipo), " compartido con el pedido ", h("b", null, b.pedido || "?"), " (", b.tienda || "—", ")")))),
+          nPeers > 0 && h("div", null,
+            h("div", { className: "font-bold uppercase text-[10px] mb-1", style: { color: C.gray } }, "Otros pedidos de este reporte con los mismos datos"),
+            peers.map((pr, i) => pr[1].length > 0 && h("div", { key: i, className: "text-xs mb-1" },
+              h("span", { style: { color: C.gray } }, pr[0], ": "),
+              pr[1].slice(0, 20).map((p, j) => h("span", { key: j }, (j ? ", " : ""), h("b", null, p.pedido), p.doc ? " (" + p.doc + ")" : ""))))),
+          h("div", { className: "flex gap-2 justify-end pt-1" },
+            h("button", { onClick: () => setDetalleFraude(null), className: "text-xs font-bold px-3 py-2 rounded-xl", style: { color: C.gray } }, "Cerrar"),
+            f.bloqueado
+              ? h("button", { onClick: () => { desbloquearPedido(f); setDetalleFraude(null); }, disabled: marcando, className: "text-sm font-bold px-4 py-2 rounded-xl disabled:opacity-40", style: { background: C.soft, color: C.gray } }, "Desbloquear")
+              : h("button", { onClick: () => { marcarFraude(f); setDetalleFraude(null); }, disabled: marcando, className: "text-sm font-bold text-white px-4 py-2 rounded-xl disabled:opacity-40", style: { background: C.red } }, "Marcar fraude"))));
+    })(),
+    // ── Modal detalle de un fraude confirmado (lista negra agrupada) ──
+    detalleBloque && h("div", { className: "fixed inset-0 z-50 flex items-center justify-center p-4", style: { background: "rgba(14,27,51,0.45)" }, onClick: () => setDetalleBloque(null) },
+      h("div", { className: "bg-white rounded-2xl p-5 w-full max-w-md space-y-3 shadow-2xl", style: { maxHeight: "85vh", overflow: "auto" }, onClick: e => e.stopPropagation() },
+        h("div", null,
+          h("div", { className: "font-black text-lg fraunces", style: { color: C.ink } }, "Fraude confirmado — pedido ", detalleBloque.pedido || "—"),
+          h("div", { className: "text-xs", style: { color: C.gray } }, (detalleBloque.tienda || "—"), " · ", detalleBloque.motivo || "Fraude confirmado")),
+        h("div", { className: "rounded-xl border p-3 text-xs", style: { borderColor: C.line } },
+          h("div", { className: "font-bold uppercase text-[10px] mb-2", style: { color: C.gray } }, "Datos en la lista negra (" + detalleBloque.items.length + ")"),
+          h("div", { className: "space-y-1" }, detalleBloque.items.map((b, i) => h("div", { key: i, className: "flex items-center justify-between gap-2" },
+            h("span", null, h("b", null, ({ card: "Tarjeta", doc: "Documento", mail: "Mail", ip: "IP" }[b.tipo] || b.tipo)), ": ", h("span", { style: { fontFamily: "monospace", color: C.gray } }, b.tipo === "card" ? ((b.bin || "") + "…" + (b.last4 || "")) : b.valor)),
+            h("button", { onClick: () => quitarBlocklist(b.id), className: "text-[10px] font-bold px-1.5 py-0.5 rounded", style: { color: C.red } }, "quitar"))))),
+        h("div", { className: "flex gap-2 justify-end" },
+          h("button", { onClick: () => setDetalleBloque(null), className: "text-xs font-bold px-3 py-2 rounded-xl", style: { color: C.gray } }, "Cerrar"),
+          h("button", { onClick: () => quitarGrupoBloque(detalleBloque), className: "text-sm font-bold px-4 py-2 rounded-xl", style: { background: C.soft, color: C.red } }, "Quitar todo")))),
     // ── Modal edición de meta ──
     formMeta && h("div", {
       className: "fixed inset-0 z-50 flex items-center justify-center p-4",
