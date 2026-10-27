@@ -788,6 +788,7 @@ function Metas({
   const [cargandoFraude, setCargandoFraude] = useState(false);
   const [blocklist, setBlocklist] = useState([]);   // filas de fraude_blocklist (compartida)
   const [blSnapOK, setBlSnapOK] = useState(null);    // null=sin chequear, true=tabla ok, false=falta crear
+  const [redConteo, setRedConteo] = useState({});    // red histórica hasheada: { "card:hash"|"mail:hash"|"ip:hash" : nºdocs }
   const [motivosFraude, setMotivosFraude] = useState(null);    // { archivos:[], mapa:{ "tienda|pedido": motivo } } opcional p/ sembrar
   const [marcando, setMarcando] = useState(false);
   const [filtroFraude, setFiltroFraude] = useState(null);      // nivel seleccionado en los chips (null = la cola de riesgo)
@@ -836,11 +837,21 @@ function Metas({
       setBlSnapOK(true); setBlocklist(data || []);
     } catch (_) { setBlSnapOK(false); }
   }, []);
+  // Red histórica (hasheada): conteo de documentos distintos por tarjeta/mail/IP, de TODO el histórico.
+  const cargarRed = useCallback(async () => {
+    try {
+      const { data, error } = await supa.from("fraude_red_multi").select("pivote,docs");
+      if (error) return;
+      const m = {}; (data || []).forEach(r => { m[r.pivote] = r.docs; });
+      setRedConteo(m);
+    } catch (_) { /* red opcional */ }
+  }, []);
   useEffect(() => {
     cargarMetas();
     cargarSnapshot();
     cargarBlocklist();
-  }, [cargarMetas, cargarSnapshot, cargarBlocklist]);
+    cargarRed();
+  }, [cargarMetas, cargarSnapshot, cargarBlocklist, cargarRed]);
   // metasDeMes: real viene del BAS cargado (neto = FABs-NCDs) cuando está disponible,
   // y cae a Supabase si no hay BAS en esta sesión.
   const metasDeMes = TIENDAS_META.map(t => {
@@ -1113,9 +1124,12 @@ function Metas({
       let cardHash = "";
       if (panFull.length >= 8) cardHash = await sha256Hex(panFull);
       else if (bin && last4) cardHash = await sha256Hex("bl|" + bin + "|" + last4); // sin PAN: huella débil BIN+last4
+      const doc = FraudeReglas.normAttr(g(r, iDoc)), mail = FraudeReglas.normAttr(g(r, iMail)), ip = FraudeReglas.normAttr(g(r, iIp));
+      // hashes para la red histórica (vínculos hasheados, sin PII legible)
+      const docHash = doc ? await sha256Hex(doc) : "", mailHash = mail ? await sha256Hex(mail) : "", ipHash = ip ? await sha256Hex(ip) : "";
       return {
         pedido: String(g(r, iPed)).trim(), tienda, nombre: g(r, iNom),
-        doc: FraudeReglas.normAttr(g(r, iDoc)), mail: FraudeReglas.normAttr(g(r, iMail)), ip: FraudeReglas.normAttr(g(r, iIp)),
+        doc, mail, ip, docHash, mailHash, ipHash,
         bin, last4, cardHash, importe: impNum(g(r, iImp)), fecha: g(r, iFecha)
       };
     }));
@@ -1140,9 +1154,29 @@ function Metas({
         setArchivosFraude(prev => { const n = { ...prev }; resultados.forEach(r => n[r.tienda] = r.archivo); return n; });
         const vacios = resultados.filter(r => !r.rows.length).map(r => r.tienda);
         if (vacios.length) alert("Sin ventas en: " + vacios.join(", ") + ".");
+        await ingestarRed([].concat(...resultados.map(r => r.rows))); // sumar vínculos al histórico y refrescar conteos
       }
     } catch (err) { alert("Error leyendo reportes: " + err.message); }
     setCargandoFraude(false);
+  };
+  // Sube los vínculos (hasheados) de un lote a la red histórica y refresca los conteos. Cada par (pivote,doc)
+  // entra una sola vez (dedupe por clave primaria), así cargar un mes SUMA al histórico sin recargar nada.
+  const ingestarRed = async rows => {
+    try {
+      const vistos = {}; const pares = [];
+      rows.forEach(r => {
+        if (!r.docHash) return;
+        const add = piv => { const k = piv + "|" + r.docHash; if (!vistos[k]) { vistos[k] = 1; pares.push({ pivote: piv, doc: r.docHash }); } };
+        if (r.cardHash) add("card:" + r.cardHash);
+        if (r.mailHash) add("mail:" + r.mailHash);
+        if (r.ipHash) add("ip:" + r.ipHash);
+      });
+      for (let i = 0; i < pares.length; i += 1000) {
+        const { error } = await supa.from("fraude_red").upsert(pares.slice(i, i + 1000), { onConflict: "pivote,doc", ignoreDuplicates: true });
+        if (error) throw error;
+      }
+      await cargarRed();
+    } catch (err) { /* la red es un plus; si falla, el análisis sigue con los conteos del lote */ }
   };
   // Lee UNO O VARIOS reportes de MOTIVOS de cancelación para sembrar la lista negra. El mapa se arma por
   // "tienda|pedido" (los números de pedido se repiten entre tiendas). Sólo se usan los motivos de fraude.
@@ -1725,6 +1759,10 @@ function Metas({
     const add = (m, key, doc) => { if (!key || !doc) return; (m[key] || (m[key] = new Set())).add(doc); };
     rowsFraude.forEach(r => { add(docsPor.card, r.cardHash, r.doc); add(docsPor.mail, r.mail, r.doc); add(docsPor.ip, r.ip, r.doc); });
     const nd = (m, k) => (k && m[k]) ? m[k].size : 0;
+    // Conteo de documentos distintos: el MAYOR entre el histórico (red hasheada) y el lote cargado.
+    const ndCard = r => Math.max(redConteo["card:" + r.cardHash] || 0, nd(docsPor.card, r.cardHash));
+    const ndMail = r => Math.max(r.mailHash ? (redConteo["mail:" + r.mailHash] || 0) : 0, nd(docsPor.mail, r.mail));
+    const ndIp = r => Math.max(r.ipHash ? (redConteo["ip:" + r.ipHash] || 0) : 0, nd(docsPor.ip, r.ip));
     // Un reporte trae VARIAS filas por pedido (una por ítem/pago). Agrupamos a UNA fila por pedido:
     // los atributos del comprador (doc/mail/tarjeta/IP) son los mismos, el importe se toma el mayor y
     // se guarda el detalle de líneas para el modal.
@@ -1734,7 +1772,7 @@ function Metas({
       const rs = porPed[k], r0 = rs[0], ped = r0.pedido;
       const importe = Math.max.apply(null, rs.map(x => x.importe || 0));
       const enBlocklist = (r0.cardHash && bl.card.has(r0.cardHash)) || (r0.doc && bl.doc.has(r0.doc)) || (r0.mail && bl.mail.has(r0.mail)) || (r0.ip && bl.ip.has(r0.ip));
-      const ev = FraudeReglas.evaluar({ enBlocklist, docsPorTarjeta: nd(docsPor.card, r0.cardHash), docsPorMail: nd(docsPor.mail, r0.mail), docsPorIp: nd(docsPor.ip, r0.ip), importe });
+      const ev = FraudeReglas.evaluar({ enBlocklist, docsPorTarjeta: ndCard(r0), docsPorMail: ndMail(r0), docsPorIp: ndIp(r0), importe });
       return {
         pedido: ped, tienda: r0.tienda, nombre: r0.nombre, doc: r0.doc, mail: r0.mail, ip: r0.ip,
         bin: r0.bin, last4: r0.last4, cardHash: r0.cardHash, importe, lineas: rs.length, importes: rs.map(x => x.importe || 0),
@@ -1968,7 +2006,7 @@ function Metas({
         h("div", { className: "flex items-center justify-between flex-wrap gap-2" },
           h("div", null,
             h("div", { className: "text-sm font-black fraunces", style: { color: C.ink } }, "Detección de fraude — red entre tiendas"),
-            h("div", { className: "text-[11px] mt-0.5", style: { color: C.gray } }, "Cargá los reportes de ventas de Fenicio de las tres tiendas — de a uno (se van sumando al mismo análisis) o varios juntos. La tienda se detecta por el nombre del archivo. El número de tarjeta se convierte en hash en tu navegador y NO se guarda (sólo BIN + últimos 4); cada pedido se cruza con la lista negra compartida y se puntúa.")),
+            h("div", { className: "text-[11px] mt-0.5", style: { color: C.gray } }, "Cargá los reportes de ventas de Fenicio de las tres tiendas — de a uno (se van sumando al mismo análisis) o varios juntos. La tienda se detecta por el nombre del archivo. Los datos sensibles se convierten en hash en tu navegador y NO se guardan legibles. Cada pedido se cruza con la lista negra compartida y con la red histórica (tarjeta/mail/IP usados por varios documentos a lo largo de todos los períodos cargados).")),
           h("div", { className: "text-right" },
             h("div", { className: "text-2xl font-black tabular-nums", style: { color: C.ink } }, blocklist.length),
             h("div", { className: "text-[10px] font-bold uppercase", style: { color: C.gray } }, "en lista negra"))),
