@@ -788,7 +788,6 @@ function Metas({
   const [cargandoFraude, setCargandoFraude] = useState(false);
   const [blocklist, setBlocklist] = useState([]);   // filas de fraude_blocklist (compartida)
   const [blSnapOK, setBlSnapOK] = useState(null);    // null=sin chequear, true=tabla ok, false=falta crear
-  const [tiendaFraude, setTiendaFraude] = useState("TimeOut"); // tienda por defecto si el nombre del archivo no la indica
   const [motivosFraude, setMotivosFraude] = useState(null);    // { archivos:[], mapa:{ "tienda|pedido": motivo } } opcional p/ sembrar
   const [marcando, setMarcando] = useState(false);
   const [filtroFraude, setFiltroFraude] = useState(null);      // nivel seleccionado en los chips (null = la cola de riesgo)
@@ -1079,14 +1078,14 @@ function Metas({
     reader.onerror = () => reject(new Error("no se pudo leer " + file.name));
     reader.readAsBinaryString(file);
   });
-  // Detecta la tienda por el nombre del archivo (así se pueden cargar las 3 juntas). Si no la reconoce, usa
-  // la tienda por defecto del selector.
-  const detectarTienda = (nombre, fallback) => {
+  // Detecta la tienda por el nombre del archivo (así se cargan las 3 en el mismo análisis). Si no la reconoce,
+  // devuelve null y el archivo se saltea avisando (no hay "tienda por defecto": el nombre tiene que indicarla).
+  const detectarTienda = nombre => {
     const n = String(nombre || "").toLowerCase();
     if (/time.?out/.test(n)) return "TimeOut";
     if (/nacional/.test(n)) return "Tienda Nacional";
     if (/cl[aá]s+ico/.test(n)) return "Classico";
-    return fallback;
+    return null;
   };
   // Parsea un reporte de ventas de Fenicio (.xls HTML, .xlsx o .csv). HASHEA el PAN al vuelo y DESCARTA el número
   // completo: en memoria sólo quedan hash + BIN + últimos 4. Devuelve las filas, cada una con su tienda.
@@ -1130,7 +1129,8 @@ function Metas({
     try {
       const resultados = [];
       for (const file of files) {
-        const tienda = detectarTienda(file.name, tiendaFraude);
+        const tienda = detectarTienda(file.name);
+        if (!tienda) { alert("“" + file.name + "”: no pude detectar la tienda. El nombre del archivo tiene que contener timeout, nacional o classico."); continue; }
         try { const rows = await parsearVentas(await leerArchivo(file), tienda); resultados.push({ tienda, archivo: file.name, rows }); }
         catch (err) { alert("“" + file.name + "”: " + err.message + "."); }
       }
@@ -1152,7 +1152,9 @@ function Metas({
     try {
       const mapa = {}; const nombres = [];
       for (const file of files) {
-        const tienda = detectarTienda(file.name, tiendaFraude); nombres.push(file.name);
+        const tienda = detectarTienda(file.name);
+        if (!tienda) { alert("“" + file.name + "”: no pude detectar la tienda (el nombre debe contener timeout, nacional o classico)."); continue; }
+        nombres.push(file.name);
         const wb = XLSX.read(await leerArchivo(file), { type: "binary" });
         const clean = v => String(v == null ? "" : v).replace(/<[^>]*>/g, "").replace(/&nbsp;/gi, " ").replace(/&#?\w+;/g, "").trim();
         const data = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, raw: false, defval: "" }).map(r => (r || []).map(clean));
@@ -1770,13 +1772,13 @@ function Metas({
   // panel muestre el estado aunque no haya un reporte cargado (el reporte en sí no se guarda).
   useEffect(() => {
     if (!rowsFraude.length || !fraudeResult) return;
-    const resumen = { tienda: Object.keys(archivosFraude).join(", ") || tiendaFraude, fecha: new Date().toISOString(), total: fraudeResult.total, bloquear: fraudeResult.cuenta.bloquear, alto: fraudeResult.cuenta.alto, medio: fraudeResult.cuenta.medio, bajo: fraudeResult.cuenta.bajo };
+    const resumen = { tienda: Object.keys(archivosFraude).join(", ") || "—", fecha: new Date().toISOString(), total: fraudeResult.total, bloquear: fraudeResult.cuenta.bloquear, alto: fraudeResult.cuenta.alto, medio: fraudeResult.cuenta.medio, bajo: fraudeResult.cuenta.bajo };
     setFraudeResumen(resumen);
     guardarSnapshot({ fraude_resumen: resumen });
   }, [rowsFraude]);
   // Métricas a mostrar siempre: en vivo si hay reporte cargado, si no las del último análisis persistido.
   const fraudeStats = fraudeResult
-    ? { total: fraudeResult.total, bloquear: fraudeResult.cuenta.bloquear, alto: fraudeResult.cuenta.alto, medio: fraudeResult.cuenta.medio, fuente: "en vivo · " + (Object.keys(archivosFraude).join(", ") || tiendaFraude) }
+    ? { total: fraudeResult.total, bloquear: fraudeResult.cuenta.bloquear, alto: fraudeResult.cuenta.alto, medio: fraudeResult.cuenta.medio, fuente: "en vivo · " + (Object.keys(archivosFraude).join(", ") || "—") }
     : (fraudeResumen ? { total: fraudeResumen.total || 0, bloquear: fraudeResumen.bloquear || 0, alto: fraudeResumen.alto || 0, medio: fraudeResumen.medio || 0, fuente: "último: " + (fraudeResumen.tienda || "—") + " · " + (() => { try { return new Date(fraudeResumen.fecha).toLocaleDateString("es-UY"); } catch (e) { return ""; } })() } : null);
   const tiendasFraudeCargadas = Object.keys(archivosFraude);
   const exportFraude = () => {
@@ -1966,19 +1968,15 @@ function Metas({
         h("div", { className: "flex items-center justify-between flex-wrap gap-2" },
           h("div", null,
             h("div", { className: "text-sm font-black fraunces", style: { color: C.ink } }, "Detección de fraude — red entre tiendas"),
-            h("div", { className: "text-[11px] mt-0.5", style: { color: C.gray } }, "Subí uno o los tres reportes de ventas de Fenicio a la vez (se detecta la tienda por el nombre del archivo). El número de tarjeta se convierte en hash en tu navegador y NO se guarda (sólo BIN + últimos 4). Cada pedido se cruza con la lista negra compartida y se puntúa.")),
+            h("div", { className: "text-[11px] mt-0.5", style: { color: C.gray } }, "Cargá los reportes de ventas de Fenicio de las tres tiendas — de a uno (se van sumando al mismo análisis) o varios juntos. La tienda se detecta por el nombre del archivo. El número de tarjeta se convierte en hash en tu navegador y NO se guarda (sólo BIN + últimos 4); cada pedido se cruza con la lista negra compartida y se puntúa.")),
           h("div", { className: "text-right" },
             h("div", { className: "text-2xl font-black tabular-nums", style: { color: C.ink } }, blocklist.length),
             h("div", { className: "text-[10px] font-bold uppercase", style: { color: C.gray } }, "en lista negra"))),
         blSnapOK === false && h("div", { className: "rounded-xl px-3 py-2 text-[11px]", style: { background: C.amberS, color: C.amber } }, "⚠ Falta crear la tabla fraude_blocklist en Supabase (sql/fraude_blocklist.sql). Sin eso la lista negra no se guarda ni se comparte entre tiendas."),
         h("div", { className: "flex flex-wrap items-end gap-3" },
-          h("div", null,
-            h("label", { className: "text-[10px] font-bold uppercase block mb-1", style: { color: C.gray } }, "Tienda por defecto"),
-            h("select", { value: tiendaFraude, onChange: e => setTiendaFraude(e.target.value), className: "text-sm rounded-xl border px-3 py-2 outline-none", style: { borderColor: C.line } },
-              ["TimeOut", "Tienda Nacional", "Classico"].map(t => h("option", { key: t, value: t }, t)))),
           h("label", { className: "flex items-center gap-2 p-2.5 rounded-xl border-2 border-dashed cursor-pointer", style: { borderColor: tiendasFraudeCargadas.length ? "#86EFAC" : C.line, background: tiendasFraudeCargadas.length ? C.greenS : "transparent" } },
             h("span", { style: { color: tiendasFraudeCargadas.length ? C.green : C.blue, display: "inline-flex" } }, tiendasFraudeCargadas.length ? Ic.ok : Ic.upload),
-            h("span", { className: "text-sm font-semibold", style: { color: tiendasFraudeCargadas.length ? C.green : C.gray } }, cargandoFraude ? "Leyendo…" : (tiendasFraudeCargadas.length ? tiendasFraudeCargadas.length + " tienda(s) cargada(s)" : "Reportes de ventas (una o las 3)")),
+            h("span", { className: "text-sm font-semibold", style: { color: tiendasFraudeCargadas.length ? C.green : C.gray } }, cargandoFraude ? "Leyendo…" : (tiendasFraudeCargadas.length ? tiendasFraudeCargadas.length + " tienda(s) cargada(s) — agregá más" : "Agregar reporte(s) de ventas")),
             h("input", { type: "file", accept: ".xlsx,.xls,.csv", multiple: true, className: "hidden", onChange: leerFraude })),
           h("label", { className: "flex items-center gap-2 p-2.5 rounded-xl border-2 border-dashed cursor-pointer", style: { borderColor: motivosFraude ? "#86EFAC" : C.line, background: motivosFraude ? C.greenS : "transparent" } },
             h("span", { style: { color: motivosFraude ? C.green : C.blue, display: "inline-flex" } }, motivosFraude ? Ic.ok : Ic.upload),
