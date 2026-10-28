@@ -1143,6 +1143,7 @@ function Metas({
       iBin = colP([/tarjeta.*bin/]), iL4 = colP([/tarjeta.*last\s*4/, /ultimos?\s*4/]), iCard = colP([/^numero de tarjeta$/, /^tarjeta$/]),
       iIp = colP([/^ip$/]), iImp = colP([/importe de pago/, /importe total pedido/, /^importe\b/]),
       iFecha = colP([/fecha\s*pago/, /^fecha$/]), iNom = colP([/comprador\s*nombre/, /^cliente$/, /destinatario/]),
+      iApe = colP([/comprador\s*apellido/, /^apellido$/]),
       iLoc = colP([/localidad\s*entrega/, /localidad/]), iDep = colP([/departamento\s*entrega/, /departamento/]);
     if (iPed < 0) throw new Error("no encontré la columna de Nro. de pedido");
     const g = (r, i) => i >= 0 ? clean(r[i]) : "";
@@ -1159,7 +1160,7 @@ function Metas({
       const docHash = doc ? await sha256Hex(doc) : "", mailHash = mail ? await sha256Hex(mail) : "", ipHash = ip ? await sha256Hex(ip) : "";
       const loc = g(r, iLoc), dep = g(r, iDep);
       return {
-        pedido: String(g(r, iPed)).trim(), tienda, nombre: g(r, iNom),
+        pedido: String(g(r, iPed)).trim(), tienda, nombre: [g(r, iNom), g(r, iApe)].filter(Boolean).join(" ").trim(),
         doc, mail, ip, docHash, mailHash, ipHash,
         bin, last4, cardHash, importe: impNum(g(r, iImp)), fecha: g(r, iFecha),
         localidad: loc, departamento: dep
