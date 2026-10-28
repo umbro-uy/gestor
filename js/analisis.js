@@ -796,6 +796,7 @@ function Metas({
   const [marcando, setMarcando] = useState(false);
   const [filtroFraude, setFiltroFraude] = useState(null);      // nivel seleccionado en los chips (null = la cola de riesgo)
   const [fraudeResumen, setFraudeResumen] = useState(null);    // resumen persistido del último análisis (solo números)
+  const [fraudeColaGuardada, setFraudeColaGuardada] = useState(null); // cola de revisión persistida (compartida, se ve sin recargar)
   const [detalleFraude, setDetalleFraude] = useState(null);    // pedido abierto en el modal de detalle
   const [detalleBloque, setDetalleBloque] = useState(null);    // fraude confirmado (agrupado) abierto en su modal
   const [cargandoBAS, setCargandoBAS] = useState(false);
@@ -824,6 +825,7 @@ function Metas({
       if (data.pendientes) setPendientes(data.pendientes);
       if (data.stock_depos) setStockDepos(data.stock_depos);
       if (data.fraude_resumen) setFraudeResumen(data.fraude_resumen);
+      if (data.fraude_cola) setFraudeColaGuardada(data.fraude_cola);
       if (data.mes) setMes(data.mes);
     } catch (_) { setSnapOK(false); }
   }, []);
@@ -1886,15 +1888,19 @@ function Metas({
     listaBlanca.forEach(b => { const k = b.cliente || "—"; (g[k] || (g[k] = { cliente: b.cliente || "—", items: [] })).items.push(b); });
     return Object.values(g).sort((a, b) => String(a.cliente).localeCompare(String(b.cliente)));
   })();
+  // Cola ACTIVA: en vivo si hay reporte cargado; si no, la cola compartida persistida (para verla sin recargar).
+  const fraudeColaActiva = fraudeResult
+    ? { filas: fraudeResult.filas, cuenta: fraudeResult.cuenta, vivo: true }
+    : (fraudeColaGuardada ? { filas: fraudeColaGuardada.filas || [], cuenta: { bloquear: (fraudeResumen && fraudeResumen.bloquear) || 0, alto: (fraudeResumen && fraudeResumen.alto) || 0, medio: (fraudeResumen && fraudeResumen.medio) || 0, bajo: (fraudeResumen && fraudeResumen.bajo) || 0 }, vivo: false } : null);
   // Filas que se muestran en la cola: si hay un chip seleccionado, ese nivel; si no, los de riesgo (todo menos "bajo").
-  const fraudeVisibles = fraudeResult ? (filtroFraude ? fraudeResult.filas.filter(f => f.nivel === filtroFraude) : fraudeResult.filas.filter(f => f.nivel !== "bajo")) : [];
-  // Persistir un resumen (solo números, sin datos de clientes) del último reporte analizado, para que el
-  // panel muestre el estado aunque no haya un reporte cargado (el reporte en sí no se guarda).
+  const fraudeVisibles = fraudeColaActiva ? (filtroFraude ? fraudeColaActiva.filas.filter(f => f.nivel === filtroFraude) : fraudeColaActiva.filas.filter(f => f.nivel !== "bajo")) : [];
+  // Persistir el resumen (números) y la COLA de revisión del último análisis, para compartirlos sin recargar.
   useEffect(() => {
     if (!rowsFraude.length || !fraudeResult) return;
     const resumen = { tienda: Object.keys(archivosFraude).join(", ") || "—", fecha: new Date().toISOString(), total: fraudeResult.total, bloquear: fraudeResult.cuenta.bloquear, alto: fraudeResult.cuenta.alto, medio: fraudeResult.cuenta.medio, bajo: fraudeResult.cuenta.bajo };
-    setFraudeResumen(resumen);
-    guardarSnapshot({ fraude_resumen: resumen });
+    const cola = { fecha: resumen.fecha, tiendas: resumen.tienda, filas: fraudeResult.filas.filter(f => f.nivel !== "bajo").slice(0, 2000) };
+    setFraudeResumen(resumen); setFraudeColaGuardada(cola);
+    guardarSnapshot({ fraude_resumen: resumen, fraude_cola: cola });
   }, [rowsFraude]);
   // Métricas a mostrar siempre: en vivo si hay reporte cargado, si no las del último análisis persistido.
   const fraudeStats = fraudeResult
@@ -1902,7 +1908,6 @@ function Metas({
     : (fraudeResumen ? { total: fraudeResumen.total || 0, bloquear: fraudeResumen.bloquear || 0, alto: fraudeResumen.alto || 0, medio: fraudeResumen.medio || 0, fuente: "último: " + (fraudeResumen.tienda || "—") + " · " + (() => { try { return new Date(fraudeResumen.fecha).toLocaleDateString("es-UY"); } catch (e) { return ""; } })() } : null);
   const tiendasFraudeCargadas = Object.keys(archivosFraude);
   const exportFraude = () => {
-    if (!fraudeResult) return;
     const rev = fraudeVisibles;
     if (!rev.length) { alert("No hay pedidos para exportar en esta vista."); return; }
     try {
@@ -2110,14 +2115,15 @@ function Metas({
         kpi("Pedidos analizados", (fraudeStats ? fraudeStats.total : 0).toLocaleString("es-UY"), fraudeStats ? fraudeStats.fuente : "sin análisis aún", C.ink),
         kpi("Alertas (lista negra)", String(fraudeStats ? fraudeStats.bloquear : 0), "reusan datos de fraude", (fraudeStats && fraudeStats.bloquear > 0) ? C.red : C.green),
         kpi("Para revisar", String(fraudeStats ? (fraudeStats.alto + fraudeStats.medio) : 0), "alto + medio", C.amber)),
-      !fraudeResult ? h("div", { className: "bg-white rounded-2xl border p-6 text-sm text-center", style: { borderColor: C.line, color: C.gray } }, "Subí un reporte de ventas para empezar. (Opcional: subí también el reporte de motivos de cancelación y tocá “Sembrar” para cargar de golpe los fraudes ya confirmados.)")
+      !fraudeColaActiva ? h("div", { className: "bg-white rounded-2xl border p-6 text-sm text-center", style: { borderColor: C.line, color: C.gray } }, "Subí un reporte de ventas para empezar. (Opcional: subí también el reporte de motivos de cancelación y tocá “Sembrar” para cargar de golpe los fraudes ya confirmados.)")
       : h("div", { className: "space-y-3" },
+          !fraudeColaActiva.vivo && h("div", { className: "rounded-xl px-3 py-2 text-[11px]", style: { background: C.soft, color: C.gray } }, "Mostrando la última cola compartida" + (fraudeResumen ? " (" + (fraudeResumen.tienda || "") + " · " + (() => { try { return new Date(fraudeResumen.fecha).toLocaleString("es-UY"); } catch (e) { return ""; } })() + ")" : "") + ". Cargá un reporte para analizar en vivo."),
           h("div", { className: "grid grid-cols-2 sm:grid-cols-4 gap-2" },
             [["bloquear", "Lista negra", C.red, C.redS], ["alto", "Alto", C.red, C.redS], ["medio", "Medio", C.amber, C.amberS], ["bajo", "Bajo / OK", C.green, C.greenS]].map(x =>
               h("button", { key: x[0], onClick: () => setFiltroFraude(filtroFraude === x[0] ? null : x[0]),
                 className: "rounded-xl border p-3 text-left cursor-pointer",
                 style: { borderColor: filtroFraude === x[0] ? x[2] : C.line, borderWidth: filtroFraude === x[0] ? 2 : 1, background: filtroFraude === x[0] ? x[3] : "#fff" } },
-                h("div", { className: "text-2xl font-black tabular-nums", style: { color: x[2] } }, fraudeResult.cuenta[x[0]]),
+                h("div", { className: "text-2xl font-black tabular-nums", style: { color: x[2] } }, fraudeColaActiva.cuenta[x[0]]),
                 h("div", { className: "text-[10px] font-bold uppercase", style: { color: C.gray } }, x[1] + (filtroFraude === x[0] ? " ✓" : ""))))),
           h("div", { className: "text-[11px] leading-relaxed px-1", style: { color: C.gray } },
             h("b", { style: { color: C.red } }, "Lista negra"), " = reusa datos de un fraude que YA confirmaste → no despachar (tocá un pedido “Desbloquear” si fue un falso positivo). ",
