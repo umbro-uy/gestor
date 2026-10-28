@@ -790,6 +790,8 @@ function Metas({
   const [blSnapOK, setBlSnapOK] = useState(null);    // null=sin chequear, true=tabla ok, false=falta crear
   const [redConteo, setRedConteo] = useState({});    // red histórica hasheada: { "card:hash"|"mail:hash"|"ip:hash" : nºdocs }
   const [listaBlanca, setListaBlanca] = useState([]); // clientes conocidos (no se marcan como sospechosos)
+  const [zonasRiesgo, setZonasRiesgo] = useState([]); // localidades de entrega marcadas como riesgosas
+  const [zonaNueva, setZonaNueva] = useState("");      // input para agregar una zona
   const [motivosFraude, setMotivosFraude] = useState(null);    // { archivos:[], mapa:{ "tienda|pedido": motivo } } opcional p/ sembrar
   const [marcando, setMarcando] = useState(false);
   const [filtroFraude, setFiltroFraude] = useState(null);      // nivel seleccionado en los chips (null = la cola de riesgo)
@@ -855,13 +857,22 @@ function Metas({
       setListaBlanca(data || []);
     } catch (_) { /* opcional */ }
   }, []);
+  // Zonas de entrega riesgosas (geolocalización). Compartidas.
+  const cargarZonas = useCallback(async () => {
+    try {
+      const { data, error } = await supa.from("fraude_zonas_riesgo").select("*").order("etiqueta");
+      if (error) return;
+      setZonasRiesgo(data || []);
+    } catch (_) { /* opcional */ }
+  }, []);
   useEffect(() => {
     cargarMetas();
     cargarSnapshot();
     cargarBlocklist();
     cargarRed();
     cargarListaBlanca();
-  }, [cargarMetas, cargarSnapshot, cargarBlocklist, cargarRed, cargarListaBlanca]);
+    cargarZonas();
+  }, [cargarMetas, cargarSnapshot, cargarBlocklist, cargarRed, cargarListaBlanca, cargarZonas]);
   // metasDeMes: real viene del BAS cargado (neto = FABs-NCDs) cuando está disponible,
   // y cae a Supabase si no hay BAS en esta sesión.
   const metasDeMes = TIENDAS_META.map(t => {
@@ -1266,6 +1277,20 @@ function Metas({
   const quitarGrupoBlanca = async grupo => {
     if (!confirm("Quitar de la lista blanca a " + (grupo.cliente || "este cliente") + " (" + grupo.items.length + " dato(s))? Vuelve a analizarse normalmente.")) return;
     try { await supa.from("fraude_lista_blanca").delete().in("id", grupo.items.map(b => b.id)); await cargarListaBlanca(); } catch (err) { alert("No se pudo quitar: " + err.message); }
+  };
+  // Zonas de riesgo: agrega/quita una localidad de entrega. La clave es la localidad normalizada.
+  const agregarZona = async () => {
+    const etiqueta = String(zonaNueva || "").trim();
+    const loc = FraudeReglas.normAttr(etiqueta);
+    if (!loc) return;
+    try {
+      const { error } = await supa.from("fraude_zonas_riesgo").upsert({ localidad: loc, etiqueta }, { onConflict: "localidad" });
+      if (error) throw error;
+      setZonaNueva(""); await cargarZonas();
+    } catch (err) { alert("No se pudo agregar la zona: " + err.message); }
+  };
+  const quitarZona = async loc => {
+    try { await supa.from("fraude_zonas_riesgo").delete().eq("localidad", loc); await cargarZonas(); } catch (err) { alert("No se pudo quitar: " + err.message); }
   };
   // Desbloquear un pedido: quita de la lista negra SÓLO las entradas que hicieron que este pedido matcheara
   // (p.ej. una IP compartida que dio un falso positivo). Afecta a todas las tiendas, así que pide confirmación.
@@ -1798,6 +1823,8 @@ function Metas({
     // sets de la lista blanca (clientes conocidos)
     const wl = { card: new Set(), doc: new Set(), mail: new Set() };
     listaBlanca.forEach(b => { if (wl[b.tipo]) wl[b.tipo].add(String(b.valor)); });
+    // zonas de entrega riesgosas (localidad normalizada)
+    const zonaSet = new Set(zonasRiesgo.map(z => z.localidad));
     // conteos dentro de lo cargado: documentos distintos por tarjeta / mail / IP
     const docsPor = { card: {}, mail: {}, ip: {} };
     const add = (m, key, doc) => { if (!key || !doc) return; (m[key] || (m[key] = new Set())).add(doc); };
@@ -1817,7 +1844,8 @@ function Metas({
       const importe = Math.max.apply(null, rs.map(x => x.importe || 0));
       const enBlocklist = (r0.cardHash && bl.card.has(r0.cardHash)) || (r0.doc && bl.doc.has(r0.doc)) || (r0.mail && bl.mail.has(r0.mail)) || (r0.ip && bl.ip.has(r0.ip));
       const enBlanca = (r0.doc && wl.doc.has(r0.doc)) || (r0.mail && wl.mail.has(r0.mail)) || (r0.cardHash && wl.card.has(r0.cardHash));
-      let ev = FraudeReglas.evaluar({ enBlocklist, docsPorTarjeta: ndCard(r0), docsPorMail: ndMail(r0), docsPorIp: ndIp(r0), importe });
+      const zonaRiesgo = !!(r0.localidad && zonaSet.has(FraudeReglas.normAttr(r0.localidad)));
+      let ev = FraudeReglas.evaluar({ enBlocklist, docsPorTarjeta: ndCard(r0), docsPorMail: ndMail(r0), docsPorIp: ndIp(r0), zonaRiesgo, importe });
       // Lista blanca: cliente conocido → no se marca como sospechoso (salvo que esté en lista negra, que manda).
       if (enBlanca && !enBlocklist) ev = { score: 0, nivel: "bajo", motivos: ["Cliente en lista blanca (conocido)"], bloqueado: false };
       return {
@@ -2136,7 +2164,17 @@ function Metas({
           h("tbody", null, listaBlancaPorCliente.slice(0, 500).map((gpo, i) => h("tr", { key: i, style: { borderTop: "1px solid " + C.line } },
             h("td", { className: "px-3 py-1.5 font-semibold" }, gpo.cliente || "—"),
             h("td", { className: "px-3 py-1.5", style: { color: C.gray } }, gpo.items.length + " (" + Array.from(new Set(gpo.items.map(x => x.tipo))).join("/") + ")"),
-            h("td", { className: "px-3 py-1.5" }, h("button", { onClick: () => quitarGrupoBlanca(gpo), className: "text-[10px] font-bold px-1.5 py-0.5 rounded", style: { color: C.red } }, "quitar"))))))))))),
+            h("td", { className: "px-3 py-1.5" }, h("button", { onClick: () => quitarGrupoBlanca(gpo), className: "text-[10px] font-bold px-1.5 py-0.5 rounded", style: { color: C.red } }, "quitar")))))))),
+      h("details", { className: "bg-white rounded-2xl border p-4", style: { borderColor: C.line } },
+        h("summary", { className: "text-sm font-bold cursor-pointer", style: { color: C.ink } }, "Zonas de entrega riesgosas (" + zonasRiesgo.length + ")"),
+        h("div", { className: "mt-3 space-y-2" },
+          h("div", { className: "text-[11px]", style: { color: C.gray } }, "Un pedido entregado en estas localidades suma riesgo al score (ej. Cerrillos). Editable y compartido."),
+          zonasRiesgo.length > 0 && h("div", { className: "flex flex-wrap gap-2" },
+            zonasRiesgo.map(z => h("span", { key: z.localidad, className: "text-xs font-semibold px-2 py-1 rounded-full inline-flex items-center gap-1", style: { background: C.amberS, color: C.amber } },
+              (z.etiqueta || z.localidad), h("button", { onClick: () => quitarZona(z.localidad), className: "font-black", style: { color: C.red } }, "×")))),
+          h("div", { className: "flex items-center gap-2" },
+            h("input", { value: zonaNueva, onChange: e => setZonaNueva(e.target.value), onKeyDown: e => { if (e.key === "Enter") agregarZona(); }, placeholder: "Agregar localidad…", className: "text-sm rounded-xl border px-3 py-1.5 outline-none", style: { borderColor: C.line } }),
+            h("button", { onClick: agregarZona, className: "text-xs font-bold px-3 py-1.5 rounded-xl text-white", style: { background: C.ink } }, "Agregar"))))))),
     // ── Modal detalle de un pedido de la cola de fraude ──
     detalleFraude && (() => {
       const f = detalleFraude, d = detalleDe(f);

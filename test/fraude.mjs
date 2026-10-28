@@ -24,6 +24,11 @@ check("Tarjeta con 2 docs → nivel bajo (ruido)", evaluar({ docsPorTarjeta: 2 }
 check("Tarjeta con 3 docs → no bloquea", evaluar({ docsPorTarjeta: 3 }).bloqueado, false);
 check("Tarjeta con 3 docs pesa más que con 2", evaluar({ docsPorTarjeta: 3 }).score > evaluar({ docsPorTarjeta: 2 }).score, true);
 
+// 3b) Zona de riesgo suma pero no bloquea por sí sola.
+check("Zona de riesgo sola → no bloquea", evaluar({ zonaRiesgo: true }).bloqueado, false);
+check("Zona de riesgo suma 15", evaluar({ zonaRiesgo: true }).score, 15);
+check("Zona de riesgo + mail 2 docs → alto", evaluar({ zonaRiesgo: true, docsPorMail: 2 }).nivel, "alto");
+
 // 4) Importe solo no bloquea, pero suma para priorizar.
 check("Importe alto solo → no bloquea", evaluar({ importe: 9000 }).bloqueado, false);
 check("Importe bajo no suma", evaluar({ importe: 100 }).score, 0);

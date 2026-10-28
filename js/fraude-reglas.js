@@ -25,6 +25,7 @@
   //   docsPorTarjeta: n,   // documentos distintos que usaron ESTA tarjeta (en lo cargado + histórico)
   //   docsPorMail : n,     // documentos distintos que usaron ESTE mail
   //   docsPorIp   : n,     // documentos distintos desde ESTA IP
+  //   zonaRiesgo  : bool,  // la localidad de entrega está marcada como zona de riesgo
   //   importe     : n      // importe del pedido
   // } → { score, nivel, motivos:[], bloqueado }
   function evaluar(ctx) {
@@ -36,6 +37,7 @@
     if (dt >= 3) { score += 20; motivos.push("Misma tarjeta con " + dt + " documentos distintos"); }
     else if (dt >= 2) { score += 8; motivos.push("Misma tarjeta con 2 documentos distintos"); }
     if (di >= 3) { score += 15; motivos.push("Misma IP con " + di + " documentos distintos"); }
+    if (ctx.zonaRiesgo) { score += 15; motivos.push("Zona de entrega marcada como riesgosa"); }
     if (imp >= UMBRAL_IMPORTE) { score += 20; motivos.push("Importe alto (≥ $" + UMBRAL_IMPORTE + ")"); }
     var nivel = ctx.enBlocklist ? "bloquear" : score >= 50 ? "alto" : score >= 25 ? "medio" : "bajo";
     return { score: score, nivel: nivel, motivos: motivos, bloqueado: !!ctx.enBlocklist };
