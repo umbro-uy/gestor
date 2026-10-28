@@ -789,6 +789,7 @@ function Metas({
   const [blocklist, setBlocklist] = useState([]);   // filas de fraude_blocklist (compartida)
   const [blSnapOK, setBlSnapOK] = useState(null);    // null=sin chequear, true=tabla ok, false=falta crear
   const [redConteo, setRedConteo] = useState({});    // red histórica hasheada: { "card:hash"|"mail:hash"|"ip:hash" : nºdocs }
+  const [listaBlanca, setListaBlanca] = useState([]); // clientes conocidos (no se marcan como sospechosos)
   const [motivosFraude, setMotivosFraude] = useState(null);    // { archivos:[], mapa:{ "tienda|pedido": motivo } } opcional p/ sembrar
   const [marcando, setMarcando] = useState(false);
   const [filtroFraude, setFiltroFraude] = useState(null);      // nivel seleccionado en los chips (null = la cola de riesgo)
@@ -846,12 +847,21 @@ function Metas({
       setRedConteo(m);
     } catch (_) { /* red opcional */ }
   }, []);
+  // Lista blanca (clientes conocidos). Compartida.
+  const cargarListaBlanca = useCallback(async () => {
+    try {
+      const { data, error } = await supa.from("fraude_lista_blanca").select("*").order("creado", { ascending: false });
+      if (error) return;
+      setListaBlanca(data || []);
+    } catch (_) { /* opcional */ }
+  }, []);
   useEffect(() => {
     cargarMetas();
     cargarSnapshot();
     cargarBlocklist();
     cargarRed();
-  }, [cargarMetas, cargarSnapshot, cargarBlocklist, cargarRed]);
+    cargarListaBlanca();
+  }, [cargarMetas, cargarSnapshot, cargarBlocklist, cargarRed, cargarListaBlanca]);
   // metasDeMes: real viene del BAS cargado (neto = FABs-NCDs) cuando está disponible,
   // y cae a Supabase si no hay BAS en esta sesión.
   const metasDeMes = TIENDAS_META.map(t => {
@@ -1234,6 +1244,28 @@ function Metas({
   const quitarGrupoBloque = async grupo => {
     if (!confirm("Quitar de la lista negra los " + grupo.items.length + " dato(s) del pedido " + (grupo.pedido || "?") + "? Afecta a todas las tiendas.")) return;
     try { await supa.from("fraude_blocklist").delete().in("id", grupo.items.map(b => b.id)); await cargarBlocklist(); setDetalleBloque(null); } catch (err) { alert("No se pudo quitar: " + err.message); }
+  };
+  // Lista blanca: marca un pedido/cliente como CONOCIDO (no se marca como sospechoso). Agrega su documento,
+  // mail y tarjeta (hasheada) con el nombre del cliente. Compartida entre tiendas.
+  const marcarBlanca = async row => {
+    const base = { cliente: row.nombre || "", nota: row.tienda || "" };
+    const regs = [];
+    if (row.cardHash) regs.push({ ...base, tipo: "card", valor: row.cardHash, bin: row.bin, last4: row.last4 });
+    if (row.doc) regs.push({ ...base, tipo: "doc", valor: row.doc });
+    if (row.mail) regs.push({ ...base, tipo: "mail", valor: row.mail });
+    if (!regs.length) { alert("Este pedido no tiene datos (tarjeta/documento/mail) para agregar a la lista blanca."); return; }
+    if (!confirm("Agregar a " + (row.nombre || "este cliente") + " a la lista blanca? No se va a marcar como sospechoso en próximas compras (en todas las tiendas).")) return;
+    setMarcando(true);
+    try {
+      const { error } = await supa.from("fraude_lista_blanca").upsert(regs, { onConflict: "tipo,valor" });
+      if (error) throw error;
+      await cargarListaBlanca();
+    } catch (err) { alert("No se pudo agregar a lista blanca: " + err.message); }
+    setMarcando(false);
+  };
+  const quitarGrupoBlanca = async grupo => {
+    if (!confirm("Quitar de la lista blanca a " + (grupo.cliente || "este cliente") + " (" + grupo.items.length + " dato(s))? Vuelve a analizarse normalmente.")) return;
+    try { await supa.from("fraude_lista_blanca").delete().in("id", grupo.items.map(b => b.id)); await cargarListaBlanca(); } catch (err) { alert("No se pudo quitar: " + err.message); }
   };
   // Desbloquear un pedido: quita de la lista negra SÓLO las entradas que hicieron que este pedido matcheara
   // (p.ej. una IP compartida que dio un falso positivo). Afecta a todas las tiendas, así que pide confirmación.
@@ -1763,6 +1795,9 @@ function Metas({
     // sets de la lista negra por tipo (comparación O(1))
     const bl = { card: new Set(), doc: new Set(), mail: new Set(), ip: new Set() };
     blocklist.forEach(b => { if (bl[b.tipo]) bl[b.tipo].add(String(b.valor)); });
+    // sets de la lista blanca (clientes conocidos)
+    const wl = { card: new Set(), doc: new Set(), mail: new Set() };
+    listaBlanca.forEach(b => { if (wl[b.tipo]) wl[b.tipo].add(String(b.valor)); });
     // conteos dentro de lo cargado: documentos distintos por tarjeta / mail / IP
     const docsPor = { card: {}, mail: {}, ip: {} };
     const add = (m, key, doc) => { if (!key || !doc) return; (m[key] || (m[key] = new Set())).add(doc); };
@@ -1781,11 +1816,14 @@ function Metas({
       const rs = porPed[k], r0 = rs[0], ped = r0.pedido;
       const importe = Math.max.apply(null, rs.map(x => x.importe || 0));
       const enBlocklist = (r0.cardHash && bl.card.has(r0.cardHash)) || (r0.doc && bl.doc.has(r0.doc)) || (r0.mail && bl.mail.has(r0.mail)) || (r0.ip && bl.ip.has(r0.ip));
-      const ev = FraudeReglas.evaluar({ enBlocklist, docsPorTarjeta: ndCard(r0), docsPorMail: ndMail(r0), docsPorIp: ndIp(r0), importe });
+      const enBlanca = (r0.doc && wl.doc.has(r0.doc)) || (r0.mail && wl.mail.has(r0.mail)) || (r0.cardHash && wl.card.has(r0.cardHash));
+      let ev = FraudeReglas.evaluar({ enBlocklist, docsPorTarjeta: ndCard(r0), docsPorMail: ndMail(r0), docsPorIp: ndIp(r0), importe });
+      // Lista blanca: cliente conocido → no se marca como sospechoso (salvo que esté en lista negra, que manda).
+      if (enBlanca && !enBlocklist) ev = { score: 0, nivel: "bajo", motivos: ["Cliente en lista blanca (conocido)"], bloqueado: false };
       return {
         pedido: ped, tienda: r0.tienda, nombre: r0.nombre, doc: r0.doc, mail: r0.mail, ip: r0.ip,
         bin: r0.bin, last4: r0.last4, cardHash: r0.cardHash, importe, lineas: rs.length, importes: rs.map(x => x.importe || 0),
-        fecha: r0.fecha, localidad: r0.localidad, departamento: r0.departamento,
+        fecha: r0.fecha, localidad: r0.localidad, departamento: r0.departamento, blanca: enBlanca,
         score: ev.score, nivel: ev.nivel, motivos: ev.motivos, bloqueado: ev.bloqueado
       };
     }).sort((a, b) => b.score - a.score);
@@ -1813,6 +1851,12 @@ function Metas({
     const g = {};
     blocklist.forEach(b => { const k = (b.tienda || "") + "|" + (b.pedido || ""); (g[k] || (g[k] = { pedido: b.pedido, tienda: b.tienda, motivo: b.motivo, items: [] })).items.push(b); });
     return Object.values(g).sort((a, b) => String(b.pedido).localeCompare(String(a.pedido)));
+  })();
+  // Lista blanca agrupada por cliente (nombre + documento, para no mezclar homónimos).
+  const listaBlancaPorCliente = (() => {
+    const g = {};
+    listaBlanca.forEach(b => { const k = b.cliente || "—"; (g[k] || (g[k] = { cliente: b.cliente || "—", items: [] })).items.push(b); });
+    return Object.values(g).sort((a, b) => String(a.cliente).localeCompare(String(b.cliente)));
   })();
   // Filas que se muestran en la cola: si hay un chip seleccionado, ese nivel; si no, los de riesgo (todo menos "bajo").
   const fraudeVisibles = fraudeResult ? (filtroFraude ? fraudeResult.filas.filter(f => f.nivel === filtroFraude) : fraudeResult.filas.filter(f => f.nivel !== "bajo")) : [];
@@ -2050,7 +2094,8 @@ function Metas({
           h("div", { className: "text-[11px] leading-relaxed px-1", style: { color: C.gray } },
             h("b", { style: { color: C.red } }, "Lista negra"), " = reusa datos de un fraude que YA confirmaste → no despachar (tocá un pedido “Desbloquear” si fue un falso positivo). ",
             h("b", { style: { color: C.ink } }, "Alto / Medio"), " = sospecha por patrones, todavía SIN confirmar → validar antes de despachar. ",
-            "“Marcar fraude” agrega los datos del pedido a la lista negra compartida (todas las tiendas); no cancela solo en Fenicio, es la señal para frenarlo. Tocá un chip para filtrar."),
+            "“Marcar fraude” agrega los datos del pedido a la lista negra compartida (todas las tiendas); no cancela solo en Fenicio, es la señal para frenarlo. ",
+            h("b", { style: { color: C.green } }, "Lista blanca"), " = cliente conocido: abrí un pedido y tocá “Lista blanca (conocido)” para que no se marque como sospechoso en próximas compras. Tocá un chip para filtrar."),
           h("div", { className: "bg-white rounded-2xl border overflow-hidden", style: { borderColor: C.line } },
             h("div", { className: "px-4 py-3 border-b flex items-center justify-between gap-2 flex-wrap", style: { borderColor: C.line } },
               h("span", { className: "text-sm font-bold", style: { color: C.ink } }, (filtroFraude ? "Filtrando: " + ({ bloquear: "Lista negra", alto: "Alto", medio: "Medio", bajo: "Bajo / OK" }[filtroFraude]) : "Cola priorizada — pedidos a revisar") + " (" + fraudeVisibles.length + ")"),
@@ -2083,7 +2128,15 @@ function Metas({
             h("td", { className: "px-3 py-1.5", style: { maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: C.red } }, gpo.motivo || "Fraude confirmado"),
             h("td", { className: "px-3 py-1.5", style: { color: C.gray } }, gpo.tienda || "—"),
             h("td", { className: "px-3 py-1.5 tabular-nums", style: { color: C.gray } }, gpo.items.length),
-            h("td", { className: "px-3 py-1.5", style: { color: C.blue } }, "ver ›")))))))))),
+            h("td", { className: "px-3 py-1.5", style: { color: C.blue } }, "ver ›"))))))),
+      listaBlanca.length > 0 && h("details", { className: "bg-white rounded-2xl border p-4", style: { borderColor: C.line } },
+        h("summary", { className: "text-sm font-bold cursor-pointer", style: { color: C.green } }, "Ver lista blanca — clientes conocidos (" + listaBlancaPorCliente.length + ")"),
+        h("div", { className: "overflow-auto mt-3", style: { maxHeight: 300 } }, h("table", { className: "w-full", style: { fontSize: 12 } },
+          h("thead", null, h("tr", { style: { background: "#F6F7F9" } }, ["Cliente", "Datos", ""].map((hh, i) => h("th", { key: i, className: "px-3 py-2 font-bold uppercase text-left", style: { color: C.gray, fontSize: 10, whiteSpace: "nowrap" } }, hh)))),
+          h("tbody", null, listaBlancaPorCliente.slice(0, 500).map((gpo, i) => h("tr", { key: i, style: { borderTop: "1px solid " + C.line } },
+            h("td", { className: "px-3 py-1.5 font-semibold" }, gpo.cliente || "—"),
+            h("td", { className: "px-3 py-1.5", style: { color: C.gray } }, gpo.items.length + " (" + Array.from(new Set(gpo.items.map(x => x.tipo))).join("/") + ")"),
+            h("td", { className: "px-3 py-1.5" }, h("button", { onClick: () => quitarGrupoBlanca(gpo), className: "text-[10px] font-bold px-1.5 py-0.5 rounded", style: { color: C.red } }, "quitar"))))))))))),
     // ── Modal detalle de un pedido de la cola de fraude ──
     detalleFraude && (() => {
       const f = detalleFraude, d = detalleDe(f);
@@ -2118,8 +2171,9 @@ function Metas({
             peers.map((pr, i) => pr[1].length > 0 && h("div", { key: i, className: "text-xs mb-1" },
               h("span", { style: { color: C.gray } }, pr[0], ": "),
               pr[1].slice(0, 20).map((p, j) => h("span", { key: j }, (j ? ", " : ""), h("b", null, p.pedido), p.doc ? " (" + p.doc + ")" : ""))))),
-          h("div", { className: "flex gap-2 justify-end pt-1" },
+          h("div", { className: "flex gap-2 justify-end pt-1 flex-wrap" },
             h("button", { onClick: () => setDetalleFraude(null), className: "text-xs font-bold px-3 py-2 rounded-xl", style: { color: C.gray } }, "Cerrar"),
+            !f.blanca && h("button", { onClick: () => { marcarBlanca(f); setDetalleFraude(null); }, disabled: marcando, className: "text-sm font-bold px-4 py-2 rounded-xl disabled:opacity-40", style: { background: C.greenS, color: C.green } }, "Lista blanca (conocido)"),
             f.bloqueado
               ? h("button", { onClick: () => { desbloquearPedido(f); setDetalleFraude(null); }, disabled: marcando, className: "text-sm font-bold px-4 py-2 rounded-xl disabled:opacity-40", style: { background: C.soft, color: C.gray } }, "Desbloquear")
               : h("button", { onClick: () => { marcarFraude(f); setDetalleFraude(null); }, disabled: marcando, className: "text-sm font-bold text-white px-4 py-2 rounded-xl disabled:opacity-40", style: { background: C.red } }, "Marcar fraude"))));
