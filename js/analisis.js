@@ -1110,10 +1110,17 @@ function Metas({
     if (hIdx < 0) throw new Error("no encontré la fila de encabezados");
     const headers = data[hIdx].map(String);
     const norm = s => String(s || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
-    const col = re => headers.findIndex(h => re.test(norm(h)));
-    const iPed = col(/nro\.?\s*pedido|^pedido/), iDoc = col(/comprador.*documento|^documento/), iMail = col(/comprador.*email|^email|correo/),
-      iBin = col(/tarjeta.*bin/), iL4 = col(/tarjeta.*last\s*4|ultimos?\s*4/), iCard = col(/^numero de tarjeta$|^tarjeta$/),
-      iIp = col(/^ip$/), iImp = col(/importe de pago|^importe/), iFecha = col(/fecha.*pago|^fecha/), iNom = col(/comprador.*nombre|^nombre|cliente/);
+    // Detección por patrón PRIORIZADO: prueba los patrones en orden y se queda con el primero que encuentra
+    // columna. Así el patrón específico gana aunque el reporte tenga columnas "señuelo" en otro orden (p.ej.
+    // Classico trae "Nombre artículo" antes que "Comprador nombre", e "Importe original" antes que "Importe de pago").
+    const colP = pats => { for (const p of pats) { const i = headers.findIndex(h => p.test(norm(h))); if (i >= 0) return i; } return -1; };
+    const iPed = colP([/nro\.?\s*pedido/, /^pedido$/]),
+      iDoc = colP([/comprador\s*documento/, /^documento$/]),
+      iMail = colP([/comprador\s*email/, /^email$/, /correo/]),
+      iBin = colP([/tarjeta.*bin/]), iL4 = colP([/tarjeta.*last\s*4/, /ultimos?\s*4/]), iCard = colP([/^numero de tarjeta$/, /^tarjeta$/]),
+      iIp = colP([/^ip$/]), iImp = colP([/importe de pago/, /importe total pedido/, /^importe\b/]),
+      iFecha = colP([/fecha\s*pago/, /^fecha$/]), iNom = colP([/comprador\s*nombre/, /^cliente$/, /destinatario/]),
+      iLoc = colP([/localidad\s*entrega/, /localidad/]), iDep = colP([/departamento\s*entrega/, /departamento/]);
     if (iPed < 0) throw new Error("no encontré la columna de Nro. de pedido");
     const g = (r, i) => i >= 0 ? clean(r[i]) : "";
     const filas = data.slice(hIdx + 1).filter(r => /^\d+$/.test(String(g(r, iPed)).trim()));
@@ -1127,10 +1134,12 @@ function Metas({
       const doc = FraudeReglas.normAttr(g(r, iDoc)), mail = FraudeReglas.normAttr(g(r, iMail)), ip = FraudeReglas.normAttr(g(r, iIp));
       // hashes para la red histórica (vínculos hasheados, sin PII legible)
       const docHash = doc ? await sha256Hex(doc) : "", mailHash = mail ? await sha256Hex(mail) : "", ipHash = ip ? await sha256Hex(ip) : "";
+      const loc = g(r, iLoc), dep = g(r, iDep);
       return {
         pedido: String(g(r, iPed)).trim(), tienda, nombre: g(r, iNom),
         doc, mail, ip, docHash, mailHash, ipHash,
-        bin, last4, cardHash, importe: impNum(g(r, iImp)), fecha: g(r, iFecha)
+        bin, last4, cardHash, importe: impNum(g(r, iImp)), fecha: g(r, iFecha),
+        localidad: loc, departamento: dep
       };
     }));
   };
@@ -1776,6 +1785,7 @@ function Metas({
       return {
         pedido: ped, tienda: r0.tienda, nombre: r0.nombre, doc: r0.doc, mail: r0.mail, ip: r0.ip,
         bin: r0.bin, last4: r0.last4, cardHash: r0.cardHash, importe, lineas: rs.length, importes: rs.map(x => x.importe || 0),
+        fecha: r0.fecha, localidad: r0.localidad, departamento: r0.departamento,
         score: ev.score, nivel: ev.nivel, motivos: ev.motivos, bloqueado: ev.bloqueado
       };
     }).sort((a, b) => b.score - a.score);
@@ -1825,7 +1835,7 @@ function Metas({
     if (!rev.length) { alert("No hay pedidos para exportar en esta vista."); return; }
     try {
       const ws = XLSX.utils.json_to_sheet(rev.map(f => ({
-        Pedido: f.pedido, Tienda: f.tienda, Cliente: f.nombre, Importe: f.importe, Nivel: f.nivel, Score: f.score,
+        Pedido: f.pedido, Tienda: f.tienda, Fecha: f.fecha || "", Cliente: f.nombre, Zona: [f.localidad, f.departamento].filter(Boolean).join(", "), Importe: f.importe, Nivel: f.nivel, Score: f.score,
         Documento: f.doc, Mail: f.mail, IP: f.ip, Tarjeta: (f.bin ? f.bin + "…" + f.last4 : ""), Motivos: f.motivos.join(" · ")
       })));
       const wb = XLSX.utils.book_new();
@@ -2050,13 +2060,15 @@ function Metas({
             fraudeVisibles.length === 0
               ? h("div", { className: "px-4 py-6 text-sm text-center", style: { color: C.gray } }, filtroFraude ? "No hay pedidos en este nivel." : "Ningún pedido con señales de riesgo en este reporte. 👍")
               : h("div", { className: "overflow-auto", style: { maxHeight: 520 } }, h("table", { className: "w-full", style: { fontSize: 12 } },
-                h("thead", null, h("tr", null, ["Nivel", "Pedido", "Tienda", "Cliente", "Importe", "Señales", ""].map((hh, i) => h("th", { key: i, className: "px-3 py-2 font-bold uppercase", style: { color: C.gray, fontSize: 10, textAlign: i === 4 ? "right" : "left", whiteSpace: "nowrap", position: "sticky", top: 0, background: "#F6F7F9" } }, hh)))),
+                h("thead", null, h("tr", null, ["Nivel", "Pedido", "Fecha", "Tienda", "Cliente", "Zona", "Importe", "Señales", ""].map((hh, i) => h("th", { key: i, className: "px-3 py-2 font-bold uppercase", style: { color: C.gray, fontSize: 10, textAlign: hh === "Importe" ? "right" : "left", whiteSpace: "nowrap", position: "sticky", top: 0, background: "#F6F7F9" } }, hh)))),
                 h("tbody", null, fraudeVisibles.slice(0, 300).map((f, i) =>
                   h("tr", { key: f.tienda + "|" + f.pedido + "_" + i, onClick: () => setDetalleFraude(f), className: "cursor-pointer", style: { borderTop: "1px solid " + C.line } },
                     h("td", { className: "px-3 py-1.5" }, h("span", { className: "text-[10px] font-black uppercase px-2 py-0.5 rounded-full", style: { background: f.nivel === "medio" ? C.amberS : f.nivel === "bajo" ? C.greenS : C.redS, color: f.nivel === "medio" ? C.amber : f.nivel === "bajo" ? C.green : C.red } }, f.nivel === "bloquear" ? "lista negra" : f.nivel)),
                     h("td", { className: "px-3 py-1.5 font-semibold" }, f.pedido, f.lineas > 1 && h("span", { className: "font-normal", style: { color: C.gray } }, " ·" + f.lineas)),
+                    h("td", { className: "px-3 py-1.5 whitespace-nowrap", style: { color: C.gray } }, (f.fecha || "").slice(0, 10) || "—"),
                     h("td", { className: "px-3 py-1.5", style: { color: C.gray } }, f.tienda),
-                    h("td", { className: "px-3 py-1.5", style: { maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, f.nombre || "—"),
+                    h("td", { className: "px-3 py-1.5", style: { maxWidth: 150, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, f.nombre || "—"),
+                    h("td", { className: "px-3 py-1.5", style: { color: C.gray, maxWidth: 120, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, f.localidad || "—"),
                     h("td", { className: "px-3 py-1.5 tabular-nums", style: { textAlign: "right" } }, f.importe ? f.importe.toLocaleString("es-UY") : "—"),
                     h("td", { className: "px-3 py-1.5 text-[11px]", style: { color: C.gray, maxWidth: 240, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, f.motivos.join(" · ")),
                     h("td", { className: "px-3 py-1.5 whitespace-nowrap" }, (f.bloqueado
@@ -2085,14 +2097,16 @@ function Metas({
           h("div", { className: "flex items-start justify-between gap-3" },
             h("div", null,
               h("div", { className: "font-black text-lg fraunces", style: { color: C.ink } }, "Pedido ", f.pedido),
-              h("div", { className: "text-xs", style: { color: C.gray } }, f.tienda, " · ", f.nombre || "—", f.importe ? " · $" + f.importe.toLocaleString("es-UY") : "", f.lineas > 1 ? " · " + f.lineas + " líneas" : "")),
+              h("div", { className: "text-xs", style: { color: C.gray } }, f.tienda, " · ", f.nombre || "—", f.importe ? " · $" + f.importe.toLocaleString("es-UY") : "", f.fecha ? " · " + f.fecha.slice(0, 10) : "", f.lineas > 1 ? " · " + f.lineas + " líneas" : "")),
             h("span", { className: "text-[10px] font-black uppercase px-2 py-0.5 rounded-full", style: { background: bgNiv, color: colNiv } }, f.nivel === "bloquear" ? "lista negra" : f.nivel)),
           h("div", { className: "rounded-xl border p-3 text-xs space-y-1", style: { borderColor: C.line } },
             h("div", { className: "font-bold uppercase text-[10px] mb-1", style: { color: C.gray } }, "Datos del comprador"),
             h("div", null, "Documento: ", h("b", null, f.doc || "—")),
             h("div", null, "Mail: ", h("b", null, f.mail || "—")),
             h("div", null, "IP: ", h("b", null, f.ip || "—")),
-            h("div", null, "Tarjeta: ", h("b", null, f.bin ? f.bin + "…" + f.last4 : "—"))),
+            h("div", null, "Tarjeta: ", h("b", null, f.bin ? f.bin + "…" + f.last4 : "—")),
+            h("div", null, "Zona: ", h("b", null, [f.localidad, f.departamento].filter(Boolean).join(", ") || "—")),
+            h("div", null, "Fecha: ", h("b", null, f.fecha || "—"))),
           f.motivos.length > 0 && h("div", null,
             h("div", { className: "font-bold uppercase text-[10px] mb-1", style: { color: C.gray } }, "Por qué es sospechoso"),
             h("ul", { className: "text-xs space-y-0.5" }, f.motivos.map((m, i) => h("li", { key: i }, "• ", m)))),
