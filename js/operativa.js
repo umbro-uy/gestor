@@ -191,7 +191,8 @@ function Operativa({ yo, activo, syncTick }) {
   // como subcadena del artículo/SKU). Al normalizar el stock se vacía esta lista → deja de excluir y esos
   // pedidos vuelven a contar como cualquier otro (si no están despachados, cuentan como demorados).
   // 2026-09-30: llegó el stock de N1A32600 / N1BA2600 → lista vaciada, la exclusión por preventa queda apagada.
-  const ARTS_PREVENTA = [];
+  // 2026-11-10: nueva preventa N1BH2600 / N1BA2602 (sin stock aún) → excluidos del cumplimiento hasta que llegue el stock.
+  const ARTS_PREVENTA = ["N1BH2600", "N1BA2602"];
   const esArtPreventa = art => { const a = String(art || "").toUpperCase(); return ARTS_PREVENTA.some(c => a.includes(c)); };
   const diasHab = desde => {
     try {
