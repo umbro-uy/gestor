@@ -24,6 +24,11 @@ check("Tarjeta con 2 docs → nivel bajo (ruido)", evaluar({ docsPorTarjeta: 2 }
 check("Tarjeta con 3 docs → no bloquea", evaluar({ docsPorTarjeta: 3 }).bloqueado, false);
 check("Tarjeta con 3 docs pesa más que con 2", evaluar({ docsPorTarjeta: 3 }).score > evaluar({ docsPorTarjeta: 2 }).score, true);
 
+// 3a) Teléfono multi-doc: preciso → empuja a medio, no bloquea solo.
+check("Teléfono con 2 docs → nivel medio", evaluar({ docsPorTel: 2 }).nivel, "medio");
+check("Teléfono con 2 docs NO bloquea", evaluar({ docsPorTel: 2 }).bloqueado, false);
+check("Teléfono con 1 doc no suma", evaluar({ docsPorTel: 1 }).score, 0);
+
 // 3b) Zona de riesgo suma pero no bloquea por sí sola.
 check("Zona de riesgo sola → no bloquea", evaluar({ zonaRiesgo: true }).bloqueado, false);
 check("Zona de riesgo suma 15", evaluar({ zonaRiesgo: true }).score, 15);

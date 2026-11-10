@@ -795,6 +795,7 @@ function Metas({
   const [motivosFraude, setMotivosFraude] = useState(null);    // { archivos:[], mapa:{ "tienda|pedido": motivo } } opcional p/ sembrar
   const [marcando, setMarcando] = useState(false);
   const [filtroFraude, setFiltroFraude] = useState(null);      // nivel seleccionado en los chips (null = la cola de riesgo)
+  const [buscarFraude, setBuscarFraude] = useState("");        // buscador de pedidos dentro de la cola (nº, nombre, doc, mail, tel)
   const [fraudeResumen, setFraudeResumen] = useState(null);    // resumen persistido del último análisis (solo números)
   const [fraudeColaGuardada, setFraudeColaGuardada] = useState(null); // cola de revisión persistida (compartida, se ve sin recargar)
   const [detalleFraude, setDetalleFraude] = useState(null);    // pedido abierto en el modal de detalle
@@ -1143,7 +1144,7 @@ function Metas({
       iBin = colP([/tarjeta.*bin/]), iL4 = colP([/tarjeta.*last\s*4/, /ultimos?\s*4/]), iCard = colP([/^numero de tarjeta$/, /^tarjeta$/]),
       iIp = colP([/^ip$/]), iImp = colP([/importe de pago/, /importe total pedido/, /^importe\b/]),
       iFecha = colP([/fecha\s*pago/, /^fecha$/]), iNom = colP([/comprador\s*nombre/, /^cliente$/, /destinatario/]),
-      iApe = colP([/comprador\s*apellido/, /^apellido$/]),
+      iApe = colP([/comprador\s*apellido/, /^apellido$/]), iTel = colP([/comprador\s*tel/, /^tel[eé]fono$/, /celular/]),
       iLoc = colP([/localidad\s*entrega/, /localidad/]), iDep = colP([/departamento\s*entrega/, /departamento/]);
     if (iPed < 0) throw new Error("no encontré la columna de Nro. de pedido");
     const g = (r, i) => i >= 0 ? clean(r[i]) : "";
@@ -1156,12 +1157,13 @@ function Metas({
       if (panFull.length >= 8) cardHash = await sha256Hex(panFull);
       else if (bin && last4) cardHash = await sha256Hex("bl|" + bin + "|" + last4); // sin PAN: huella débil BIN+last4
       const doc = FraudeReglas.normAttr(g(r, iDoc)), mail = FraudeReglas.normAttr(g(r, iMail)), ip = FraudeReglas.normAttr(g(r, iIp));
+      const tel = FraudeReglas.normAttr(g(r, iTel));
       // hashes para la red histórica (vínculos hasheados, sin PII legible)
-      const docHash = doc ? await sha256Hex(doc) : "", mailHash = mail ? await sha256Hex(mail) : "", ipHash = ip ? await sha256Hex(ip) : "";
+      const docHash = doc ? await sha256Hex(doc) : "", mailHash = mail ? await sha256Hex(mail) : "", ipHash = ip ? await sha256Hex(ip) : "", telHash = tel ? await sha256Hex(tel) : "";
       const loc = g(r, iLoc), dep = g(r, iDep);
       return {
         pedido: String(g(r, iPed)).trim(), tienda, nombre: [g(r, iNom), g(r, iApe)].filter(Boolean).join(" ").trim(),
-        doc, mail, ip, docHash, mailHash, ipHash,
+        doc, mail, ip, tel, docHash, mailHash, ipHash, telHash,
         bin, last4, cardHash, importe: impNum(g(r, iImp)), fecha: g(r, iFecha),
         localidad: loc, departamento: dep
       };
@@ -1202,6 +1204,7 @@ function Metas({
         const add = piv => { const k = piv + "|" + r.docHash; if (!vistos[k]) { vistos[k] = 1; pares.push({ pivote: piv, doc: r.docHash }); } };
         if (r.cardHash) add("card:" + r.cardHash);
         if (r.mailHash) add("mail:" + r.mailHash);
+        if (r.telHash) add("tel:" + r.telHash);
         if (r.ipHash) add("ip:" + r.ipHash);
       });
       for (let i = 0; i < pares.length; i += 1000) {
@@ -1238,12 +1241,13 @@ function Metas({
     if (row.cardHash) out.push({ ...base, tipo: "card", valor: row.cardHash, bin: row.bin, last4: row.last4 });
     if (row.doc) out.push({ ...base, tipo: "doc", valor: row.doc });
     if (row.mail) out.push({ ...base, tipo: "mail", valor: row.mail });
+    if (row.tel) out.push({ ...base, tipo: "tel", valor: row.tel });
     if (row.ip) out.push({ ...base, tipo: "ip", valor: row.ip });
     return out;
   };
   const marcarFraude = async row => {
     const regs = atributosDe(row);
-    if (!regs.length) { alert("Este pedido no tiene datos (tarjeta/documento/mail/IP) para agregar a la lista negra."); return; }
+    if (!regs.length) { alert("Este pedido no tiene datos (tarjeta/documento/mail/teléfono/IP) para agregar a la lista negra."); return; }
     setMarcando(true);
     try {
       const { error } = await supa.from("fraude_blocklist").upsert(regs, { onConflict: "tipo,valor" });
@@ -1850,7 +1854,7 @@ function Metas({
   const fraudeResult = (() => {
     if (!rowsFraude.length) return null;
     // sets de la lista negra por tipo (comparación O(1))
-    const bl = { card: new Set(), doc: new Set(), mail: new Set(), ip: new Set() };
+    const bl = { card: new Set(), doc: new Set(), mail: new Set(), tel: new Set(), ip: new Set() };
     blocklist.forEach(b => { if (bl[b.tipo]) bl[b.tipo].add(String(b.valor)); });
     // sets de la lista blanca (clientes conocidos)
     const wl = { card: new Set(), doc: new Set(), mail: new Set() };
@@ -1858,13 +1862,14 @@ function Metas({
     // zonas de entrega riesgosas (localidad normalizada)
     const zonaSet = new Set(zonasRiesgo.map(z => z.localidad));
     // conteos dentro de lo cargado: documentos distintos por tarjeta / mail / IP
-    const docsPor = { card: {}, mail: {}, ip: {} };
+    const docsPor = { card: {}, mail: {}, tel: {}, ip: {} };
     const add = (m, key, doc) => { if (!key || !doc) return; (m[key] || (m[key] = new Set())).add(doc); };
-    rowsFraude.forEach(r => { add(docsPor.card, r.cardHash, r.doc); add(docsPor.mail, r.mail, r.doc); add(docsPor.ip, r.ip, r.doc); });
+    rowsFraude.forEach(r => { add(docsPor.card, r.cardHash, r.doc); add(docsPor.mail, r.mail, r.doc); add(docsPor.tel, r.tel, r.doc); add(docsPor.ip, r.ip, r.doc); });
     const nd = (m, k) => (k && m[k]) ? m[k].size : 0;
     // Conteo de documentos distintos: el MAYOR entre el histórico (red hasheada) y el lote cargado.
     const ndCard = r => Math.max(redConteo["card:" + r.cardHash] || 0, nd(docsPor.card, r.cardHash));
     const ndMail = r => Math.max(r.mailHash ? (redConteo["mail:" + r.mailHash] || 0) : 0, nd(docsPor.mail, r.mail));
+    const ndTel = r => Math.max(r.telHash ? (redConteo["tel:" + r.telHash] || 0) : 0, nd(docsPor.tel, r.tel));
     const ndIp = r => Math.max(r.ipHash ? (redConteo["ip:" + r.ipHash] || 0) : 0, nd(docsPor.ip, r.ip));
     // Un reporte trae VARIAS filas por pedido (una por ítem/pago). Agrupamos a UNA fila por pedido:
     // los atributos del comprador (doc/mail/tarjeta/IP) son los mismos, el importe se toma el mayor y
@@ -1874,14 +1879,14 @@ function Metas({
     const filas = Object.keys(porPed).map(k => {
       const rs = porPed[k], r0 = rs[0], ped = r0.pedido;
       const importe = Math.max.apply(null, rs.map(x => x.importe || 0));
-      const enBlocklist = (r0.cardHash && bl.card.has(r0.cardHash)) || (r0.doc && bl.doc.has(r0.doc)) || (r0.mail && bl.mail.has(r0.mail)) || (r0.ip && bl.ip.has(r0.ip));
+      const enBlocklist = (r0.cardHash && bl.card.has(r0.cardHash)) || (r0.doc && bl.doc.has(r0.doc)) || (r0.mail && bl.mail.has(r0.mail)) || (r0.tel && bl.tel.has(r0.tel)) || (r0.ip && bl.ip.has(r0.ip));
       const enBlanca = (r0.doc && wl.doc.has(r0.doc)) || (r0.mail && wl.mail.has(r0.mail)) || (r0.cardHash && wl.card.has(r0.cardHash));
       const zonaRiesgo = !!(r0.localidad && zonaSet.has(FraudeReglas.normAttr(r0.localidad)));
-      let ev = FraudeReglas.evaluar({ enBlocklist, docsPorTarjeta: ndCard(r0), docsPorMail: ndMail(r0), docsPorIp: ndIp(r0), zonaRiesgo, importe });
+      let ev = FraudeReglas.evaluar({ enBlocklist, docsPorTarjeta: ndCard(r0), docsPorMail: ndMail(r0), docsPorTel: ndTel(r0), docsPorIp: ndIp(r0), zonaRiesgo, importe });
       // Lista blanca: cliente conocido → no se marca como sospechoso (salvo que esté en lista negra, que manda).
       if (enBlanca && !enBlocklist) ev = { score: 0, nivel: "bajo", motivos: ["Cliente en lista blanca (conocido)"], bloqueado: false };
       return {
-        pedido: ped, tienda: r0.tienda, nombre: r0.nombre, doc: r0.doc, mail: r0.mail, ip: r0.ip,
+        pedido: ped, tienda: r0.tienda, nombre: r0.nombre, doc: r0.doc, mail: r0.mail, tel: r0.tel, ip: r0.ip,
         bin: r0.bin, last4: r0.last4, cardHash: r0.cardHash, importe, lineas: rs.length, importes: rs.map(x => x.importe || 0),
         fecha: r0.fecha, localidad: r0.localidad, departamento: r0.departamento, blanca: enBlanca,
         score: ev.score, nivel: ev.nivel, motivos: ev.motivos, bloqueado: ev.bloqueado
@@ -1897,7 +1902,7 @@ function Metas({
     if (!f) return null;
     const cruces = blocklist.filter(b =>
       (b.tipo === "card" && b.valor === f.cardHash) || (b.tipo === "doc" && b.valor === f.doc) ||
-      (b.tipo === "mail" && b.valor === f.mail) || (b.tipo === "ip" && b.valor === f.ip));
+      (b.tipo === "mail" && b.valor === f.mail) || (b.tipo === "tel" && b.valor === f.tel) || (b.tipo === "ip" && b.valor === f.ip));
     const peersDe = (campo, val) => {
       if (!val) return [];
       const m = {};
@@ -1923,7 +1928,17 @@ function Metas({
     ? { filas: fraudeResult.filas, cuenta: fraudeResult.cuenta, vivo: true }
     : (fraudeColaGuardada ? { filas: fraudeColaGuardada.filas || [], cuenta: { bloquear: (fraudeResumen && fraudeResumen.bloquear) || 0, alto: (fraudeResumen && fraudeResumen.alto) || 0, medio: (fraudeResumen && fraudeResumen.medio) || 0, bajo: (fraudeResumen && fraudeResumen.bajo) || 0 }, vivo: false } : null);
   // Filas que se muestran en la cola: si hay un chip seleccionado, ese nivel; si no, los de riesgo (todo menos "bajo").
-  const fraudeVisibles = fraudeColaActiva ? (filtroFraude ? fraudeColaActiva.filas.filter(f => f.nivel === filtroFraude) : fraudeColaActiva.filas.filter(f => f.nivel !== "bajo")) : [];
+  // Buscador: si hay texto, busca sobre TODAS las filas (incluidos los "bajo", que no aparecen en la cola)
+  // por nº de pedido, nombre, documento, mail o teléfono. Si no, muestra la cola normal (chip o riesgo).
+  const qFraude = FraudeReglas ? FraudeReglas.normAttr(buscarFraude) : String(buscarFraude || "").toLowerCase().replace(/\s+/g, "");
+  const matchFraude = f => {
+    if (!qFraude) return true;
+    return [f.pedido, f.nombre, f.doc, f.mail, f.tel].some(v => FraudeReglas.normAttr(v).includes(qFraude));
+  };
+  const fraudeVisibles = !fraudeColaActiva ? []
+    : qFraude ? fraudeColaActiva.filas.filter(matchFraude)
+    : filtroFraude ? fraudeColaActiva.filas.filter(f => f.nivel === filtroFraude)
+    : fraudeColaActiva.filas.filter(f => f.nivel !== "bajo");
   // Persistir el resumen (números) y la COLA de revisión del último análisis, para compartirlos sin recargar.
   useEffect(() => {
     if (!rowsFraude.length || !fraudeResult) return;
@@ -1943,7 +1958,7 @@ function Metas({
     try {
       const ws = XLSX.utils.json_to_sheet(rev.map(f => ({
         Pedido: f.pedido, Tienda: f.tienda, Fecha: f.fecha || "", Cliente: f.nombre, Zona: [f.localidad, f.departamento].filter(Boolean).join(", "), Importe: f.importe, Nivel: f.nivel, Score: f.score,
-        Documento: f.doc, Mail: f.mail, IP: f.ip, Tarjeta: (f.bin ? f.bin + "…" + f.last4 : ""), Motivos: f.motivos.join(" · ")
+        Documento: f.doc, Mail: f.mail, "Teléfono": f.tel, IP: f.ip, Tarjeta: (f.bin ? f.bin + "…" + f.last4 : ""), Motivos: f.motivos.join(" · ")
       })));
       const wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, ws, "Revisar fraude");
@@ -2163,12 +2178,13 @@ function Metas({
             h("b", { style: { color: C.green } }, "Lista blanca"), " = cliente conocido: abrí un pedido y tocá “Lista blanca (conocido)” para que no se marque como sospechoso en próximas compras. Tocá un chip para filtrar."),
           h("div", { className: "bg-white rounded-2xl border overflow-hidden", style: { borderColor: C.line } },
             h("div", { className: "px-4 py-3 border-b flex items-center justify-between gap-2 flex-wrap", style: { borderColor: C.line } },
-              h("span", { className: "text-sm font-bold", style: { color: C.ink } }, (filtroFraude ? "Filtrando: " + ({ bloquear: "Lista negra", alto: "Alto", medio: "Medio", bajo: "Bajo / OK" }[filtroFraude]) : "Cola priorizada — pedidos a revisar") + " (" + fraudeVisibles.length + ")"),
+              h("span", { className: "text-sm font-bold", style: { color: C.ink } }, (qFraude ? "Buscando “" + buscarFraude.trim() + "”" : filtroFraude ? "Filtrando: " + ({ bloquear: "Lista negra", alto: "Alto", medio: "Medio", bajo: "Bajo / OK" }[filtroFraude]) : "Cola priorizada — pedidos a revisar") + " (" + fraudeVisibles.length + ")"),
               h("div", { className: "flex items-center gap-2" },
-                filtroFraude && h("button", { onClick: () => setFiltroFraude(null), className: "text-xs font-bold px-2.5 py-1 rounded-lg", style: { background: C.soft, color: C.gray } }, "Ver todos"),
+                h("input", { type: "search", value: buscarFraude, onChange: e => setBuscarFraude(e.target.value), placeholder: "Buscar pedido, cliente, doc, mail, tel…", className: "text-xs px-2.5 py-1 rounded-lg border", style: { borderColor: C.line, width: 220, maxWidth: "48vw" } }),
+                filtroFraude && !qFraude && h("button", { onClick: () => setFiltroFraude(null), className: "text-xs font-bold px-2.5 py-1 rounded-lg", style: { background: C.soft, color: C.gray } }, "Ver todos"),
                 h("button", { onClick: exportFraude, className: "text-xs font-bold px-2.5 py-1 rounded-lg", style: { background: C.soft, color: C.blue } }, "↓ Exportar"))),
             fraudeVisibles.length === 0
-              ? h("div", { className: "px-4 py-6 text-sm text-center", style: { color: C.gray } }, filtroFraude ? "No hay pedidos en este nivel." : "Ningún pedido con señales de riesgo en este reporte. 👍")
+              ? h("div", { className: "px-4 py-6 text-sm text-center", style: { color: C.gray } }, qFraude ? (fraudeColaActiva.vivo ? "No encontré ese pedido en el reporte cargado." : "No encontré ese pedido en la cola compartida. Cargá el reporte de ventas para buscar en todo (incluye los de nivel bajo).") : filtroFraude ? "No hay pedidos en este nivel." : "Ningún pedido con señales de riesgo en este reporte. 👍")
               : h("div", { className: "overflow-auto", style: { maxHeight: 520 } }, h("table", { className: "w-full", style: { fontSize: 12 } },
                 h("thead", null, h("tr", null, ["Nivel", "Pedido", "Fecha", "Tienda", "Cliente", "Zona", "Importe", "Señales", ""].map((hh, i) => h("th", { key: i, className: "px-3 py-2 font-bold uppercase", style: { color: C.gray, fontSize: 10, textAlign: hh === "Importe" ? "right" : "left", whiteSpace: "nowrap", position: "sticky", top: 0, background: "#F6F7F9" } }, hh)))),
                 h("tbody", null, fraudeVisibles.slice(0, 300).map((f, i) =>
@@ -2231,6 +2247,7 @@ function Metas({
             h("div", { className: "font-bold uppercase text-[10px] mb-1", style: { color: C.gray } }, "Datos del comprador"),
             h("div", null, "Documento: ", h("b", null, f.doc || "—")),
             h("div", null, "Mail: ", h("b", null, f.mail || "—")),
+            h("div", null, "Teléfono: ", h("b", null, f.tel || "—")),
             h("div", null, "IP: ", h("b", null, f.ip || "—")),
             h("div", null, "Tarjeta: ", h("b", null, f.bin ? f.bin + "…" + f.last4 : "—")),
             h("div", null, "Zona: ", h("b", null, [f.localidad, f.departamento].filter(Boolean).join(", ") || "—")),
