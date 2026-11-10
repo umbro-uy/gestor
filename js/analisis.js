@@ -1771,50 +1771,79 @@ function Metas({
   // ── Menú lateral de subsecciones (reutiliza el patrón de Operativa) ──
   const hayDatos = !!(resumenBAS || pendientes || metas.length);
   // ── Control de stock de facturación ──────────────────────────────────────────────────────────────
-  // Para facturar, la unidad tiene que estar egresada en el depósito de FACTURACIÓN de su tienda
-  // (8101 Nacional · 8001 TimeOut · 8201 Classico). Cruzamos el stock de esos depósitos con los pedidos
-  // pendientes de facturar (del último análisis): si un pedido pendiente tiene artículos que NO están en
-  // su depósito de facturación, el egreso no se hizo → va a necesitar ajuste. Comparamos contra StkActual.
+  // Los depósitos de FACTURACIÓN (8101 Nacional · 8001 TimeOut · 8201 Classico) deben contener ÚNICAMENTE
+  // las unidades PENDIENTES de facturar. Cualquier unidad de un pedido en otro estado no debería estar ahí
+  // (si está en otro estado, que falte stock no importa). Por eso NO cruzamos pedido por pedido, sino que
+  // reconciliamos por DEPÓSITO + SKU lo que está pendiente contra lo que hay físicamente (StkActual):
+  //   · FALTANTE = unidades pendientes de facturar que NO están en el depósito (el egreso no se hizo).
+  //   · SOBRANTE = unidades en el depósito que NO corresponden a ningún pedido pendiente (deberían haber
+  //     salido: ya se facturaron, se cancelaron o están en otro estado) → hay que sacarlas / ajustar.
   const DEPO_FACT = { "tienda nacional": "8101", "nacional": "8101", "timeout": "8001", "classico": "8201", "clasico": "8201", "clásico": "8201" };
+  const DEP_TIENDA = { "8101": "Tienda Nacional", "8001": "TimeOut", "8201": "Classico" };
   const depoDeTienda = t => DEPO_FACT[String(t || "").toLowerCase().trim()] || "";
   const normSku = s => String(s || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
   const stockCross = (() => {
     if (!stockDepos || !stockDepos.filas || !stockDepos.filas.length || !pendientes || !pendientes.grupos) return null;
-    const stk = {};
-    stockDepos.filas.forEach(f => { (stk[f.sku] || (stk[f.sku] = {}))[f.dep] = (stk[f.sku][f.dep] || 0) + (f.act || 0); });
     const artsXPed = pendientes.artsXPedido || {};
     const GR = ["revisar", "ccForzar", "pagoDespues", "pcnManual", "pendienteOK"];
-    const CLAS = { revisar: "Falta factura (orden liberada)", ccForzar: "C&C a forzar", pagoDespues: "Pago Después", pcnManual: "PCN (manual)", pendienteOK: "En proceso" };
-    const porT = {}; const detalle = []; let sinArts = 0;
+    // DEMANDA pendiente por depósito+SKU (unidades que SÍ deben estar en el depósito). Se excluyen los PCN
+    // (personalizaciones: se hacen a pedido, no viven en stock) para no inventar faltantes.
+    const pend = {}; let sinArts = 0;
     GR.forEach(gk => (pendientes.grupos[gk] || []).forEach(p => {
+      const dep = depoDeTienda(p.tienda);
+      if (!dep) return;
       const arts0 = artsXPed[String(p.nro)] || [];
-      // Excluir los artículos PCN (personalizaciones): se hacen a pedido, no viven en stock → faltarían siempre.
       const arts = arts0.filter(a => !/^PCN/i.test(String(a.sku || "").trim()));
-      // Pedido con artículos en el Monitor pero TODOS PCN → fuera del control de stock (no se cuenta).
-      if (arts0.length && !arts.length) return;
-      const tienda = p.tienda || "—";
-      const dep = depoDeTienda(tienda);
-      const t = porT[tienda] || (porT[tienda] = { tienda, dep, pedidos: 0, conFaltante: 0, uFaltantes: 0 });
-      t.pedidos++;
-      if (!arts.length) { sinArts++; return; }
-      let faltaAlgo = false;
+      if (arts0.length && !arts.length) return;      // pedido todo-PCN → fuera del control de stock
+      if (!arts.length) { sinArts++; return; }        // pendiente sin artículos en el Monitor cargado
       arts.forEach(a => {
-        const sk = normSku(a.sku);
-        const enDep = dep && stk[sk] ? (stk[sk][dep] || 0) : 0;
-        const falt = Math.max(0, (a.u || 1) - enDep);
-        if (falt > 0) { faltaAlgo = true; t.uFaltantes += falt; detalle.push({ Pedido: p.nro, Tienda: tienda, "Depósito fact.": dep || "?", Clasificación: CLAS[gk] || gk, "Artículo (SKU)": a.sku, Descripción: a.desc || "", "Unid. necesarias": a.u || 1, "Stock en depósito": enDep, Faltante: falt }); }
+        const sk = normSku(a.sku); if (!sk) return;
+        const d = pend[dep] || (pend[dep] = {});
+        const e = d[sk] || (d[sk] = { u: 0, desc: a.desc || "", pedidos: new Set() });
+        e.u += (a.u || 1); e.pedidos.add(String(p.nro));
+        if (!e.desc && a.desc) e.desc = a.desc;
       });
-      if (faltaAlgo) t.conFaltante++;
     }));
-    return { porTienda: Object.values(porT).sort((a, b) => b.conFaltante - a.conFaltante), detalle, sinArts, totalPend: Object.values(porT).reduce((n, x) => n + x.pedidos, 0) };
+    // STOCK físico por depósito+SKU (solo los 3 depósitos de facturación).
+    const stk = {}, desc = {};
+    stockDepos.filas.forEach(f => {
+      if (!DEP_TIENDA[f.dep]) return;
+      (stk[f.dep] || (stk[f.dep] = {}))[f.sku] = (stk[f.dep][f.sku] || 0) + (f.act || 0);
+      if (f.item) (desc[f.dep] || (desc[f.dep] = {}))[f.sku] = f.item;
+    });
+    // RECONCILIACIÓN por depósito+SKU (unión de SKUs de ambos lados).
+    const porDep = {}; const detalle = [];
+    const deps = new Set(Object.keys(pend).concat(Object.keys(stk)).filter(d => DEP_TIENDA[d]));
+    deps.forEach(dep => {
+      const tienda = DEP_TIENDA[dep];
+      const row = porDep[dep] = { dep, tienda, uPend: 0, uStock: 0, uFaltante: 0, uSobrante: 0, skuFaltante: 0, skuSobrante: 0 };
+      const skus = new Set(Object.keys(pend[dep] || {}).concat(Object.keys(stk[dep] || {})));
+      skus.forEach(sk => {
+        const pe = pend[dep] && pend[dep][sk];
+        const need = pe ? pe.u : 0;
+        const have = (stk[dep] && stk[dep][sk]) || 0;
+        const falt = Math.max(0, need - have), sob = Math.max(0, have - need);
+        row.uPend += need; row.uStock += have;
+        if (falt > 0) { row.uFaltante += falt; row.skuFaltante++; }
+        if (sob > 0) { row.uSobrante += sob; row.skuSobrante++; }
+        if (falt > 0 || sob > 0) detalle.push({
+          Tienda: tienda, "Depósito fact.": dep, "Artículo (SKU)": sk,
+          Descripción: (pe && pe.desc) || (desc[dep] && desc[dep][sk]) || "",
+          "Unid. pendientes": need, "Stock depósito": have, Faltante: falt, Sobrante: sob,
+          "Pedidos pend.": pe ? pe.pedidos.size : 0
+        });
+      });
+    });
+    detalle.sort((a, b) => (b.Faltante + b.Sobrante) - (a.Faltante + a.Sobrante));
+    return { porDep: Object.values(porDep).sort((a, b) => (b.uFaltante + b.uSobrante) - (a.uFaltante + a.uSobrante)), detalle, sinArts };
   })();
   const exportStock = () => {
-    if (!stockCross || !stockCross.detalle.length) { alert("No hay faltantes para exportar (o todavía no cargaste el stock y el análisis de facturación)."); return; }
+    if (!stockCross || !stockCross.detalle.length) { alert("No hay faltantes ni sobrantes para exportar (o todavía no cargaste el stock y el análisis de facturación)."); return; }
     try {
       const ws = XLSX.utils.json_to_sheet(stockCross.detalle);
       const wb = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(wb, ws, "Faltantes stock fact.");
-      XLSX.writeFile(wb, "stock-facturacion-faltantes-" + new Date().toISOString().slice(0, 10) + ".xlsx");
+      XLSX.utils.book_append_sheet(wb, ws, "Stock fact. (ajustes)");
+      XLSX.writeFile(wb, "stock-facturacion-ajustes-" + new Date().toISOString().slice(0, 10) + ".xlsx");
     } catch (e) { alert("Error al exportar: " + e.message); }
   };
   // Cola de fraude: cruza el reporte cargado con la lista negra compartida y puntúa cada pedido.
@@ -2077,17 +2106,18 @@ function Metas({
           stockCross.sinArts > 0 && h("div", { className: "rounded-xl px-4 py-2 text-[11px]", style: { background: C.amberS, color: C.amber } }, stockCross.sinArts + " pedido(s) pendiente(s) sin artículos en el Monitor cargado (no se pueden verificar). Cargá el Monitor de Encuentra del período y volvé a cruzar la facturación."),
           h("div", { className: "bg-white rounded-2xl border overflow-hidden", style: { borderColor: C.line } },
             h("div", { className: "px-4 py-3 border-b flex items-center justify-between gap-2 flex-wrap", style: { borderColor: C.line } },
-              h("span", { className: "text-sm font-bold", style: { color: C.ink } }, "Faltantes por tienda — pedidos pendientes sin stock en su depósito de facturación"),
-              stockCross.detalle.length > 0 && h("button", { onClick: exportStock, className: "text-xs font-bold px-2.5 py-1 rounded-lg", style: { background: C.soft, color: C.blue } }, "↓ Exportar faltantes (" + stockCross.detalle.length + ")")),
+              h("span", { className: "text-sm font-bold", style: { color: C.ink } }, "Ajustes por depósito — faltantes y sobrantes vs. lo pendiente de facturar"),
+              stockCross.detalle.length > 0 && h("button", { onClick: exportStock, className: "text-xs font-bold px-2.5 py-1 rounded-lg", style: { background: C.soft, color: C.blue } }, "↓ Exportar detalle por SKU (" + stockCross.detalle.length + ")")),
             h("div", { className: "overflow-auto" }, h("table", { className: "w-full", style: { fontSize: 12 } },
-              h("thead", null, h("tr", { style: { background: "#F6F7F9" } }, ["Tienda", "Depósito", "Pedidos pendientes", "Con faltante", "Unid. faltantes"].map((hh, i) => h("th", { key: i, className: "px-3 py-2 font-bold uppercase", style: { color: C.gray, fontSize: 10, textAlign: i < 2 ? "left" : "right", whiteSpace: "nowrap" } }, hh)))),
-              h("tbody", null, stockCross.porTienda.map((t, i) => h("tr", { key: i, style: { borderTop: "1px solid " + C.line } },
+              h("thead", null, h("tr", { style: { background: "#F6F7F9" } }, ["Tienda", "Depósito", "U. pendientes", "Stock", "Faltantes", "Sobrantes"].map((hh, i) => h("th", { key: i, className: "px-3 py-2 font-bold uppercase", style: { color: C.gray, fontSize: 10, textAlign: i < 2 ? "left" : "right", whiteSpace: "nowrap" } }, hh)))),
+              h("tbody", null, stockCross.porDep.map((t, i) => h("tr", { key: i, style: { borderTop: "1px solid " + C.line } },
                 h("td", { className: "px-3 py-1.5 font-semibold" }, t.tienda),
-                h("td", { className: "px-3 py-1.5", style: { color: C.gray } }, t.dep || "?"),
-                h("td", { className: "px-3 py-1.5 tabular-nums", style: { textAlign: "right" } }, t.pedidos),
-                h("td", { className: "px-3 py-1.5 tabular-nums font-black", style: { textAlign: "right", color: t.conFaltante > 0 ? C.red : C.green } }, t.conFaltante),
-                h("td", { className: "px-3 py-1.5 tabular-nums font-bold", style: { textAlign: "right", color: t.uFaltantes > 0 ? C.red : C.gray } }, t.uFaltantes))))))),
-          h("div", { className: "text-[11px]", style: { color: C.gray } }, "“Con faltante” = pedidos pendientes de facturar cuyos artículos NO tienen suficiente StkActual en el depósito de facturación de su tienda → el egreso no se hizo (va a necesitar ajuste). Los artículos PCN (personalizaciones) se excluyen: se hacen a pedido, no están en stock. El detalle pedido-artículo está en “Exportar faltantes”."))),
+                h("td", { className: "px-3 py-1.5", style: { color: C.gray } }, t.dep),
+                h("td", { className: "px-3 py-1.5 tabular-nums", style: { textAlign: "right" } }, t.uPend),
+                h("td", { className: "px-3 py-1.5 tabular-nums", style: { textAlign: "right" } }, t.uStock),
+                h("td", { className: "px-3 py-1.5 tabular-nums font-black", style: { textAlign: "right", color: t.uFaltante > 0 ? C.red : C.green }, title: t.skuFaltante + " SKU con faltante" }, t.uFaltante),
+                h("td", { className: "px-3 py-1.5 tabular-nums font-black", style: { textAlign: "right", color: t.uSobrante > 0 ? C.amber : C.green }, title: t.skuSobrante + " SKU con sobrante" }, t.uSobrante))))))),
+          h("div", { className: "text-[11px]", style: { color: C.gray } }, "Se reconcilia por depósito y SKU: las unidades PENDIENTES de facturar (de cualquier estado pendiente) contra el StkActual del depósito de facturación de esa tienda. ", h("b", { style: { color: C.red } }, "Faltante"), " = unidades pendientes que no están en el depósito (el egreso no se hizo). ", h("b", { style: { color: C.amber } }, "Sobrante"), " = unidades en el depósito que no corresponden a ningún pedido pendiente (ya se facturaron/cancelaron o están en otro estado → hay que sacarlas). Los artículos PCN (personalizaciones) se excluyen. El detalle SKU por SKU está en “Exportar”."))),
     // ── Fraude: red de detección entre tiendas ──
     subAnEff === "fraude" && h("div", { className: "space-y-3" },
       h("div", { className: "bg-white rounded-2xl border p-4 space-y-3", style: { borderColor: C.line } },
