@@ -24,6 +24,7 @@
   //   enBlocklist : bool,  // reusa un atributo (hash de tarjeta / doc / mail / IP) de un fraude YA confirmado
   //   docsPorTarjeta: n,   // documentos distintos que usaron ESTA tarjeta (en lo cargado + histórico)
   //   docsPorMail : n,     // documentos distintos que usaron ESTE mail
+  //   docsPorTel  : n,     // documentos distintos que usaron ESTE teléfono
   //   docsPorIp   : n,     // documentos distintos desde ESTA IP
   //   zonaRiesgo  : bool,  // la localidad de entrega está marcada como zona de riesgo
   //   importe     : n      // importe del pedido
@@ -31,9 +32,11 @@
   function evaluar(ctx) {
     ctx = ctx || {};
     var motivos = [], score = 0;
-    var dt = ctx.docsPorTarjeta || 0, dm = ctx.docsPorMail || 0, di = ctx.docsPorIp || 0, imp = ctx.importe || 0;
+    var dt = ctx.docsPorTarjeta || 0, dm = ctx.docsPorMail || 0, dtel = ctx.docsPorTel || 0, di = ctx.docsPorIp || 0, imp = ctx.importe || 0;
     if (ctx.enBlocklist) { score += 100; motivos.push("Reusa datos de un fraude YA confirmado (lista negra)"); }
     if (dm >= 2) { score += 40; motivos.push("Mismo mail con " + dm + " documentos distintos"); }
+    // Teléfono compartido por varios documentos: preciso (los defraudadores reutilizan contacto) → peso alto.
+    if (dtel >= 2) { score += 25; motivos.push("Mismo teléfono con " + dtel + " documentos distintos"); }
     if (dt >= 3) { score += 20; motivos.push("Misma tarjeta con " + dt + " documentos distintos"); }
     else if (dt >= 2) { score += 8; motivos.push("Misma tarjeta con 2 documentos distintos"); }
     if (di >= 3) { score += 15; motivos.push("Misma IP con " + di + " documentos distintos"); }
