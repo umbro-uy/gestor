@@ -2019,7 +2019,15 @@ function Metas({
     });
   // Resultados del buscador = coincidencias en la cola en vivo (incluye nivel bajo) + las del historial persistido.
   const liveMatches = (qFraude && fraudeColaActiva) ? fraudeColaActiva.filas.filter(matchFraude) : [];
-  const buscarResultados = qFraude ? liveMatches.concat(historialFilas).sort((a, b) => b.score - a.score) : [];
+  // Ordenados por fecha de compra, del más reciente al más viejo (los sin fecha, al final). El formato de
+  // fecha es "YYYY-MM-DD HH:MM:SS", así que ordena bien como texto.
+  const buscarResultados = qFraude
+    ? liveMatches.concat(historialFilas).sort((a, b) => {
+        const fa = a.fecha || "", fb = b.fecha || "";
+        if (!fa && !fb) return 0; if (!fa) return 1; if (!fb) return -1;   // sin fecha → al final
+        return fb.localeCompare(fa);                                        // más reciente primero
+      })
+    : [];
   // Persistir el resumen (números) y la COLA de revisión del último análisis, para compartirlos sin recargar.
   useEffect(() => {
     if (!rowsFraude.length || !fraudeResult) return;
