@@ -795,7 +795,11 @@ function Metas({
   const [motivosFraude, setMotivosFraude] = useState(null);    // { archivos:[], mapa:{ "tienda|pedido": motivo } } opcional p/ sembrar
   const [marcando, setMarcando] = useState(false);
   const [filtroFraude, setFiltroFraude] = useState(null);      // nivel seleccionado en los chips (null = la cola de riesgo)
-  const [buscarFraude, setBuscarFraude] = useState("");        // buscador de pedidos dentro de la cola (nº, nombre, doc, mail, tel)
+  const [buscarFraude, setBuscarFraude] = useState("");        // buscador de pedidos (nº, nombre, doc, mail, tel)
+  const [historialHits, setHistorialHits] = useState([]);      // resultados de la búsqueda en el historial persistido
+  const [buscandoHist, setBuscandoHist] = useState(false);     // hay una búsqueda en curso contra el historial
+  const [histCount, setHistCount] = useState(null);            // nº de pedidos en el historial (null = sin chequear)
+  const [histOK, setHistOK] = useState(null);                  // null=sin chequear, true=tabla ok, false=falta crear fraude_historial
   const [fraudeResumen, setFraudeResumen] = useState(null);    // resumen persistido del último análisis (solo números)
   const [fraudeColaGuardada, setFraudeColaGuardada] = useState(null); // cola de revisión persistida (compartida, se ve sin recargar)
   const [detalleFraude, setDetalleFraude] = useState(null);    // pedido abierto en el modal de detalle
@@ -860,6 +864,15 @@ function Metas({
       setListaBlanca(data || []);
     } catch (_) { /* opcional */ }
   }, []);
+  // Historial de pedidos (persistido/compartido): sólo el CONTEO, para mostrar cuántos pedidos hay cargados y
+  // saber si la tabla existe. La búsqueda real se hace bajo demanda (buscarHistorial).
+  const cargarHistCount = useCallback(async () => {
+    try {
+      const { count, error } = await supa.from("fraude_historial").select("tienda", { count: "exact", head: true });
+      if (error) { setHistOK(false); return; }
+      setHistOK(true); setHistCount(count || 0);
+    } catch (_) { setHistOK(false); }
+  }, []);
   // Zonas de entrega riesgosas (geolocalización). Compartidas.
   const cargarZonas = useCallback(async () => {
     try {
@@ -875,7 +888,13 @@ function Metas({
     cargarRed();
     cargarListaBlanca();
     cargarZonas();
-  }, [cargarMetas, cargarSnapshot, cargarBlocklist, cargarRed, cargarListaBlanca, cargarZonas]);
+    cargarHistCount();
+  }, [cargarMetas, cargarSnapshot, cargarBlocklist, cargarRed, cargarListaBlanca, cargarZonas, cargarHistCount]);
+  // Buscar en el historial con un pequeño retardo (debounce) mientras se escribe en el buscador de Fraude.
+  useEffect(() => {
+    const t = setTimeout(() => { buscarHistorial(buscarFraude); }, 350);
+    return () => clearTimeout(t);
+  }, [buscarFraude]);
   // metasDeMes: real viene del BAS cargado (neto = FABs-NCDs) cuando está disponible,
   // y cae a Supabase si no hay BAS en esta sesión.
   const metasDeMes = TIENDAS_META.map(t => {
@@ -1189,7 +1208,9 @@ function Metas({
         setArchivosFraude(prev => { const n = { ...prev }; resultados.forEach(r => n[r.tienda] = r.archivo); return n; });
         const vacios = resultados.filter(r => !r.rows.length).map(r => r.tienda);
         if (vacios.length) alert("Sin ventas en: " + vacios.join(", ") + ".");
-        await ingestarRed([].concat(...resultados.map(r => r.rows))); // sumar vínculos al histórico y refrescar conteos
+        const todas = [].concat(...resultados.map(r => r.rows));
+        await ingestarRed(todas);        // sumar vínculos (hasheados) al histórico y refrescar conteos
+        await ingestarHistorial(todas);  // guardar una fila por pedido en el historial compartido (para buscar después)
       }
     } catch (err) { alert("Error leyendo reportes: " + err.message); }
     setCargandoFraude(false);
@@ -1213,6 +1234,44 @@ function Metas({
       }
       await cargarRed();
     } catch (err) { /* la red es un plus; si falla, el análisis sigue con los conteos del lote */ }
+  };
+  // Guarda (upsert) en el HISTORIAL compartido una fila por pedido (tienda+pedido). Así, cargando los reportes
+  // una vez, después se puede BUSCAR cualquier pedido y marcarlo como fraude aunque no esté el reporte cargado.
+  // NO guarda el PAN completo (sólo hash + BIN + últimos 4), igual que la lista negra.
+  const ingestarHistorial = async rows => {
+    try {
+      const porPed = {};
+      rows.forEach(r => {
+        const k = r.tienda + "|" + r.pedido;
+        const e = porPed[k];
+        if (!e) porPed[k] = { tienda: r.tienda, pedido: String(r.pedido), fecha: r.fecha || "", nombre: r.nombre || "", doc: r.doc || "", mail: r.mail || "", tel: r.tel || "", ip: r.ip || "", bin: r.bin || "", last4: r.last4 || "", card_hash: r.cardHash || "", importe: r.importe || 0, localidad: r.localidad || "", departamento: r.departamento || "" };
+        else { if ((r.importe || 0) > (e.importe || 0)) e.importe = r.importe || 0; if (!e.card_hash && r.cardHash) { e.card_hash = r.cardHash; e.bin = r.bin || ""; e.last4 = r.last4 || ""; } }
+      });
+      const regs = Object.values(porPed);
+      for (let i = 0; i < regs.length; i += 500) {
+        const { error } = await supa.from("fraude_historial").upsert(regs.slice(i, i + 500), { onConflict: "tienda,pedido" });
+        if (error) throw error;
+      }
+      await cargarHistCount();
+    } catch (err) { /* el historial es un plus; si falla (tabla sin crear), el análisis en vivo sigue igual */ }
+  };
+  // Busca pedidos en el HISTORIAL persistido por nº de pedido / nombre / documento / mail / teléfono. Corre
+  // contra Supabase (no sólo el lote cargado) para poder encontrar cualquier pedido histórico y marcarlo.
+  const buscarHistorial = async texto => {
+    const t = String(texto || "").trim();
+    if (t.length < 3) { setHistorialHits([]); setBuscandoHist(false); return; }
+    setBuscandoHist(true);
+    try {
+      const safe = t.replace(/[,()*%]/g, " ").trim();                 // evita romper la sintaxis de .or()
+      const norm = FraudeReglas.normAttr(t).replace(/[,()*%]/g, "");    // doc/mail/tel normalizados
+      const ors = [];
+      if (safe) { ors.push("pedido.ilike.%" + safe + "%", "nombre.ilike.%" + safe + "%"); }
+      if (norm) { ors.push("doc.ilike.%" + norm + "%", "mail.ilike.%" + norm + "%", "tel.ilike.%" + norm + "%"); }
+      const { data, error } = await supa.from("fraude_historial").select("*").or(ors.join(",")).limit(100);
+      if (error) throw error;
+      setHistorialHits(data || []);
+    } catch (err) { setHistorialHits([]); }
+    setBuscandoHist(false);
   };
   // Lee UNO O VARIOS reportes de MOTIVOS de cancelación para sembrar la lista negra. El mapa se arma por
   // "tienda|pedido" (los números de pedido se repiten entre tiendas). Sólo se usan los motivos de fraude.
@@ -1306,6 +1365,7 @@ function Metas({
       (b.tipo === "card" && b.valor === row.cardHash) ||
       (b.tipo === "doc" && b.valor === row.doc) ||
       (b.tipo === "mail" && b.valor === row.mail) ||
+      (b.tipo === "tel" && b.valor === row.tel) ||
       (b.tipo === "ip" && b.valor === row.ip));
     if (!quitar.length) { alert("No hay entradas de lista negra que coincidan con este pedido."); return; }
     const detalle = quitar.map(b => b.tipo + (b.tipo === "card" ? " " + (b.bin || "") + "…" + (b.last4 || "") : " " + b.valor)).join(", ");
@@ -1936,9 +1996,30 @@ function Metas({
     return [f.pedido, f.nombre, f.doc, f.mail, f.tel].some(v => FraudeReglas.normAttr(v).includes(qFraude));
   };
   const fraudeVisibles = !fraudeColaActiva ? []
-    : qFraude ? fraudeColaActiva.filas.filter(matchFraude)
     : filtroFraude ? fraudeColaActiva.filas.filter(f => f.nivel === filtroFraude)
     : fraudeColaActiva.filas.filter(f => f.nivel !== "bajo");
+  // Resultados del HISTORIAL persistido (búsqueda server-side). Se arman como filas para poder abrir el detalle
+  // y usar los mismos botones (marcar fraude / seguro / desbloquear). Se excluyen los que ya aparecen en la
+  // cola en vivo para no duplicar. Marcamos si ya están en lista negra / blanca.
+  const enBlocklistRow = r0 => blocklist.some(b =>
+    (b.tipo === "card" && b.valor === r0.cardHash) || (b.tipo === "doc" && b.valor === r0.doc) ||
+    (b.tipo === "mail" && b.valor === r0.mail) || (b.tipo === "tel" && b.valor === r0.tel) || (b.tipo === "ip" && b.valor === r0.ip));
+  const enBlancaRow = r0 => listaBlanca.some(b =>
+    (b.tipo === "doc" && b.valor === r0.doc) || (b.tipo === "mail" && b.valor === r0.mail) || (b.tipo === "card" && b.valor === r0.cardHash));
+  const vivoKeys = new Set((fraudeColaActiva ? fraudeColaActiva.filas : []).map(f => f.tienda + "|" + f.pedido));
+  const historialFilas = historialHits
+    .filter(r => !vivoKeys.has(r.tienda + "|" + String(r.pedido)))
+    .map(r => {
+      const f = { pedido: String(r.pedido), tienda: r.tienda, nombre: r.nombre || "", doc: r.doc || "", mail: r.mail || "", tel: r.tel || "", ip: r.ip || "", bin: r.bin || "", last4: r.last4 || "", cardHash: r.card_hash || "", importe: Number(r.importe) || 0, lineas: 1, importes: [Number(r.importe) || 0], fecha: r.fecha || "", localidad: r.localidad || "", departamento: r.departamento || "" };
+      const enBl = enBlocklistRow(f), enBlanca = enBlancaRow(f);
+      f.blanca = enBlanca; f.bloqueado = enBl; f.histOnly = true;
+      f.nivel = enBl ? "bloquear" : "bajo"; f.score = enBl ? 100 : 0;
+      f.motivos = enBl ? ["Reusa datos de un fraude YA confirmado (lista negra)"] : enBlanca ? ["Cliente en lista blanca (conocido)"] : ["Pedido del historial (sin señales automáticas)"];
+      return f;
+    });
+  // Resultados del buscador = coincidencias en la cola en vivo (incluye nivel bajo) + las del historial persistido.
+  const liveMatches = (qFraude && fraudeColaActiva) ? fraudeColaActiva.filas.filter(matchFraude) : [];
+  const buscarResultados = qFraude ? liveMatches.concat(historialFilas).sort((a, b) => b.score - a.score) : [];
   // Persistir el resumen (números) y la COLA de revisión del último análisis, para compartirlos sin recargar.
   useEffect(() => {
     if (!rowsFraude.length || !fraudeResult) return;
@@ -2161,6 +2242,41 @@ function Metas({
         kpi("Pedidos analizados", (fraudeStats ? fraudeStats.total : 0).toLocaleString("es-UY"), fraudeStats ? fraudeStats.fuente : "sin análisis aún", C.ink),
         kpi("Alertas (lista negra)", String(fraudeStats ? fraudeStats.bloquear : 0), "reusan datos de fraude", (fraudeStats && fraudeStats.bloquear > 0) ? C.red : C.green),
         kpi("Para revisar", String(fraudeStats ? (fraudeStats.alto + fraudeStats.medio) : 0), "alto + medio", C.amber)),
+      // Buscador en el HISTORIAL completo (persistido): encontrar cualquier pedido y marcarlo, sin recargar.
+      h("div", { className: "bg-white rounded-2xl border p-4 space-y-3", style: { borderColor: C.line } },
+        h("div", { className: "flex items-center justify-between gap-3 flex-wrap" },
+          h("div", { style: { flex: "1 1 240px" } },
+            h("div", { className: "text-sm font-bold", style: { color: C.ink } }, "Buscar pedido en el historial"),
+            h("div", { className: "text-[11px] mt-0.5", style: { color: C.gray } }, histOK === false
+              ? "⚠ Falta crear la tabla fraude_historial en Supabase (sql/fraude_historial.sql). Sin eso el historial no se guarda ni se puede buscar."
+              : (histCount != null ? histCount.toLocaleString("es-UY") + " pedidos en el historial. " : "") + "Cargá los reportes de ventas una vez (desde 2020); después buscás cualquier pedido y lo marcás, aunque no esté cargado en esta sesión.")),
+          h("input", { type: "search", value: buscarFraude, onChange: e => setBuscarFraude(e.target.value), placeholder: "Nº de pedido, cliente, documento, mail o teléfono…", className: "text-sm px-3 py-2 rounded-xl border", style: { borderColor: C.line, width: 340, maxWidth: "72vw" } })),
+        qFraude && (buscandoHist && !buscarResultados.length
+          ? h("div", { className: "text-[11px]", style: { color: C.gray } }, "Buscando…")
+          : buscarResultados.length === 0
+            ? h("div", { className: "text-sm", style: { color: C.gray } }, "No encontré pedidos que coincidan con “" + buscarFraude.trim() + "”. Probá con el nº exacto, el documento, el mail o el teléfono." + (histCount === 0 ? " (El historial está vacío: cargá primero los reportes de ventas.)" : ""))
+            : h("div", { className: "overflow-auto", style: { maxHeight: 440 } }, h("table", { className: "w-full", style: { fontSize: 12 } },
+                h("thead", null, h("tr", null, ["Estado", "Pedido", "Fecha", "Tienda", "Cliente", "Importe", ""].map((hh, i) => h("th", { key: i, className: "px-3 py-2 font-bold uppercase", style: { color: C.gray, fontSize: 10, textAlign: hh === "Importe" ? "right" : "left", whiteSpace: "nowrap", position: "sticky", top: 0, background: "#F6F7F9" } }, hh)))),
+                h("tbody", null, buscarResultados.slice(0, 200).map((f, i) =>
+                  h("tr", { key: f.tienda + "|" + f.pedido + "_" + i, onClick: () => setDetalleFraude(f), className: "cursor-pointer", style: { borderTop: "1px solid " + C.line } },
+                    h("td", { className: "px-3 py-1.5" }, f.bloqueado
+                      ? h("span", { className: "text-[10px] font-black uppercase px-2 py-0.5 rounded-full", style: { background: C.redS, color: C.red } }, "lista negra")
+                      : f.blanca
+                        ? h("span", { className: "text-[10px] font-black uppercase px-2 py-0.5 rounded-full", style: { background: C.greenS, color: C.green } }, "seguro")
+                        : f.histOnly
+                          ? h("span", { className: "text-[10px] font-bold uppercase px-2 py-0.5 rounded-full", style: { background: C.soft, color: C.gray } }, "historial")
+                          : h("span", { className: "text-[10px] font-black uppercase px-2 py-0.5 rounded-full", style: { background: f.nivel === "medio" ? C.amberS : f.nivel === "bajo" ? C.greenS : C.redS, color: f.nivel === "medio" ? C.amber : f.nivel === "bajo" ? C.green : C.red } }, f.nivel)),
+                    h("td", { className: "px-3 py-1.5 font-semibold" }, f.pedido),
+                    h("td", { className: "px-3 py-1.5 whitespace-nowrap", style: { color: C.gray } }, (f.fecha || "").slice(0, 10) || "—"),
+                    h("td", { className: "px-3 py-1.5", style: { color: C.gray } }, f.tienda),
+                    h("td", { className: "px-3 py-1.5", style: { maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, f.nombre || "—"),
+                    h("td", { className: "px-3 py-1.5 tabular-nums", style: { textAlign: "right" } }, f.importe ? "$" + f.importe.toLocaleString("es-UY") : "—"),
+                    h("td", { className: "px-3 py-1.5 whitespace-nowrap" },
+                      (f.bloqueado
+                        ? h("button", { onClick: e => { e.stopPropagation(); desbloquearPedido(f); }, disabled: marcando, className: "text-[11px] font-bold px-2 py-1 rounded-lg disabled:opacity-40", style: { background: C.soft, color: C.gray } }, "Desbloquear")
+                        : h("button", { onClick: e => { e.stopPropagation(); marcarFraude(f); }, disabled: marcando, className: "text-[11px] font-bold px-2 py-1 rounded-lg text-white disabled:opacity-40", style: { background: C.red } }, "Marcar fraude")),
+                      !f.blanca && h("button", { onClick: e => { e.stopPropagation(); marcarBlanca(f); }, disabled: marcando, className: "text-[11px] font-bold px-2 py-1 rounded-lg disabled:opacity-40 ml-1", style: { background: C.greenS, color: C.green } }, "✓ Seguro"),
+                      h("span", { className: "text-[10px] ml-2", style: { color: C.blue } }, "ver ›"))))))))),
       !fraudeColaActiva ? h("div", { className: "bg-white rounded-2xl border p-6 text-sm text-center", style: { borderColor: C.line, color: C.gray } }, "Subí un reporte de ventas para empezar. (Opcional: subí también el reporte de motivos de cancelación y tocá “Sembrar” para cargar de golpe los fraudes ya confirmados.)")
       : h("div", { className: "space-y-3" },
           !fraudeColaActiva.vivo && h("div", { className: "rounded-xl px-3 py-2 text-[11px]", style: { background: C.soft, color: C.gray } }, "Mostrando la última cola compartida" + (fraudeResumen ? " (" + (fraudeResumen.tienda || "") + " · " + (() => { try { return new Date(fraudeResumen.fecha).toLocaleString("es-UY"); } catch (e) { return ""; } })() + ")" : "") + ". Cargá un reporte para analizar en vivo."),
@@ -2178,13 +2294,12 @@ function Metas({
             h("b", { style: { color: C.green } }, "Lista blanca"), " = cliente conocido: abrí un pedido y tocá “Lista blanca (conocido)” para que no se marque como sospechoso en próximas compras. Tocá un chip para filtrar."),
           h("div", { className: "bg-white rounded-2xl border overflow-hidden", style: { borderColor: C.line } },
             h("div", { className: "px-4 py-3 border-b flex items-center justify-between gap-2 flex-wrap", style: { borderColor: C.line } },
-              h("span", { className: "text-sm font-bold", style: { color: C.ink } }, (qFraude ? "Buscando “" + buscarFraude.trim() + "”" : filtroFraude ? "Filtrando: " + ({ bloquear: "Lista negra", alto: "Alto", medio: "Medio", bajo: "Bajo / OK" }[filtroFraude]) : "Cola priorizada — pedidos a revisar") + " (" + fraudeVisibles.length + ")"),
+              h("span", { className: "text-sm font-bold", style: { color: C.ink } }, (filtroFraude ? "Filtrando: " + ({ bloquear: "Lista negra", alto: "Alto", medio: "Medio", bajo: "Bajo / OK" }[filtroFraude]) : "Cola priorizada — pedidos a revisar") + " (" + fraudeVisibles.length + ")"),
               h("div", { className: "flex items-center gap-2" },
-                h("input", { type: "search", value: buscarFraude, onChange: e => setBuscarFraude(e.target.value), placeholder: "Buscar pedido, cliente, doc, mail, tel…", className: "text-xs px-2.5 py-1 rounded-lg border", style: { borderColor: C.line, width: 220, maxWidth: "48vw" } }),
-                filtroFraude && !qFraude && h("button", { onClick: () => setFiltroFraude(null), className: "text-xs font-bold px-2.5 py-1 rounded-lg", style: { background: C.soft, color: C.gray } }, "Ver todos"),
+                filtroFraude && h("button", { onClick: () => setFiltroFraude(null), className: "text-xs font-bold px-2.5 py-1 rounded-lg", style: { background: C.soft, color: C.gray } }, "Ver todos"),
                 h("button", { onClick: exportFraude, className: "text-xs font-bold px-2.5 py-1 rounded-lg", style: { background: C.soft, color: C.blue } }, "↓ Exportar"))),
             fraudeVisibles.length === 0
-              ? h("div", { className: "px-4 py-6 text-sm text-center", style: { color: C.gray } }, qFraude ? (fraudeColaActiva.vivo ? "No encontré ese pedido en el reporte cargado." : "No encontré ese pedido en la cola compartida. Cargá el reporte de ventas para buscar en todo (incluye los de nivel bajo).") : filtroFraude ? "No hay pedidos en este nivel." : "Ningún pedido con señales de riesgo en este reporte. 👍")
+              ? h("div", { className: "px-4 py-6 text-sm text-center", style: { color: C.gray } }, filtroFraude ? "No hay pedidos en este nivel." : "Ningún pedido con señales de riesgo en este reporte. 👍")
               : h("div", { className: "overflow-auto", style: { maxHeight: 520 } }, h("table", { className: "w-full", style: { fontSize: 12 } },
                 h("thead", null, h("tr", null, ["Nivel", "Pedido", "Fecha", "Tienda", "Cliente", "Zona", "Importe", "Señales", ""].map((hh, i) => h("th", { key: i, className: "px-3 py-2 font-bold uppercase", style: { color: C.gray, fontSize: 10, textAlign: hh === "Importe" ? "right" : "left", whiteSpace: "nowrap", position: "sticky", top: 0, background: "#F6F7F9" } }, hh)))),
                 h("tbody", null, fraudeVisibles.slice(0, 300).map((f, i) =>
