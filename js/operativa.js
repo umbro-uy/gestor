@@ -329,8 +329,16 @@ function Operativa({ yo, activo, syncTick }) {
     // parte aunque el cliente no lo haya retirado). La fecha del cumplimiento es la de entrega si existe;
     // si no, la de "Listo para retirar". Es la MISMA definición que usa el calendario de cumplimiento.
     const tieneFechaEnt = row.fechaEntrega && String(row.fechaEntrega).trim() && row.fechaEntrega !== "-";
+    const tieneFechaListo = row.fechaListo && String(row.fechaListo).trim() && row.fechaListo !== "-";
     const cumplido = entregado || listoRetiro;
-    const fechaCumplido = tieneFechaEnt ? row.fechaEntrega : (listoRetiro && row.fechaListo && String(row.fechaListo).trim() && row.fechaListo !== "-" ? row.fechaListo : "");
+    // RETIRO EN TIENDA (Click & Collect / Pickup): nuestro hito es dejarlo "LISTO PARA RETIRAR". NO se mide por
+    // la fecha en que el cliente fue a buscarlo: si tarda semanas en pasar, ese desvío no es nuestro. Por eso,
+    // para retiro, el cumplimiento se cuenta hasta la fecha de "listo para retirar" (y si no la trae, no se
+    // puede datar → queda sin evaluar, no se penaliza). Para ENVÍO A DOMICILIO sí vale la fecha de entrega.
+    const esRetiro = clickCollect || pickup;
+    const fechaCumplido = esRetiro
+      ? (tieneFechaListo ? row.fechaListo : "")
+      : (tieneFechaEnt ? row.fechaEntrega : (listoRetiro && tieneFechaListo ? row.fechaListo : ""));
     return { ...row, dias, diasEstado, diasDesp, diasTransito, fenEntregado, wmsEntregado, entregado, cumplido, fechaCumplido, cancelado, cancelDiscrep, despachadoWMS, atrasado, critico, inconsistente, posibleNoDespacho, estancado, intlDemorado, enTransito, transitoLargo, listoRetiro, clickCollect, pickup, sinStock, ccDepo9, leadtime, leadtimeEntrega, envioIntl: !!row.envioIntl, courier: row.courier || "", preventa: !!row.preventa, region: regionDe(row.departamento, row.envioIntl) };
   };
   // Carga el seguimiento ya analizado (con comentarios) al entrar a la pestaña, para que el análisis quede fijo.
@@ -372,7 +380,7 @@ function Operativa({ yo, activo, syncTick }) {
         pedido: d.pedido, tienda: d.tienda || "-", fecha: d.fecha || "",
         estadoFen: d.estado_fen || "-", estadoWMS: d.estado_wms || "-", estadoEco: d.estado_eco || "-",
         deposito: d.deposito || "-", fechaDespacho: d.fecha_despacho || "-", importe: d.importe || "-",
-        fechaEstado: d.fecha_estado || "", formaEntrega: d.forma_entrega || "", fechaEntrega: d.fecha_entrega || "", sinWMS: !!d.sin_wms,
+        fechaEstado: d.fecha_estado || "", formaEntrega: d.forma_entrega || "", fechaEntrega: d.fecha_entrega || "", fechaListo: d.fecha_listo || "", sinWMS: !!d.sin_wms,
         historial: histDe(d), accionado: !!d.accionado
       })));
     } catch (_) { setPersistOK(false); }
@@ -752,7 +760,7 @@ function Operativa({ yo, activo, syncTick }) {
           pedido: r.pedido, tienda: r.tienda, fecha: r.fecha,
           estado_fen: r.estadoFen, estado_wms: r.estadoWMS, estado_eco: r.estadoEco,
           deposito: (r.depo0Any ? "0" : r.deposito), fecha_despacho: r.fechaDespacho, importe: String(r.importe),
-          forma_entrega: r.formaEntrega || "", fecha_entrega: r.fechaEntrega || "",
+          forma_entrega: r.formaEntrega || "", fecha_entrega: r.fechaEntrega || "", fecha_listo: r.fechaListo || "",
           fecha_estado: r.fechaEstado || "",
           dias: r.dias, click_collect: !!r.clickCollect, sin_wms: !!r.sinWMS
         }));
