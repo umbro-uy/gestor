@@ -57,6 +57,7 @@ function Operativa({ yo, activo, syncTick }) {
   const [persistOK, setPersistOK] = useState(null); // null=sin chequear, true=tabla ok, false=falta crear tabla
   const [ultimaSync, setUltimaSync] = useState(null); // hora de la última lectura del seguimiento compartido
   const [snapError, setSnapError] = useState(null); // mensaje si falló guardar el resumen compartido (operativa_snapshot)
+  const [cruceOK, setCruceOK] = useState(null); // aviso "cruce listo" tras cruzar (se autodescarta a los segundos)
   const [operSnap, setOperSnap] = useState(null); // resumen COMPARTIDO (operativa_snapshot): números que ven todos, = Resumen
   const cruceEnSesion = useRef(false); // true si crucé archivos en esta sesión (no interrumpir mi cruce con el realtime)
   const cruceTs = useRef(0); // cuándo crucé (ms): si lo COMPARTIDO es más nuevo que mi cruce, gana lo compartido
@@ -745,6 +746,9 @@ function Operativa({ yo, activo, syncTick }) {
     cruceEnSesion.current = true;
     cruceTs.current = Date.now();
     setUltimaSync(new Date());
+    // Aviso de que el cruce terminó bien (antes no había ninguna confirmación al tocar "Cruzar").
+    setCruceOK({ n: finalRows.length, atrasados: finalRows.filter(r => r.atrasado && !esCancEf(r)).length, criticos: finalRows.filter(r => r.critico && !esCancEf(r)).length, ts: Date.now() });
+    setTimeout(() => setCruceOK(c => (c && Date.now() - c.ts >= 11000) ? null : c), 12000);
     setVistaTab("atrasados");
     setPage(0);
     // Persistir los accionables + TODOS los retenidos (comentados/accionados que no vinieron en el cruce),
@@ -1832,6 +1836,7 @@ function Operativa({ yo, activo, syncTick }) {
     /*#__PURE__*/React.createElement("span", { style: { color: C.ink, fontWeight: 600 } }, (entregaDiag.cols || []).join(" · ")),
     ". Decime cuál tiene la fecha en que se entregó el pedido al cliente y la conecto."),
   persistOK === false && /*#__PURE__*/React.createElement("div", { className: "rounded-xl px-4 py-3 text-xs font-medium", style: { background: C.amberS, color: C.amber } }, "⚠ La persistencia no está activa: falta crear la tabla en Supabase, así que los comentarios y el seguimiento NO se guardan entre sesiones. Ejecutá el SQL de sql/operativa_seguimiento.sql en Supabase → SQL Editor."),
+  cruceOK && /*#__PURE__*/React.createElement("div", { className: "rounded-xl px-4 py-3 text-sm font-bold flex items-center gap-2", style: { background: C.greenS, color: C.green } }, "✓ Cruce listo: " + cruceOK.n.toLocaleString("es-UY") + " pedidos procesados" + (cruceOK.atrasados ? " · " + cruceOK.atrasados + " atrasados" : "") + (cruceOK.criticos ? " · " + cruceOK.criticos + " críticos" : "") + ". Resultados y accionables actualizados abajo."),
   snapError && /*#__PURE__*/React.createElement("div", { className: "rounded-xl px-4 py-3 text-xs font-medium", style: { background: C.redS, color: C.red } }, "⚠ No se pudo guardar el resumen compartido de Operativa (por eso el Resumen no coincide). Detalle: " + snapError + ". Suele ser que falta correr sql/operativa_snapshot.sql, o que la tabla quedó con columnas distintas."),
   ccDepo9Arr.length > 0 && /*#__PURE__*/React.createElement("div", { className: "rounded-xl px-4 py-3 text-xs font-medium", style: { background: "#FEE2E2", color: "#B91C1C" } }, "⚠ " + ccDepo9Arr.length + " pedido(s) Click & Collect asignados a Depo 9 — según el criterio del WMS no deberían; revisar la derivación de depósito."),
   subOper === "resumen" && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", { className: "text-[11px] font-bold uppercase tracking-widest pt-1", style: { color: C.blue } }, "Listado de pedidos" + (porTiendaVista ? " · " + tiendaVista : "")), /*#__PURE__*/React.createElement("div", { className: "bg-white rounded-2xl border p-3 flex flex-wrap gap-2 items-end", style: { borderColor: C.line } },
