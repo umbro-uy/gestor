@@ -13,6 +13,7 @@ create table if not exists public.operativa_snapshot (
   no_despacho       int,
   estancados        int,
   intl_demorados    int,                   -- internacionales trancados +5 días hábiles sin cambio de estado
+  entregados_revertidos int,               -- ya estuvieron "Pedido entregado" y luego les cambiaron el estado (bug WMS)
   depo0             int,
   sin_wms           int,
   entregados        int,
@@ -27,6 +28,7 @@ create table if not exists public.operativa_snapshot (
 -- Si la tabla ya existía de antes, agregá las columnas nuevas:
 alter table public.operativa_snapshot add column if not exists calendario jsonb;
 alter table public.operativa_snapshot add column if not exists intl_demorados int;
+alter table public.operativa_snapshot add column if not exists entregados_revertidos int;
 
 alter table public.operativa_snapshot enable row level security;
 
