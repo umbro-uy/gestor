@@ -265,7 +265,10 @@ function Operativa({ yo, activo, syncTick }) {
     // lo fuerzan, Fenicio lo re-notifica al cliente como "en tránsito". Pero la fecha de "Pedido entregado"
     // queda estampada. Así que si tiene esa fecha (o en su historial figuró "entregado" alguna vez), lo tratamos
     // como ENTREGADO igual → no se cuenta como "En tránsito" ni como atraso.
-    const fueEntregado = (row.fechaEntrega && String(row.fechaEntrega).trim() && row.fechaEntrega !== "-")
+    // OJO: Fenicio pone "0000-00-00 00:00:00" en las fechas de hitos que el pedido TODAVÍA no alcanzó. Esa NO es
+    // una fecha real (parseFecha la convierte en un año ~1899), así que hay que exigir una fecha de verdad.
+    const fechaReal = s => { const d = parseFecha(s); return !!(d && d.getFullYear() >= 2015); };
+    const fueEntregado = fechaReal(row.fechaEntrega)
       || (Array.isArray(row.historial) && row.historial.some(h => /entregad/i.test(String(h && h.t || ""))));
     const estadoFenEntregado = String(estadoFen).toLowerCase().includes("entregado");
     const fenEntregado = estadoFenEntregado || fueEntregado;
@@ -340,8 +343,8 @@ function Operativa({ yo, activo, syncTick }) {
     // CUMPLIDO (para la promesa de entrega) = entregado O listo para retirar (en C&C ya hicimos nuestra
     // parte aunque el cliente no lo haya retirado). La fecha del cumplimiento es la de entrega si existe;
     // si no, la de "Listo para retirar". Es la MISMA definición que usa el calendario de cumplimiento.
-    const tieneFechaEnt = row.fechaEntrega && String(row.fechaEntrega).trim() && row.fechaEntrega !== "-";
-    const tieneFechaListo = row.fechaListo && String(row.fechaListo).trim() && row.fechaListo !== "-";
+    const tieneFechaEnt = fechaReal(row.fechaEntrega);
+    const tieneFechaListo = fechaReal(row.fechaListo);
     const cumplido = entregado || listoRetiro;
     // RETIRO EN TIENDA (Click & Collect / Pickup): nuestro hito es dejarlo "LISTO PARA RETIRAR". NO se mide por
     // la fecha en que el cliente fue a buscarlo: si tarda semanas en pasar, ese desvío no es nuestro. Por eso,
