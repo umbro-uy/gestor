@@ -261,7 +261,13 @@ function Operativa({ yo, activo, syncTick }) {
     // Días hábiles en el ESTADO ACTUAL del WMS = desde el último cambio de estado (último movimiento).
     const diasEstado = row.fechaEstado && row.fechaEstado !== "-" ? diasHab(row.fechaEstado) : null;
     const diasDesp = row.fechaDespacho && row.fechaDespacho !== "-" ? diasHab(row.fechaDespacho) : null;
-    const fenEntregado = String(estadoFen).toLowerCase().includes("entregado");
+    // Un pedido puede figurar HOY "en tránsito" por un bug del WMS: si quedó "Pedido entregado" sin facturar y
+    // lo fuerzan, Fenicio lo re-notifica al cliente como "en tránsito". Pero la fecha de "Pedido entregado"
+    // queda estampada. Así que si tiene esa fecha (o en su historial figuró "entregado" alguna vez), lo tratamos
+    // como ENTREGADO igual → no se cuenta como "En tránsito" ni como atraso.
+    const fueEntregado = (row.fechaEntrega && String(row.fechaEntrega).trim() && row.fechaEntrega !== "-")
+      || (Array.isArray(row.historial) && row.historial.some(h => /entregad/i.test(String(h && h.t || ""))));
+    const fenEntregado = String(estadoFen).toLowerCase().includes("entregado") || fueEntregado;
     const wmsEntregado = String(estadoWMS).toLowerCase().includes("entregado");
     const entregado = fenEntregado || wmsEntregado;
     const canceladoWMS = /cancel|anul/i.test(estadoWMS);
@@ -282,7 +288,7 @@ function Operativa({ yo, activo, syncTick }) {
     // EN TRÁNSITO: ya lo despachamos y va camino al cliente (Fenicio "Pedido en tránsito"). NO es atraso
     // — nuestra parte (el despacho) ya se cumplió, ahora depende de la logística de entrega. Se sigue en
     // su propio filtro. "diasTransito" ≈ días hábiles desde el despacho (el tránsito arranca al despachar).
-    const enTransito = /tr[aá]nsito|camino/i.test(estadoFen) || /tr[aá]nsito|camino/i.test(estadoWMS);
+    const enTransito = (/tr[aá]nsito|camino/i.test(estadoFen) || /tr[aá]nsito|camino/i.test(estadoWMS)) && !fenEntregado;
     const diasTransito = diasDesp != null ? diasDesp : dias;
     const transitoLargo = enTransito && diasTransito != null && diasTransito > 2;
     // ATRASO (definición de operaciones): más de N días hábiles en el mismo estado de Encuentra, que
