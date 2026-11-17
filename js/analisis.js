@@ -804,6 +804,7 @@ function Metas({
   const [fraudeColaGuardada, setFraudeColaGuardada] = useState(null); // cola de revisión persistida (compartida, se ve sin recargar)
   const [detalleFraude, setDetalleFraude] = useState(null);    // pedido abierto en el modal de detalle
   const [detalleBloque, setDetalleBloque] = useState(null);    // fraude confirmado (agrupado) abierto en su modal
+  const [alertaFraude, setAlertaFraude] = useState(null);      // pop-up de alerta: fraudes confirmados (lista negra) detectados al analizar
   const [cargandoBAS, setCargandoBAS] = useState(false);
   const [cargandoWMS, setCargandoWMS] = useState(false);
   const [resumenBAS, setResumenBAS] = useState(null);
@@ -2035,6 +2036,10 @@ function Metas({
     const cola = { fecha: resumen.fecha, tiendas: resumen.tienda, filas: fraudeResult.filas.filter(f => f.nivel !== "bajo").slice(0, 2000) };
     setFraudeResumen(resumen); setFraudeColaGuardada(cola);
     guardarSnapshot({ fraude_resumen: resumen, fraude_cola: cola });
+    // ALERTA: si el análisis detectó fraudes CONFIRMADos (lista negra), avisar con un pop-up — requieren acción
+    // inmediata (cancelar el pedido antes de despachar para evitar la pérdida).
+    const confirmados = fraudeResult.filas.filter(f => f.nivel === "bloquear");
+    if (confirmados.length) setAlertaFraude({ filas: confirmados });
   }, [rowsFraude]);
   // Métricas a mostrar siempre: en vivo si hay reporte cargado, si no las del último análisis persistido.
   const fraudeStats = fraudeResult
@@ -2351,6 +2356,21 @@ function Metas({
           h("div", { className: "flex items-center gap-2" },
             h("input", { value: zonaNueva, onChange: e => setZonaNueva(e.target.value), onKeyDown: e => { if (e.key === "Enter") agregarZona(); }, placeholder: "Agregar localidad…", className: "text-sm rounded-xl border px-3 py-1.5 outline-none", style: { borderColor: C.line } }),
             h("button", { onClick: agregarZona, className: "text-xs font-bold px-3 py-1.5 rounded-xl text-white", style: { background: C.ink } }, "Agregar"))))))),
+    // ── Pop-up de ALERTA: fraudes confirmados (lista negra) detectados al analizar ──
+    alertaFraude && h("div", { className: "fixed inset-0 z-50 flex items-center justify-center p-4", style: { background: "rgba(14,27,51,0.55)" }, onClick: () => setAlertaFraude(null) },
+      h("div", { className: "bg-white rounded-2xl w-full max-w-lg shadow-2xl overflow-hidden", style: { maxHeight: "85vh", display: "flex", flexDirection: "column" }, onClick: e => e.stopPropagation() },
+        h("div", { className: "px-5 py-4", style: { background: C.red, color: "#fff" } },
+          h("div", { className: "text-lg font-black fraunces flex items-center gap-2" }, "⛔ ", alertaFraude.filas.length === 1 ? "1 fraude confirmado detectado" : alertaFraude.filas.length + " fraudes confirmados detectados"),
+          h("div", { className: "text-xs mt-0.5", style: { color: "rgba(255,255,255,0.9)" } }, "Reusan datos de un fraude YA confirmado (lista negra). Cancelá estos pedidos en Fenicio ANTES de despachar para evitar la pérdida.")),
+        h("div", { className: "overflow-auto p-3", style: { flex: 1 } },
+          alertaFraude.filas.map((f, i) => h("div", { key: f.tienda + "|" + f.pedido + "_" + i, onClick: () => { setDetalleFraude(f); setAlertaFraude(null); }, className: "flex items-center justify-between gap-2 px-3 py-2 rounded-xl cursor-pointer", style: { borderBottom: i < alertaFraude.filas.length - 1 ? "1px solid " + C.line : "none" } },
+            h("div", null,
+              h("div", { className: "text-sm font-black", style: { color: C.ink } }, "Pedido ", f.pedido, h("span", { className: "font-normal text-xs", style: { color: C.gray } }, " · ", f.tienda)),
+              h("div", { className: "text-xs", style: { color: C.gray } }, (f.nombre || "—"), f.importe ? " · $" + f.importe.toLocaleString("es-UY") : "", f.fecha ? " · " + f.fecha.slice(0, 10) : "")),
+            h("span", { className: "text-[11px] font-bold whitespace-nowrap", style: { color: C.blue } }, "ver ›")))),
+        h("div", { className: "px-5 py-3 flex justify-end gap-2 border-t", style: { borderColor: C.line } },
+          h("button", { onClick: () => setAlertaFraude(null), className: "text-sm font-bold text-white px-5 py-2 rounded-xl", style: { background: C.ink } }, "Entendido"))),
+      ),
     // ── Modal detalle de un pedido de la cola de fraude ──
     detalleFraude && (() => {
       const f = detalleFraude, d = detalleDe(f);
