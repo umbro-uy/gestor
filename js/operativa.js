@@ -382,6 +382,7 @@ function Operativa({ yo, activo, syncTick }) {
         estadoFen: d.estado_fen || "-", estadoWMS: d.estado_wms || "-", estadoEco: d.estado_eco || "-",
         deposito: d.deposito || "-", fechaDespacho: d.fecha_despacho || "-", importe: d.importe || "-",
         fechaEstado: d.fecha_estado || "", formaEntrega: d.forma_entrega || "", fechaEntrega: d.fecha_entrega || "", fechaListo: d.fecha_listo || "", sinWMS: !!d.sin_wms,
+        departamento: d.departamento || "", envioIntl: !!d.envio_intl, courier: d.courier || "",
         historial: histDe(d), accionado: !!d.accionado
       })));
     } catch (_) { setPersistOK(false); }
@@ -765,7 +766,7 @@ function Operativa({ yo, activo, syncTick }) {
           estado_fen: r.estadoFen, estado_wms: r.estadoWMS, estado_eco: r.estadoEco,
           deposito: (r.depo0Any ? "0" : r.deposito), fecha_despacho: r.fechaDespacho, importe: String(r.importe),
           forma_entrega: r.formaEntrega || "", fecha_entrega: r.fechaEntrega || "", fecha_listo: r.fechaListo || "",
-          fecha_estado: r.fechaEstado || "",
+          fecha_estado: r.fechaEstado || "", departamento: r.departamento || "", envio_intl: !!r.envioIntl, courier: r.courier || "",
           dias: r.dias, click_collect: !!r.clickCollect, sin_wms: !!r.sinWMS
         }));
         for (let i = 0; i < payload.length; i += 200) {

@@ -19,6 +19,9 @@ create table if not exists public.operativa_seguimiento (
   forma_entrega    text,
   fecha_entrega    text,
   fecha_listo      text,
+  departamento     text,
+  envio_intl       boolean default false,
+  courier          text,
   importe          text,
   dias             int,
   click_collect    boolean default false,
@@ -39,6 +42,10 @@ alter table public.operativa_seguimiento add column if not exists historial json
 alter table public.operativa_seguimiento add column if not exists fecha_estado text;
 -- fecha_listo = fecha en que quedó "Listo para retirar" (hito de cumplimiento del retiro en tienda C&C/Pickup).
 alter table public.operativa_seguimiento add column if not exists fecha_listo text;
+-- departamento / envio_intl / courier: para recomputar la región y la alerta de "internacional demorado" al recargar.
+alter table public.operativa_seguimiento add column if not exists departamento text;
+alter table public.operativa_seguimiento add column if not exists envio_intl boolean default false;
+alter table public.operativa_seguimiento add column if not exists courier text;
 
 -- Mantener "actualizado" al día en cada cambio
 create or replace function public.set_actualizado()
