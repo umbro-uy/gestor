@@ -1996,9 +1996,12 @@ function Metas({
     if (!qFraude) return true;
     return [f.pedido, f.nombre, f.doc, f.mail, f.tel].some(v => FraudeReglas.normAttr(v).includes(qFraude));
   };
+  // Orden de la cola: por FECHA de compra, del más reciente al más viejo (los sin fecha, al final). El formato
+  // "YYYY-MM-DD HH:MM:SS" ordena bien como texto. Los fraudes confirmados igual saltan en el pop-up de alerta.
+  const porFechaDesc = (a, b) => { const fa = a.fecha || "", fb = b.fecha || ""; if (!fa && !fb) return 0; if (!fa) return 1; if (!fb) return -1; return fb.localeCompare(fa); };
   const fraudeVisibles = !fraudeColaActiva ? []
-    : filtroFraude ? fraudeColaActiva.filas.filter(f => f.nivel === filtroFraude)
-    : fraudeColaActiva.filas.filter(f => f.nivel !== "bajo");
+    : (filtroFraude ? fraudeColaActiva.filas.filter(f => f.nivel === filtroFraude)
+      : fraudeColaActiva.filas.filter(f => f.nivel !== "bajo")).slice().sort(porFechaDesc);
   // Resultados del HISTORIAL persistido (búsqueda server-side). Se arman como filas para poder abrir el detalle
   // y usar los mismos botones (marcar fraude / seguro / desbloquear). Se excluyen los que ya aparecen en la
   // cola en vivo para no duplicar. Marcamos si ya están en lista negra / blanca.
